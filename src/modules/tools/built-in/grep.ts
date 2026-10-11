@@ -21,7 +21,7 @@ export function createGrepTool({
 
   return tool({
     description:
-      "Search file contents in the workspace. Returns matching file paths with line numbers; set includeContent to return the matching line text. Use glob to restrict the search to files whose path matches the pattern (supports *, ** and ?). Read-only.",
+      "Search file contents in the workspace. Returns matching file paths with line numbers; set includeContent to return the matching line text. Searches text files and documents (docx, xlsx, pptx, pdf) — document text is extracted automatically. Use glob to restrict the search to files whose path matches the pattern (supports *, ** and ?). Read-only.",
     inputSchema: z.object({
       glob: z.string().trim().max(200).optional(),
       includeContent: z.boolean().optional(),
@@ -58,7 +58,7 @@ export function createGrepTool({
               throw new Error(`No workspace file found for ${path}.`);
             }
 
-            return workspaceService.readTextFile(file);
+            return workspaceService.readWorkspaceFileText(file);
           },
         });
 

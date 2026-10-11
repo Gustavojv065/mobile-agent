@@ -1,6 +1,7 @@
 import type { ModelMessage } from "ai";
 
 import {
+  isDocumentWorkspaceFile,
   isTextWorkspaceFile,
   resolveWorkspaceFile,
 } from "@/core/services/workspace-file-service";
@@ -18,7 +19,7 @@ export function isImageMimeType(mimeType: string | null | undefined): boolean {
 }
 
 function isTextFile(file: Pick<WorkspaceFile, "displayName" | "mimeType">) {
-  return isTextWorkspaceFile(file);
+  return isTextWorkspaceFile(file) || isDocumentWorkspaceFile(file);
 }
 
 export type PartitionedFiles = {

@@ -167,5 +167,8 @@ describe("agent permissions", () => {
   it("keeps mutating tool names in sync with the plan filter", () => {
     expect(MUTATING_BUILT_IN_TOOL_NAMES.has("write")).toBe(true);
     expect(MUTATING_BUILT_IN_TOOL_NAMES.has("task")).toBe(true);
+    expect(MUTATING_BUILT_IN_TOOL_NAMES.has("updateDocument")).toBe(true);
+    expect(MUTATING_BUILT_IN_TOOL_NAMES.has("splitPdf")).toBe(true);
+    expect(MUTATING_BUILT_IN_TOOL_NAMES.has("mergePdfs")).toBe(true);
   });
 });

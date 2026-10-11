@@ -4,12 +4,16 @@ import { createEditTool } from "@/modules/tools/built-in/edit";
 import { createGlobTool } from "@/modules/tools/built-in/glob";
 import { createGrepTool } from "@/modules/tools/built-in/grep";
 import { createListFilesTool } from "@/modules/tools/built-in/list-files";
+import { createMergePdfsTool } from "@/modules/tools/built-in/merge-pdfs";
+import { createOcrTool } from "@/modules/tools/built-in/ocr";
 import {
   buildSelectedFilesInlineContext,
   buildWorkspaceSystemPrompt,
 } from "@/modules/tools/built-in/prompts";
 import { createReadTool } from "@/modules/tools/built-in/read";
+import { createSplitPdfTool } from "@/modules/tools/built-in/split-pdf";
 import type { WorkspaceToolFactoryParams } from "@/modules/tools/built-in/types";
+import { createUpdateDocumentTool } from "@/modules/tools/built-in/update-document";
 import { createWriteTool } from "@/modules/tools/built-in/write";
 import type { ExternalFolderSession } from "@/core/types/app-state";
 import { createWorkspaceFileService } from "@/core/services/workspace-file-service";
@@ -27,7 +31,11 @@ export function createWorkspaceTools(
       glob: createGlobTool(params),
       grep: createGrepTool(params),
       listFiles: createListFilesTool(params),
+      mergePdfs: createMergePdfsTool(params),
+      ocr: createOcrTool(params),
       read: createReadTool(params),
+      splitPdf: createSplitPdfTool(params),
+      updateDocument: createUpdateDocumentTool(params),
       write: createWriteTool(params),
     },
     workspaceService: createWorkspaceFileService(params.repository),

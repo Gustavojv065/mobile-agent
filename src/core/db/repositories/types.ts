@@ -203,6 +203,7 @@ export interface WorkspaceRepository {
     relativePath: string;
     size?: number | null;
     sourceKind: WorkspaceFileSourceKind;
+    sourceMarkdown?: string | null;
   }): Promise<WorkspaceFile>;
   getById(id: string): Promise<WorkspaceFile | null>;
   getByIds(ids: string[]): Promise<WorkspaceFile[]>;
@@ -217,6 +218,7 @@ export interface WorkspaceRepository {
       originalName?: string | null;
       relativePath?: string;
       size?: number | null;
+      sourceMarkdown?: string | null;
       updatedAt?: string;
     },
   ): Promise<void>;

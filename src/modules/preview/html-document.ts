@@ -17,7 +17,7 @@ export function withDesktopPreviewViewport(
     : `${viewport}${document}`;
 }
 
-const BASE_STYLES = `
+export const BASE_STYLES = `
 *,*::before,*::after{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
 body{
@@ -47,6 +47,8 @@ function escapeHtml(value: string): string {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
 }
+
+export { escapeHtml };
 
 export type PreviewDocumentOptions = {
   baseUrl?: string | null;

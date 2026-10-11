@@ -5,7 +5,7 @@ import { workspaceFileFromUrl } from "../workspace-link";
 const file: WorkspaceFile = {
   id: "abc-123", displayName: "sales report.csv", originalName: null,
   relativePath: "abc-123-sales report.csv", mimeType: "text/csv", size: 42,
-  sourceKind: "created", createdAt: "", updatedAt: "",
+  sourceKind: "created", sourceMarkdown: null, createdAt: "", updatedAt: "",
 };
 
 describe("workspaceFileFromUrl", () => {

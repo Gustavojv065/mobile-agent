@@ -13,7 +13,7 @@ export function createReadTool({
 
   return tool({
     description:
-      "Read text content from a workspace file. Use offset to page through large files: set offset to a character position and the content is returned starting there. Read-only.",
+      "Read text content from a workspace file. Supports plain text files and documents (docx, xlsx, pptx, pdf); document text is extracted automatically. For documents with stored source, the editable source Markdown used to generate the file is also returned as sourceMarkdown. Use offset to page through large files: set offset to a character position and the content is returned starting there. Read-only.",
     inputSchema: z.object({
       fileId: z.string().min(1),
       maxChars: z.number().int().min(100).max(20000).optional(),
@@ -33,7 +33,7 @@ export function createReadTool({
           throw new Error(`No workspace file found for ${fileId}.`);
         }
 
-        const text = await workspaceService.readTextFile(file);
+        const text = await workspaceService.readWorkspaceFileText(file);
         const start = offset ?? 0;
         const size = maxChars ?? 8000;
         const content = text.slice(start, start + size);
@@ -44,6 +44,13 @@ export function createReadTool({
           truncated: text.length > start + size,
           totalChars: text.length,
           offset: start,
+          ...(file.sourceMarkdown
+            ? {
+                hasSourceMarkdown: true,
+                sourceChars: file.sourceMarkdown.length,
+                sourceMarkdown: file.sourceMarkdown,
+              }
+            : {}),
         };
 
         onRecord?.(
@@ -56,6 +63,7 @@ export function createReadTool({
               displayName: output.displayName,
               totalChars: output.totalChars,
               truncated: output.truncated,
+              hasSourceMarkdown: output.hasSourceMarkdown ?? false,
               contentPreview: output.content.slice(0, 200),
             }),
           }),

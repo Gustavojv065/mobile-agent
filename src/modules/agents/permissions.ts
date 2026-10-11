@@ -13,10 +13,13 @@ export const MUTATING_BUILT_IN_TOOL_NAMES = new Set([
   "manageAgent",
   "managePlugin",
   "manageSkill",
+  "mergePdfs",
   "moveEntry",
   "renameEntry",
   "requestSecret",
+  "splitPdf",
   "task",
+  "updateDocument",
   "write",
 ]);
 

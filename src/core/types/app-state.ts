@@ -508,6 +508,8 @@ export type WorkspaceFile = {
   size: number | null;
   relativePath: string;
   sourceKind: WorkspaceFileSourceKind;
+  /** Markdown/plain-text source the document (docx/pdf/pptx/xlsx) was generated from, used to regenerate it on update. */
+  sourceMarkdown: string | null;
   createdAt: string;
   updatedAt: string;
 };

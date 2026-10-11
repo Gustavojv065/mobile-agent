@@ -138,6 +138,7 @@ export const workspaceFiles = sqliteTable(
     size: integer("size"),
     relativePath: text("relative_path").notNull(),
     sourceKind: text("source_kind").$type<WorkspaceFileSourceKind>().notNull(),
+    sourceMarkdown: text("source_markdown"),
     createdAt: text("created_at").notNull(),
     updatedAt: text("updated_at").notNull(),
   },

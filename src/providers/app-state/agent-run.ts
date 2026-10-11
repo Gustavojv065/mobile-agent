@@ -1281,7 +1281,11 @@ export async function executeClaimedAgentRun(
                 ["glob", enabledFor("workspaceGlob")],
                 ["grep", enabledFor("workspaceGrep")],
                 ["listFiles", enabledFor("workspaceListFiles")],
+                ["mergePdfs", enabledFor("workspaceCreateFile")],
+                ["ocr", enabledFor("workspaceRead")],
                 ["read", enabledFor("workspaceRead")],
+                ["splitPdf", enabledFor("workspaceCreateFile")],
+                ["updateDocument", enabledFor("workspaceEdit")],
                 ["write", enabledFor("workspaceWrite")],
               ]),
             );

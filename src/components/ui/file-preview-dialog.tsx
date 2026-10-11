@@ -1,14 +1,21 @@
 import { Image } from "expo-image";
 import { Download, X } from "lucide-react-native";
-import { useEffect, useMemo, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 import {
   ActivityIndicator,
   Alert,
+  type LayoutChangeEvent,
   Pressable,
   ScrollView,
   Text,
   View,
 } from "react-native";
+import { WebView } from "react-native-webview";
 import { CodePreviewContent } from "@/components/ui/code-preview-dialog";
 
 import { CsvTable, CsvTableLoading } from "@/components/ui/csv-table";
@@ -25,7 +32,15 @@ import {
 import { downloadFile } from "@/core/services/download-service";
 import type { WorkspaceFile } from "@/core/types/app-state";
 import { useTheme } from "@/hooks/use-theme";
+import { extractDocument } from "@/modules/documents/extract";
+import type { ExtractedDocument } from "@/modules/documents/extract";
+import {
+  getDocumentFormat,
+  getDocumentFormatFromMimeType,
+  isDocumentFile,
+} from "@/modules/documents";
 import { parseSpreadsheetText } from "@/modules/files/csv-table";
+import { buildDocumentPreviewHtml } from "@/modules/preview/document-preview";
 import { buildPreviewDocument } from "@/modules/preview/html-document";
 
 /** Largest text slice rendered in the preview; bigger files are truncated. */
@@ -44,7 +59,12 @@ const IMAGE_EXTENSIONS = [
 
 const MARKUP_EXTENSIONS = [".html", ".htm", ".svg", ".xml"];
 
-export type FilePreviewKind = "image" | "markup" | "csv" | "text";
+export type FilePreviewKind =
+  | "csv"
+  | "document"
+  | "image"
+  | "markup"
+  | "text";
 
 function extensionOf(name: string): string {
   const index = name.lastIndexOf(".");
@@ -54,7 +74,7 @@ function extensionOf(name: string): string {
 
 /**
  * Decides which in-app preview to use for a workspace file. Returns null for
- * kinds we still have to hand to an external app (PDF, archives, media, ...).
+ * kinds we still have to hand to an external app (archives, media, ...).
  */
 export function getFilePreviewKind(
   file: Pick<WorkspaceFile, "displayName" | "mimeType">,
@@ -80,6 +100,10 @@ export function getFilePreviewKind(
     mimeType === "application/xhtml+xml"
   ) {
     return "markup";
+  }
+
+  if (isDocumentFile(file)) {
+    return "document";
   }
 
   if (isTextWorkspaceFile(file)) {
@@ -201,12 +225,26 @@ function FilePreviewBody({ file }: { file: WorkspaceFile }) {
     [file.relativePath],
   );
   const [text, setText] = useState<string | null>(null);
+  const [extracted, setExtracted] = useState<ExtractedDocument | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(kind !== "image");
+  const [frame, setFrame] = useState<{ height: number; width: number } | null>(
+    null,
+  );
+
+  const handleLayout = useCallback(({ nativeEvent }: LayoutChangeEvent) => {
+    const { height, width } = nativeEvent.layout;
+    setFrame((previous) =>
+      previous && previous.width === width && previous.height === height
+        ? previous
+        : { height, width },
+    );
+  }, []);
 
   useEffect(() => {
     if (kind === "image") {
       setText(null);
+      setExtracted(null);
       setError(null);
       setLoading(false);
       return;
@@ -224,10 +262,32 @@ function FilePreviewBody({ file }: { file: WorkspaceFile }) {
           );
         }
 
+        if (kind === "document") {
+          const format =
+            getDocumentFormat(file.displayName) ??
+            getDocumentFormatFromMimeType(file.mimeType);
+
+          if (!format) {
+            throw new Error(
+              `${file.displayName} is not a supported document format.`,
+            );
+          }
+
+          const result = await extractDocument(format, await localFile.bytes());
+
+          if (!cancelled) {
+            setExtracted(result);
+            setText(null);
+            setLoading(false);
+          }
+          return;
+        }
+
         const content = await localFile.text();
 
         if (!cancelled) {
           setText(content.slice(0, MAX_PREVIEW_CHARS));
+          setExtracted(null);
           setLoading(false);
         }
       } catch (loadError) {
@@ -281,7 +341,10 @@ function FilePreviewBody({ file }: { file: WorkspaceFile }) {
   }
 
   return (
-    <View className="min-h-0 flex-1 overflow-hidden rounded-xl border border-border bg-card dark:border-border-dark dark:bg-card-dark">
+    <View
+      className="min-h-0 flex-1 overflow-hidden rounded-xl border border-border bg-card dark:border-border-dark dark:bg-card-dark"
+      onLayout={handleLayout}
+    >
       {loading ? kind === "csv" ? <CsvTableLoading /> : (
         <View className="items-center justify-center gap-3 py-16">
           <ActivityIndicator color={theme.text} size="small" />
@@ -313,6 +376,27 @@ function FilePreviewBody({ file }: { file: WorkspaceFile }) {
             {text}
           </Text>
         </ScrollView>
+      ) : null}
+      {!loading &&
+      !error &&
+      kind === "document" &&
+      frame &&
+      frame.height > 0 &&
+      extracted ? (
+        <WebView
+          key={extracted.format}
+          nestedScrollEnabled
+          originWhitelist={["about:blank"]}
+          scrollEnabled
+          setSupportMultipleWindows={false}
+          source={{
+            html: buildDocumentPreviewHtml({
+              extracted,
+              title: file.displayName,
+            }),
+          }}
+          style={{ backgroundColor: theme.backgroundElement, flex: 1 }}
+        />
       ) : null}
     </View>
   );

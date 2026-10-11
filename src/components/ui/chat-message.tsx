@@ -28,6 +28,7 @@ import {
   Loader,
   Pencil,
   Play,
+  Presentation,
   RefreshCw,
   Share2,
   Square,
@@ -961,6 +962,14 @@ function getFileTypeIcon(file: WorkspaceFile) {
     SPREADSHEET_EXTENSIONS.some((extension) => fileName.endsWith(extension))
   ) {
     return FileSpreadsheet;
+  }
+
+  if (fileName.endsWith(".docx")) {
+    return FileText;
+  }
+
+  if (fileName.endsWith(".pptx")) {
+    return Presentation;
   }
 
   if (mimeType.startsWith("text/")) {

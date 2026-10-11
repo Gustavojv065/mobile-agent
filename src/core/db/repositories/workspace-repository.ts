@@ -19,6 +19,7 @@ export function createWorkspaceRepository(db: AppDatabase): WorkspaceRepository 
         relativePath: input.relativePath,
         size: input.size ?? null,
         sourceKind: input.sourceKind,
+        sourceMarkdown: input.sourceMarkdown ?? null,
         createdAt: timestamp,
         updatedAt: timestamp,
       });
@@ -95,6 +96,10 @@ export function createWorkspaceRepository(db: AppDatabase): WorkspaceRepository 
               : current.originalName,
           relativePath: input.relativePath ?? current.relativePath,
           size: input.size !== undefined ? input.size : current.size,
+          sourceMarkdown:
+            input.sourceMarkdown !== undefined
+              ? input.sourceMarkdown
+              : current.sourceMarkdown,
           updatedAt: input.updatedAt ?? nowIso(),
         })
         .where(eq(workspaceFiles.id, id));

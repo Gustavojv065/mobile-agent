@@ -5,7 +5,7 @@ import {
 } from "@/modules/agents/agent-markdown";
 import { serializeSkillToMarkdown } from "@/modules/skills/skill-markdown";
 
-const DATABASE_VERSION = 30;
+const DATABASE_VERSION = 31;
 
 const CORE_SCHEMA_REPAIR_SQL = `
   PRAGMA journal_mode = WAL;
@@ -360,6 +360,7 @@ export async function migrateAppDatabase(db: SQLiteDatabase) {
         size INTEGER,
         relative_path TEXT NOT NULL,
         source_kind TEXT NOT NULL,
+        source_markdown TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         UNIQUE(relative_path)
@@ -581,6 +582,7 @@ export async function migrateAppDatabase(db: SQLiteDatabase) {
         size INTEGER,
         relative_path TEXT NOT NULL,
         source_kind TEXT NOT NULL,
+        source_markdown TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         UNIQUE(relative_path)
@@ -1450,6 +1452,23 @@ export async function migrateAppDatabase(db: SQLiteDatabase) {
     }
 
     currentVersion = 30;
+  }
+
+  if (currentVersion === 30) {
+    const fileColumns = await db.getAllAsync<{ name: string }>(
+      "PRAGMA table_info(workspace_files)",
+    );
+
+    if (
+      !fileColumns.some((column) => column.name === "source_markdown")
+    ) {
+      await db.execAsync(`
+        ALTER TABLE workspace_files
+        ADD COLUMN source_markdown TEXT;
+      `);
+    }
+
+    currentVersion = 31;
   }
 
   await db.execAsync(`PRAGMA user_version = ${currentVersion}`);

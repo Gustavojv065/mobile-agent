@@ -8,6 +8,13 @@ import {
   inferMimeType,
   sanitizeFileName,
 } from "@/core/services/file-names";
+import { extractDocument } from "@/modules/documents/extract";
+import {
+  buildDocument,
+  getDocumentFormat,
+  getDocumentFormatFromMimeType,
+  isDocumentFile,
+} from "@/modules/documents";
 import type { WorkspaceRepository } from "@/core/db/database";
 import type { WorkspaceFile } from "@/core/types/app-state";
 // Re-exported so existing import paths keep working.
@@ -182,6 +189,12 @@ export function isTextWorkspaceFile(file: Pick<WorkspaceFile, "displayName" | "m
   }
 
   return false;
+}
+
+export function isDocumentWorkspaceFile(
+  file: Pick<WorkspaceFile, "displayName" | "mimeType">,
+) {
+  return isDocumentFile(file);
 }
 
 async function resolveExpectedContentLength(
@@ -359,6 +372,36 @@ export function createWorkspaceFileService(repository: WorkspaceRepository) {
         sourceKind: "imported",
       });
     },
+    async createDocumentFile(input: {
+      bytes: Uint8Array;
+      mimeType: string;
+      name: string;
+      sourceMarkdown?: string | null;
+    }) {
+      const id = Crypto.randomUUID();
+      const displayName = sanitizeFileName(input.name);
+      const relativePath = buildRelativePath(id, displayName);
+
+      await ensureWorkspaceDirectory();
+
+      const file = resolveWorkspaceFile(relativePath);
+      file.create({
+        intermediates: true,
+        overwrite: true,
+      });
+      file.write(input.bytes);
+
+      return repository.create({
+        id,
+        displayName,
+        mimeType: input.mimeType,
+        originalName: displayName,
+        relativePath,
+        size: file.size ?? input.bytes.byteLength,
+        sourceKind: "created",
+        sourceMarkdown: input.sourceMarkdown ?? null,
+      });
+    },
     async readTextFile(workspaceFile: WorkspaceFile) {
       if (!isTextWorkspaceFile(workspaceFile)) {
         throw new Error(`${workspaceFile.displayName} is not a readable text file.`);
@@ -371,6 +414,108 @@ export function createWorkspaceFileService(repository: WorkspaceRepository) {
       }
 
       return file.text();
+    },
+    async readWorkspaceFileText(workspaceFile: WorkspaceFile) {
+      if (isTextWorkspaceFile(workspaceFile)) {
+        return this.readTextFile(workspaceFile);
+      }
+
+      if (!isDocumentWorkspaceFile(workspaceFile)) {
+        throw new Error(
+          `${workspaceFile.displayName} is neither a readable text file nor a supported document.`,
+        );
+      }
+
+      const file = resolveWorkspaceFile(workspaceFile.relativePath);
+
+      if (!file.exists) {
+        throw new Error(`${workspaceFile.displayName} is no longer available locally.`);
+      }
+
+      const format =
+        getDocumentFormat(workspaceFile.displayName) ??
+        getDocumentFormatFromMimeType(workspaceFile.mimeType);
+
+      if (!format) {
+        throw new Error(
+          `${workspaceFile.displayName} is not a supported document format.`,
+        );
+      }
+
+      const extracted = await extractDocument(format, await file.bytes());
+      return extracted.text;
+    },
+    async readDocumentBytes(workspaceFile: WorkspaceFile) {
+      if (!isDocumentWorkspaceFile(workspaceFile)) {
+        throw new Error(
+          `${workspaceFile.displayName} is not a supported document.`,
+        );
+      }
+
+      const file = resolveWorkspaceFile(workspaceFile.relativePath);
+
+      if (!file.exists) {
+        throw new Error(
+          `${workspaceFile.displayName} is no longer available locally.`,
+        );
+      }
+
+      return file.bytes();
+    },
+    /**
+     * Regenerate an existing document in place from Markdown/plain-text source.
+     * The document keeps its format and file name; the binary bytes and the
+     * stored source are replaced so the document can be updated again later.
+     */
+    async updateDocumentFile(
+      workspaceFile: WorkspaceFile,
+      sourceMarkdown: string,
+    ) {
+      if (!isDocumentWorkspaceFile(workspaceFile)) {
+        throw new Error(
+          `${workspaceFile.displayName} is not a supported document.`,
+        );
+      }
+
+      const format =
+        getDocumentFormat(workspaceFile.displayName) ??
+        getDocumentFormatFromMimeType(workspaceFile.mimeType);
+
+      if (!format) {
+        throw new Error(
+          `${workspaceFile.displayName} is not a supported document format.`,
+        );
+      }
+
+      const built = await buildDocument({
+        format,
+        content: sourceMarkdown,
+        fileName: workspaceFile.displayName,
+      });
+
+      const file = resolveWorkspaceFile(workspaceFile.relativePath);
+
+      if (!file.exists) {
+        file.create({
+          intermediates: true,
+          overwrite: true,
+        });
+      }
+
+      file.write(built.bytes);
+
+      await repository.updateMetadata(workspaceFile.id, {
+        size: file.size ?? built.bytes.byteLength,
+        sourceMarkdown,
+      });
+
+      const nextFile = await repository.getById(workspaceFile.id);
+
+      if (!nextFile) {
+        throw new Error("Workspace file metadata is unavailable.");
+      }
+
+      return nextFile;
     },
     async writeTextFile(
       workspaceFile: WorkspaceFile,
