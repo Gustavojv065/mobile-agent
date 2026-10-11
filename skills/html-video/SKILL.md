@@ -59,6 +59,22 @@ The recorder picks `document.getElementById(canvasId)`, or the first visible
    offline). Three.js is allowed if you inline it.
 6. **Silent.** v1 output has no audio track.
 
+## Auto-export (skip the preview step)
+
+When the user asks for the finished video file directly — "make a video and
+give me the MP4" — add this meta tag to the document `<head>`:
+
+```html
+<meta name="mobile-agent-video" content="auto-export">
+```
+
+The app then records the page automatically in a hidden WebView and saves the
+MP4 to Downloads, with no preview and no taps. Everything in the hard rules
+above still applies; the recorder starts as soon as the document finishes
+loading, so the scene must be ready at `t = 0`. Leave the meta tag out when the
+user only wants something to preview or iterate on — they keep the manual
+Export button in the preview dialog.
+
 ## Patterns
 
 ### Plain canvas 2D
@@ -141,4 +157,6 @@ inside one canvas scene.
 - [ ] exactly one recorded canvas, sized to `width × height`
 - [ ] config values inside the allowed ranges (duration 1–45, fps 5–60)
 - [ ] self-contained (no external CDN without warning the user about offline)
+- [ ] if the user asked for the file directly:
+      `<meta name="mobile-agent-video" content="auto-export">` in `<head>`
 - [ ] complete scene: start state at t=0, motion clearly readable in 10 s

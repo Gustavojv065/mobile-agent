@@ -127,6 +127,11 @@ import { useSQLiteContext } from "expo-sqlite";
 import { createDrizzleDb } from "@/core/db/repositories/shared";
 import { createWorkspaceRepository } from "@/core/db/repositories/workspace-repository";
 import { buildPreviewDocument } from "@/modules/preview/html-document";
+import {
+  AUTO_EXPORT_STABILITY_MS,
+  detectAutoExportHtml,
+  enqueueAutoExport,
+} from "@/modules/preview/video-auto-export";
 
 refractor.register(jsx);
 refractor.register(tsx);
@@ -630,6 +635,21 @@ function CopyableCodeBlock({
   // so a preview can never outlive the markup it was built from.
   const [previewOpen, setPreviewOpen] = useRecyclingState(false, [code]);
   const previewable = isPreviewableLanguage(language);
+  const autoExportCandidate = useMemo(
+    () => previewable && detectAutoExportHtml(code),
+    [code, previewable],
+  );
+
+  // A streaming delta keeps rewriting the fence; only queue the document once
+  // the block has been stable long enough to be the final version. Enqueue is
+  // idempotent per exact html, so re-renders never double-export.
+  useEffect(() => {
+    if (!autoExportCandidate) return;
+    const timer = setTimeout(() => {
+      enqueueAutoExport(code);
+    }, AUTO_EXPORT_STABILITY_MS);
+    return () => clearTimeout(timer);
+  }, [autoExportCandidate, code]);
   const previewDocument = useMemo(
     () => (previewable ? buildPreviewDocument(code, language) : null),
     [code, language, previewable],

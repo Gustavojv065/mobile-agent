@@ -3,6 +3,7 @@ import { useChat } from "@/hooks/use-chat";
 import { useColorScheme } from "@/hooks/use-color-scheme";
 import { useTheme } from "@/hooks/use-theme";
 import { DismissibleBanner } from "@/components/ui/dismissible-banner";
+import { AutoVideoExportHost } from "@/components/ui/auto-video-export-host";
 import { migrateAppDatabase } from "@/core/db/database";
 import { AppStateProvider } from "@/providers/app-state";
 import { UpdateProvider, useUpdate } from "@/providers/check-for-updates";
@@ -297,6 +298,7 @@ export default function MainLayout() {
                   <NotificationObserver />
                   <InAppNotificationBanner />
                   <ReleaseUpdateBanner />
+                  <AutoVideoExportHost />
                   <Slot />
                 </UpdateProvider>
               </AppStateProvider>
