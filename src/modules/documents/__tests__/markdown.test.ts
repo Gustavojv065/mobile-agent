@@ -72,4 +72,41 @@ describe("document markdown parser", () => {
       { text: " and plain" },
     ]);
   });
+
+  it("renders links as runs with an href", () => {
+    expect(parseInlineRuns("See [docs](https://example.com) now")).toEqual([
+      { text: "See " },
+      { text: "docs", href: "https://example.com" },
+      { text: " now" },
+    ]);
+  });
+
+  it("parses standalone image blocks", () => {
+    const blocks = parseMarkdownBlocks("![Logo](images/logo.png)");
+
+    expect(blocks).toEqual([
+      { type: "image", alt: "Logo", src: "images/logo.png" },
+    ]);
+  });
+
+  it("parses image width from the optional title", () => {
+    const blocks = parseMarkdownBlocks(
+      '![Logo](logo.png "480")\n![Wide](w.png "640px")',
+    );
+
+    expect(blocks).toEqual([
+      { type: "image", alt: "Logo", src: "logo.png", widthPx: 480 },
+      { type: "image", alt: "Wide", src: "w.png", widthPx: 640 },
+    ]);
+  });
+
+  it("keeps image lines out of paragraphs", () => {
+    const blocks = parseMarkdownBlocks("Intro\n\n![A](a.png)\n\nOutro");
+
+    expect(blocks.map((block) => block.type)).toEqual([
+      "paragraph",
+      "image",
+      "paragraph",
+    ]);
+  });
 });

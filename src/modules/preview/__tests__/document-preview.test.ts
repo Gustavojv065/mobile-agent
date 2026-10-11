@@ -7,6 +7,7 @@ import {
 } from "@/modules/documents";
 import {
   buildDocumentPreviewHtml,
+  renderInlineMarkdown,
   renderMarkdownishText,
 } from "@/modules/preview/document-preview";
 
@@ -124,5 +125,149 @@ describe("buildDocumentPreviewHtml", () => {
     });
 
     expect(html).toContain("<title>a&lt;b&gt;&amp;c.pdf</title>");
+  });
+
+  it("falls back to the document text when a workbook has no sheet grid", () => {
+    const extracted = {
+      format: "xlsx",
+      text: "# Sheetless\n\nJust words.",
+    } as ExtractedDocument;
+    const html = buildDocumentPreviewHtml({ extracted, title: "plain.xlsx" });
+
+    expect(html).toContain("<h1>Sheetless</h1>");
+    expect(html).toContain("<p>Just words.</p>");
+  });
+
+  it("shows the empty message when nothing readable was extracted", () => {
+    const extracted = {
+      format: "docx",
+      text: "",
+    } as ExtractedDocument;
+    const html = buildDocumentPreviewHtml({ extracted, title: "empty.docx" });
+
+    expect(html).toContain("No readable text in this preview.");
+  });
+});
+
+describe("renderInlineMarkdown", () => {
+  it("renders bold, italic and inline code", () => {
+    expect(renderInlineMarkdown("a **bold** word")).toContain(
+      "<strong>bold</strong>",
+    );
+    expect(renderInlineMarkdown("a *soft* word")).toContain("<em>soft</em>");
+    expect(renderInlineMarkdown("run `code()` now")).toContain(
+      "<code>code()</code>",
+    );
+  });
+
+  it("does not format markers inside inline code", () => {
+    expect(renderInlineMarkdown("`**not bold**`")).toBe(
+      "<code>**not bold**</code>",
+    );
+  });
+
+  it("links safe schemes and leaves markup escaped", () => {
+    const html = renderInlineMarkdown(
+      "see [docs](https://example.com/a?b=1&c=2) and <script>alert(1)</script>",
+    );
+
+    expect(html).toContain(
+      '<a href="https://example.com/a?b=1&amp;c=2" target="_blank" rel="noreferrer">docs</a>',
+    );
+    expect(html).toContain("&lt;script&gt;");
+    expect(html).not.toContain("<script>");
+  });
+
+  it("refuses to link unsafe schemes", () => {
+    const html = renderInlineMarkdown("[x](javascript:alert(1))");
+
+    expect(html).not.toContain("<a ");
+    expect(html).toContain("[x](javascript:alert(1))");
+  });
+});
+
+describe("renderMarkdownishText hardening", () => {
+  it("renders blockquotes and heading inline formatting", () => {
+    const html = renderMarkdownishText(
+      "# A **bold** title\n\n> quoted *words*\n> second line",
+    );
+
+    expect(html).toContain("<h1>A <strong>bold</strong> title</h1>");
+    expect(html).toContain(
+      "<blockquote><p>quoted <em>words</em></p><p>second line</p></blockquote>",
+    );
+  });
+
+  it("keeps the fenced code language on the block", () => {
+    const html = renderMarkdownishText("```js\nconst a = 1;\n```");
+
+    expect(html).toContain('<pre><code class="language-js">');
+    expect(html).toContain("const a = 1;");
+    expect(html).toContain("</code></pre>");
+  });
+
+  it("applies inline formatting inside list items and table cells", () => {
+    const html = renderMarkdownishText(
+      "- a **bold** item\n\n| H |\n| --- |\n| `v` |",
+    );
+
+    expect(html).toContain("<li>a <strong>bold</strong> item</li>");
+    expect(html).toContain("<td><code>v</code></td>");
+  });
+});
+
+describe("buildDocumentPreviewHtml truncation", () => {
+  it("caps very long docx text and shows a truncation note", () => {
+    const extracted = {
+      format: "docx",
+      text: `${"# Big\n\n"}${"word ".repeat(60_000)}`,
+    } as ExtractedDocument;
+    const html = buildDocumentPreviewHtml({ extracted, title: "big.docx" });
+
+    expect(html).toContain("Preview truncated");
+    expect(html.length).toBeLessThan(300_000);
+  });
+
+  it("caps pdf pages and sheet grids", () => {
+    const pdf = {
+      format: "pdf",
+      text: "all",
+      pages: Array.from({ length: 500 }, (_v, i) => `page ${i}`),
+    } as ExtractedDocument;
+    const pdfHtml = buildDocumentPreviewHtml({ extracted: pdf, title: "p.pdf" });
+
+    expect(pdfHtml).not.toContain("page 499");
+    expect(pdfHtml).toContain("Preview truncated");
+
+    const xlsx = {
+      format: "xlsx",
+      text: "",
+      sheets: [
+        {
+          name: "Big",
+          rows: Array.from({ length: 1_000 }, () =>
+            Array.from({ length: 60 }, (_v, i) => `c${i}`),
+          ),
+        },
+      ],
+    } as ExtractedDocument;
+    const xlsxHtml = buildDocumentPreviewHtml({
+      extracted: xlsx,
+      title: "b.xlsx",
+    });
+
+    expect(xlsxHtml).toContain("Preview truncated");
+    expect(xlsxHtml).not.toContain("c59");
+    expect(xlsxHtml).toContain("<td>c0</td>");
+  });
+
+  it("does not show the note for small documents", () => {
+    const extracted = {
+      format: "docx",
+      text: "# Small\n\nFine.",
+    } as ExtractedDocument;
+    const html = buildDocumentPreviewHtml({ extracted, title: "s.docx" });
+
+    expect(html).not.toContain("Preview truncated");
   });
 });

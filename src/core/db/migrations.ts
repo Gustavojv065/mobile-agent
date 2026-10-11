@@ -5,7 +5,7 @@ import {
 } from "@/modules/agents/agent-markdown";
 import { serializeSkillToMarkdown } from "@/modules/skills/skill-markdown";
 
-const DATABASE_VERSION = 31;
+const DATABASE_VERSION = 33;
 
 const CORE_SCHEMA_REPAIR_SQL = `
   PRAGMA journal_mode = WAL;
@@ -184,6 +184,41 @@ export async function migrateAppDatabase(db: SQLiteDatabase) {
   await ensureMcpServersOauthModeColumn();
 
   if (currentVersion >= DATABASE_VERSION) {
+    const workspaceFileColumns = await db.getAllAsync<{ name: string }>(
+      "PRAGMA table_info(workspace_files)",
+    );
+
+    if (
+      workspaceFileColumns.length > 0 &&
+      !workspaceFileColumns.some((column) => column.name === "source_spec")
+    ) {
+      await db.execAsync(`
+        ALTER TABLE workspace_files
+        ADD COLUMN source_spec TEXT;
+      `);
+    }
+
+    // Safety net for schema drift: ensure the piecewise document-section store.
+    if (workspaceFileColumns.length > 0) {
+      await db.execAsync(`
+        CREATE TABLE IF NOT EXISTS document_sections (
+          id TEXT PRIMARY KEY NOT NULL,
+          file_id TEXT NOT NULL,
+          position INTEGER NOT NULL,
+          title TEXT NOT NULL,
+          level INTEGER NOT NULL,
+          body TEXT NOT NULL,
+          char_count INTEGER NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          FOREIGN KEY (file_id) REFERENCES workspace_files(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_document_sections_file_position
+        ON document_sections(file_id, position);
+      `);
+    }
+
     const conversationColumns = await db.getAllAsync<{ name: string }>(
       "PRAGMA table_info(conversations)",
     );
@@ -1469,6 +1504,43 @@ export async function migrateAppDatabase(db: SQLiteDatabase) {
     }
 
     currentVersion = 31;
+  }
+
+  if (currentVersion === 31) {
+    const fileColumns = await db.getAllAsync<{ name: string }>(
+      "PRAGMA table_info(workspace_files)",
+    );
+
+    if (!fileColumns.some((column) => column.name === "source_spec")) {
+      await db.execAsync(`
+        ALTER TABLE workspace_files
+        ADD COLUMN source_spec TEXT;
+      `);
+    }
+
+    currentVersion = 32;
+  }
+
+  if (currentVersion === 32) {
+    await db.execAsync(`
+      CREATE TABLE IF NOT EXISTS document_sections (
+        id TEXT PRIMARY KEY NOT NULL,
+        file_id TEXT NOT NULL,
+        position INTEGER NOT NULL,
+        title TEXT NOT NULL,
+        level INTEGER NOT NULL,
+        body TEXT NOT NULL,
+        char_count INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (file_id) REFERENCES workspace_files(id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_document_sections_file_position
+      ON document_sections(file_id, position);
+    `);
+
+    currentVersion = 33;
   }
 
   await db.execAsync(`PRAGMA user_version = ${currentVersion}`);

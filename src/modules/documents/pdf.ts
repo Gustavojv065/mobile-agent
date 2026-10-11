@@ -6,55 +6,53 @@ import {
   rgb,
 } from "pdf-lib";
 
+import type { PdfSpec } from "@/modules/documents/spec/pdf-spec";
+import { parsePdfSpec, pdfPageSizePt } from "@/modules/documents/spec/pdf-spec";
 import { parseMarkdownBlocks } from "@/modules/documents/markdown";
 import type { DocumentBlock, InlineRun } from "@/modules/documents/types";
 
-const PAGE_WIDTH = 595.28;
-const PAGE_HEIGHT = 841.89;
-const MARGIN = 56;
-const CONTENT_WIDTH = PAGE_WIDTH - MARGIN * 2;
-const BODY_SIZE = 11;
-const BODY_LINE_HEIGHT = BODY_SIZE * 1.5;
-const CODE_SIZE = 9.5;
-const CODE_LINE_HEIGHT = CODE_SIZE * 1.4;
-const TABLE_SIZE = 9.5;
-const TABLE_LINE_HEIGHT = TABLE_SIZE * 1.3;
 const TABLE_PADDING = 4;
+const CODE_INDENT = 8;
 
-const HEADING_SIZES: Record<number, number> = {
-  1: 22,
-  2: 18,
-  3: 15,
-  4: 13,
-  5: 12,
-  6: 12,
-};
+type StandardFamily = "courier" | "helvetica" | "times";
 
-const TEXT_COLOR = rgb(0.1, 0.1, 0.1);
-const MUTED_COLOR = rgb(0.35, 0.35, 0.35);
-const CODE_BACKGROUND = rgb(0.95, 0.95, 0.95);
-const TABLE_HEADER_BACKGROUND = rgb(0.9, 0.9, 0.9);
-const BORDER_COLOR = rgb(0.75, 0.75, 0.75);
-
-type Fonts = {
+type FaceSet = {
   bold: PDFFont;
   boldItalic: PDFFont;
-  code: PDFFont;
   italic: PDFFont;
   regular: PDFFont;
 };
 
+type Fonts = {
+  body: FaceSet;
+  code: FaceSet;
+  footer: FaceSet;
+  header: FaceSet;
+  headings: FaceSet;
+  table: FaceSet;
+};
+
 type StyledWord = {
+  color: ReturnType<typeof rgb>;
   font: PDFFont;
   size: number;
   text: string;
-  color: ReturnType<typeof rgb>;
 };
 
+type Align = "center" | "justified" | "left" | "right";
+
 type Context = {
+  contentWidth: number;
   doc: PDFDocument;
   fonts: Fonts;
+  height: number;
+  marginBottom: number;
+  marginLeft: number;
+  marginRight: number;
+  marginTop: number;
   page: PDFPage;
+  spec: PdfSpec;
+  width: number;
   y: number;
 };
 
@@ -105,40 +103,110 @@ export function sanitizeForStandardFont(text: string): string {
   return output;
 }
 
+/**
+ * Map a requested family name onto one of the standard PDF faces. Embedded
+ * custom fonts are not supported, so serif and monospace names are
+ * approximated with Times and Courier and everything else renders as
+ * Helvetica.
+ */
+function standardFamily(family: string): StandardFamily {
+  const normalized = family.toLowerCase();
+
+  if (
+    normalized.includes("courier") ||
+    normalized.includes("mono") ||
+    normalized.includes("consolas") ||
+    normalized.includes("menlo")
+  ) {
+    return "courier";
+  }
+
+  if (
+    normalized.includes("times") ||
+    normalized.includes("georgia") ||
+    normalized.includes("palatino") ||
+    normalized.includes("serif")
+  ) {
+    return "times";
+  }
+
+  return "helvetica";
+}
+
+async function faceSet(
+  doc: PDFDocument,
+  family: string,
+): Promise<FaceSet> {
+  const base = standardFamily(family);
+
+  switch (base) {
+    case "times":
+      return {
+        regular: await doc.embedFont(StandardFonts.TimesRoman),
+        bold: await doc.embedFont(StandardFonts.TimesRomanBold),
+        italic: await doc.embedFont(StandardFonts.TimesRomanItalic),
+        boldItalic: await doc.embedFont(StandardFonts.TimesRomanBoldItalic),
+      };
+    case "courier":
+      return {
+        regular: await doc.embedFont(StandardFonts.Courier),
+        bold: await doc.embedFont(StandardFonts.CourierBold),
+        italic: await doc.embedFont(StandardFonts.CourierOblique),
+        boldItalic: await doc.embedFont(StandardFonts.CourierBoldOblique),
+      };
+    default:
+      return {
+        regular: await doc.embedFont(StandardFonts.Helvetica),
+        bold: await doc.embedFont(StandardFonts.HelveticaBold),
+        italic: await doc.embedFont(StandardFonts.HelveticaOblique),
+        boldItalic: await doc.embedFont(StandardFonts.HelveticaBoldOblique),
+      };
+  }
+}
+
+function toRgb(hex: string): ReturnType<typeof rgb> {
+  return rgb(
+    Number.parseInt(hex.slice(0, 2), 16) / 255,
+    Number.parseInt(hex.slice(2, 4), 16) / 255,
+    Number.parseInt(hex.slice(4, 6), 16) / 255,
+  );
+}
+
 function measure(word: StyledWord): number {
   return word.font.widthOfTextAtSize(word.text, word.size);
 }
 
-function pickFont(run: InlineRun, fonts: Fonts): PDFFont {
+function pickFont(run: InlineRun, face: FaceSet, codeFace: FaceSet): PDFFont {
   if (run.code) {
-    return fonts.code;
+    return codeFace.regular;
   }
 
   if (run.bold && run.italic) {
-    return fonts.boldItalic;
+    return face.boldItalic;
   }
 
   if (run.bold) {
-    return fonts.bold;
+    return face.bold;
   }
 
   if (run.italic) {
-    return fonts.italic;
+    return face.italic;
   }
 
-  return fonts.regular;
+  return face.regular;
 }
 
 function runsToWords(
   runs: InlineRun[],
-  fonts: Fonts,
+  face: FaceSet,
+  codeFace: FaceSet,
   size: number,
-  color = TEXT_COLOR,
+  color = toRgb("000000"),
 ): StyledWord[] {
   const words: StyledWord[] = [];
 
   for (const run of runs) {
-    const font = pickFont(run, fonts);
+    const font = pickFont(run, face, codeFace);
     const sanitized = sanitizeForStandardFont(run.text);
 
     for (const piece of sanitized.split(/(\s+)/)) {
@@ -157,7 +225,7 @@ function wordsFromText(
   text: string,
   font: PDFFont,
   size: number,
-  color = TEXT_COLOR,
+  color = toRgb("000000"),
 ): StyledWord[] {
   return [
     { text: sanitizeForStandardFont(text), font, size, color },
@@ -227,17 +295,6 @@ function wrapWords(words: StyledWord[], maxWidth: number): StyledWord[][] {
   return lines;
 }
 
-function newPage(context: Context) {
-  context.page = context.doc.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
-  context.y = PAGE_HEIGHT - MARGIN;
-}
-
-function ensureSpace(context: Context, height: number) {
-  if (context.y - height < MARGIN) {
-    newPage(context);
-  }
-}
-
 function drawWords(
   context: Context,
   words: StyledWord[],
@@ -258,10 +315,64 @@ function drawWords(
   }
 }
 
+function drawLine(
+  context: Context,
+  line: StyledWord[],
+  x: number,
+  baseline: number,
+  maxWidth: number,
+  align: Align,
+) {
+  const lineWidth = line.reduce((total, word) => total + measure(word), 0);
+
+  if (align === "justified" && line.length > 1 && lineWidth < maxWidth) {
+    const gapCount = line.length - 1;
+    const extra = (maxWidth - lineWidth) / gapCount;
+    let cursor = x;
+
+    for (const word of line) {
+      context.page.drawText(word.text, {
+        x: cursor,
+        y: baseline,
+        size: word.size,
+        font: word.font,
+        color: word.color,
+      });
+      cursor += measure(word) + extra;
+    }
+
+    return;
+  }
+
+  if (align === "center") {
+    drawWords(context, line, x + (maxWidth - lineWidth) / 2, baseline);
+    return;
+  }
+
+  if (align === "right") {
+    drawWords(context, line, x + maxWidth - lineWidth, baseline);
+    return;
+  }
+
+  drawWords(context, line, x, baseline);
+}
+
+function newPage(context: Context) {
+  context.page = context.doc.addPage([context.width, context.height]);
+  context.y = context.height - context.marginTop;
+}
+
+function ensureSpace(context: Context, height: number) {
+  if (context.y - height < context.marginBottom) {
+    newPage(context);
+  }
+}
+
 function layoutWords(
   context: Context,
   words: StyledWord[],
   options: {
+    align?: Align;
     lineHeight: number;
     maxWidth?: number;
     spaceAfter?: number;
@@ -269,8 +380,9 @@ function layoutWords(
     x?: number;
   },
 ) {
-  const x = options.x ?? MARGIN;
-  const maxWidth = options.maxWidth ?? CONTENT_WIDTH;
+  const align = options.align ?? "left";
+  const x = options.x ?? context.marginLeft;
+  const maxWidth = options.maxWidth ?? context.contentWidth;
 
   if (options.spaceBefore) {
     context.y -= options.spaceBefore;
@@ -281,7 +393,14 @@ function layoutWords(
   for (const line of lines) {
     ensureSpace(context, options.lineHeight);
     context.y -= options.lineHeight;
-    drawWords(context, line, x, context.y + options.lineHeight * 0.2);
+    drawLine(
+      context,
+      line,
+      x,
+      context.y + options.lineHeight * 0.2,
+      maxWidth,
+      align,
+    );
   }
 
   if (options.spaceAfter) {
@@ -290,23 +409,34 @@ function layoutWords(
 }
 
 function layoutCodeBlock(context: Context, text: string) {
+  const spec = context.spec;
+  const size = spec.fonts.code.sizePt;
+  const lineHeight = size * 1.4;
+  const textColor = toRgb(spec.codeBlock.textColor);
+  const background = toRgb(spec.codeBlock.background);
+
   context.y -= 6;
 
   for (const rawLine of text.split("\n")) {
-    const words = wordsFromText(rawLine || " ", context.fonts.code, CODE_SIZE);
-    const lines = wrapWords(words, CONTENT_WIDTH - 16);
+    const words = wordsFromText(rawLine || " ", context.fonts.code.regular, size, textColor);
+    const lines = wrapWords(words, context.contentWidth - CODE_INDENT * 2);
 
     for (const line of lines) {
-      ensureSpace(context, CODE_LINE_HEIGHT);
-      context.y -= CODE_LINE_HEIGHT;
+      ensureSpace(context, lineHeight);
+      context.y -= lineHeight;
       context.page.drawRectangle({
-        x: MARGIN,
+        x: context.marginLeft,
         y: context.y,
-        width: CONTENT_WIDTH,
-        height: CODE_LINE_HEIGHT,
-        color: CODE_BACKGROUND,
+        width: context.contentWidth,
+        height: lineHeight,
+        color: background,
       });
-      drawWords(context, line, MARGIN + 8, context.y + CODE_LINE_HEIGHT * 0.2);
+      drawWords(
+        context,
+        line,
+        context.marginLeft + CODE_INDENT,
+        context.y + lineHeight * 0.2,
+      );
     }
   }
 
@@ -317,8 +447,13 @@ function layoutTable(
   context: Context,
   table: Extract<DocumentBlock, { type: "table" }>,
 ) {
+  const spec = context.spec;
+  const size = spec.fonts.table.sizePt;
+  const lineHeight = size * 1.3;
+  const regular = context.fonts.table.regular;
+  const bold = context.fonts.table.bold;
   const columns = Math.max(table.headers.length, 1);
-  const columnWidth = CONTENT_WIDTH / columns;
+  const columnWidth = context.contentWidth / columns;
   const rows: string[][] = [table.headers, ...table.rows];
 
   context.y -= 6;
@@ -326,12 +461,12 @@ function layoutTable(
   for (const [rowIndex, row] of rows.entries()) {
     const cellLines = row.map((cell) =>
       wrapWords(
-        wordsFromText(cell ?? "", context.fonts.regular, TABLE_SIZE),
+        wordsFromText(cell ?? "", regular, size),
         columnWidth - TABLE_PADDING * 2,
       ),
     );
     const lineCount = Math.max(1, ...cellLines.map((lines) => lines.length));
-    const rowHeight = lineCount * TABLE_LINE_HEIGHT + TABLE_PADDING * 2;
+    const rowHeight = lineCount * lineHeight + TABLE_PADDING * 2;
 
     ensureSpace(context, rowHeight);
 
@@ -340,33 +475,33 @@ function layoutTable(
 
     if (rowIndex === 0) {
       context.page.drawRectangle({
-        x: MARGIN,
+        x: context.marginLeft,
         y: rowBottom,
-        width: CONTENT_WIDTH,
+        width: context.contentWidth,
         height: rowHeight,
-        color: TABLE_HEADER_BACKGROUND,
+        color: toRgb(spec.tables.headerBackground),
       });
     }
 
     context.page.drawRectangle({
-      x: MARGIN,
+      x: context.marginLeft,
       y: rowBottom,
-      width: CONTENT_WIDTH,
+      width: context.contentWidth,
       height: rowHeight,
-      borderColor: BORDER_COLOR,
+      borderColor: toRgb(spec.tables.borderColor),
       borderWidth: 0.5,
       opacity: 0,
       borderOpacity: 1,
     });
 
     for (let column = 0; column < columns; column += 1) {
-      const cellX = MARGIN + column * columnWidth;
+      const cellX = context.marginLeft + column * columnWidth;
 
       if (column > 0) {
         context.page.drawLine({
           start: { x: cellX, y: rowBottom },
           end: { x: cellX, y: rowTop },
-          color: BORDER_COLOR,
+          color: toRgb(spec.tables.borderColor),
           thickness: 0.5,
         });
       }
@@ -375,16 +510,17 @@ function layoutTable(
 
       lines.forEach((line, lineIndex) => {
         const baseline =
-          rowTop - TABLE_PADDING - (lineIndex + 1) * TABLE_LINE_HEIGHT +
-          TABLE_LINE_HEIGHT * 0.2;
-        drawWords(
-          context,
+          rowTop - TABLE_PADDING - (lineIndex + 1) * lineHeight +
+          lineHeight * 0.2;
+        const styled =
           rowIndex === 0
-            ? line.map((word) => ({ ...word, font: context.fonts.bold }))
-            : line,
-          cellX + TABLE_PADDING,
-          baseline,
-        );
+            ? line.map((word) => ({
+                ...word,
+                font: spec.tables.headerBold ? bold : regular,
+                color: toRgb(spec.tables.headerTextColor),
+              }))
+            : line;
+        drawWords(context, styled, cellX + TABLE_PADDING, baseline);
       });
     }
 
@@ -394,41 +530,171 @@ function layoutTable(
   context.y -= 8;
 }
 
-function layoutBlock(context: Context, block: DocumentBlock) {
+async function layoutImage(
+  context: Context,
+  block: Extract<DocumentBlock, { type: "image" }>,
+  resolveImage?: (src: string) => Promise<Uint8Array>,
+) {
+  const spec = context.spec;
+  const bytes = await resolveImageBytes(block.src, resolveImage);
+  let embedded:
+
+    | Awaited<ReturnType<PDFDocument["embedPng"]>>
+    | Awaited<ReturnType<PDFDocument["embedJpg"]>>;
+
+  const isPng =
+    bytes.length >= 4 &&
+    bytes[0] === 0x89 &&
+    bytes[1] === 0x50 &&
+    bytes[2] === 0x4e &&
+    bytes[3] === 0x47;
+
+  if (isPng) {
+    embedded = await context.doc.embedPng(bytes);
+  } else if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8) {
+    embedded = await context.doc.embedJpg(bytes);
+  } else {
+    throw new Error(
+      `Cannot embed image "${block.src}": only PNG and JPEG images are supported in PDF output.`,
+    );
+  }
+
+  const requestedWidth = block.widthPx
+    ? block.widthPx * 0.75 // px at 96dpi -> points
+    : spec.images.defaultWidthPt;
+  let width = Math.min(requestedWidth, context.contentWidth);
+  const aspect = embedded.width / Math.max(1, embedded.height);
+  let height = width / aspect;
+
+  if (height > spec.images.maxHeightPt) {
+    height = spec.images.maxHeightPt;
+    width = height * aspect;
+  }
+
+  ensureSpace(context, height + 12);
+
+  context.y -= height + 8;
+
+  context.page.drawImage(embedded, {
+    x: context.marginLeft + (context.contentWidth - width) / 2,
+    y: context.y,
+    width,
+    height,
+  });
+
+  context.y -= 4;
+}
+
+async function resolveImageBytes(
+  src: string,
+  resolveImage?: (src: string) => Promise<Uint8Array>,
+): Promise<Uint8Array> {
+  if (src.startsWith("data:")) {
+    const commaIndex = src.indexOf(",");
+
+    if (commaIndex < 0) {
+      throw new Error(`Invalid image data URI: ${src.slice(0, 40)}...`);
+    }
+
+    const base64 = src.slice(commaIndex + 1);
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+
+    for (let index = 0; index < binary.length; index += 1) {
+      bytes[index] = binary.charCodeAt(index);
+    }
+
+    return bytes;
+  }
+
+  if (!resolveImage) {
+    throw new Error(
+      `Cannot embed image "${src}": no image resolver is available. Use a data URI (data:image/...;base64,...) or provide a workspace-relative path inside the app.`,
+    );
+  }
+
+  return resolveImage(src);
+}
+
+function headingStyleFor(
+  spec: PdfSpec,
+  level: number,
+): PdfSpec["headingStyles"][1] {
+  const key = (level >= 1 && level <= 6 ? level : 6) as 1 | 2 | 3 | 4 | 5 | 6;
+
+  return spec.headingStyles[key];
+}
+
+function layoutBlock(
+  context: Context,
+  block: DocumentBlock,
+) {
+  const spec = context.spec;
+
   switch (block.type) {
     case "heading": {
-      const size = HEADING_SIZES[block.level] ?? BODY_SIZE;
+      const style = headingStyleFor(spec, block.level);
       layoutWords(
         context,
-        runsToWords([{ text: block.text, bold: true }], context.fonts, size),
+        runsToWords(
+          [{ text: block.text, bold: true }],
+          context.fonts.headings,
+          context.fonts.code,
+          style.sizePt,
+          toRgb(style.color),
+        ),
         {
-          lineHeight: size * 1.35,
-          spaceBefore: block.level === 1 ? 10 : 12,
-          spaceAfter: 6,
+          lineHeight: style.sizePt * 1.35,
+          spaceBefore: style.spacingBeforePt,
+          spaceAfter: style.spacingAfterPt,
         },
       );
       break;
     }
     case "paragraph":
-      layoutWords(context, runsToWords(block.runs, context.fonts, BODY_SIZE), {
-        lineHeight: BODY_LINE_HEIGHT,
-        spaceAfter: 8,
-      });
+      layoutWords(
+        context,
+        runsToWords(
+          block.runs,
+          context.fonts.body,
+          context.fonts.code,
+          spec.fonts.body.sizePt,
+          toRgb(spec.fonts.body.color),
+        ),
+        {
+          align: spec.paragraphs.alignment,
+          lineHeight: spec.fonts.body.sizePt * spec.paragraphs.lineSpacing,
+          spaceAfter: spec.paragraphs.spacingAfterPt,
+        },
+      );
       break;
     case "list":
       block.items.forEach((item, itemIndex) => {
         const marker = block.ordered ? `${itemIndex + 1}. ` : "*  ";
         const words = [
-          ...wordsFromText(marker, context.fonts.regular, BODY_SIZE, MUTED_COLOR),
-          ...runsToWords(item, context.fonts, BODY_SIZE),
+          ...wordsFromText(
+            marker,
+            context.fonts.body.regular,
+            spec.fonts.body.sizePt,
+            toRgb("595959"),
+          ),
+          ...runsToWords(
+            item,
+            context.fonts.body,
+            context.fonts.code,
+            spec.fonts.body.sizePt,
+            toRgb(spec.fonts.body.color),
+          ),
         ];
         layoutWords(context, words, {
-          lineHeight: BODY_LINE_HEIGHT,
-          x: MARGIN + 12,
-          maxWidth: CONTENT_WIDTH - 12,
+          align: spec.paragraphs.alignment,
+          lineHeight: spec.fonts.body.sizePt * spec.paragraphs.lineSpacing,
+          maxWidth: context.contentWidth - spec.lists.indentPt,
+          spaceAfter: spec.lists.spacingAfterPt,
+          x: context.marginLeft + spec.lists.indentPt,
         });
       });
-      context.y -= 8;
+      context.y -= 6;
       break;
     case "code":
       layoutCodeBlock(context, block.text);
@@ -444,35 +710,127 @@ function layoutBlock(context: Context, block: DocumentBlock) {
   }
 }
 
+function pageNumberPositionAlign(
+  position: PdfSpec["pageNumberPosition"],
+): Align {
+  if (position === "left" || position === "right") {
+    return position;
+  }
+
+  return "center";
+}
+
+function drawRunningText(context: Context) {
+  const spec = context.spec;
+  const pageCount = context.doc.getPageCount();
+  const align = pageNumberPositionAlign(spec.pageNumberPosition);
+
+  for (let index = 0; index < pageCount; index += 1) {
+    const page = context.doc.getPage(index);
+
+    if (spec.header.text) {
+      const size = spec.fonts.header.sizePt;
+      const text = spec.header.text.replaceAll("{PAGE}", String(index + 1));
+
+      if (text) {
+        const words = wordsFromText(
+          text,
+          context.fonts.header.regular,
+          size,
+          toRgb(spec.fonts.header.color),
+        );
+        const lines = wrapWords(words, context.contentWidth);
+        const line = lines[0] ?? words;
+
+        drawLine(
+          { ...context, page } as Context,
+          line,
+          context.marginLeft,
+          context.height - context.marginTop + size * 1.6,
+          context.contentWidth,
+          align,
+        );
+      }
+    }
+
+    if (spec.footer.text) {
+      const size = spec.fonts.footer.sizePt;
+      const text = spec.footer.text.replaceAll("{PAGE}", String(index + 1));
+
+      if (text) {
+        const words = wordsFromText(
+          text,
+          context.fonts.footer.regular,
+          size,
+          toRgb(spec.fonts.footer.color),
+        );
+        const lines = wrapWords(words, context.contentWidth);
+        const line = lines[0] ?? words;
+
+        drawLine(
+          { ...context, page } as Context,
+          line,
+          context.marginLeft,
+          context.marginBottom - 8,
+          context.contentWidth,
+          align,
+        );
+      }
+    }
+  }
+}
+
 export async function buildPdf(input: {
   content: string;
   fileName: string;
+  resolveImage?: (src: string) => Promise<Uint8Array>;
+  spec?: PdfSpec;
 }): Promise<Uint8Array> {
+  const spec = input.spec ?? parsePdfSpec({});
   const blocks = parseMarkdownBlocks(input.content);
   const doc = await PDFDocument.create();
+  const title = spec.title?.trim() || input.fileName;
 
-  doc.setTitle(input.fileName);
+  doc.setTitle(title);
   doc.setProducer("Mobile Agent");
   doc.setCreator("Mobile Agent");
 
   const fonts: Fonts = {
-    regular: await doc.embedFont(StandardFonts.Helvetica),
-    bold: await doc.embedFont(StandardFonts.HelveticaBold),
-    italic: await doc.embedFont(StandardFonts.HelveticaOblique),
-    boldItalic: await doc.embedFont(StandardFonts.HelveticaBoldOblique),
-    code: await doc.embedFont(StandardFonts.Courier),
+    body: await faceSet(doc, spec.fonts.body.family),
+    headings: await faceSet(doc, spec.fonts.headings.family),
+    code: await faceSet(doc, spec.fonts.code.family),
+    table: await faceSet(doc, spec.fonts.table.family),
+    header: await faceSet(doc, spec.fonts.header.family),
+    footer: await faceSet(doc, spec.fonts.footer.family),
   };
 
+  const size = pdfPageSizePt(spec);
   const context: Context = {
     doc,
     fonts,
-    page: doc.addPage([PAGE_WIDTH, PAGE_HEIGHT]),
-    y: PAGE_HEIGHT - MARGIN,
+    page: doc.addPage([size.width, size.height]),
+    y: size.height - spec.page.marginTopPt,
+    width: size.width,
+    height: size.height,
+    marginTop: spec.page.marginTopPt,
+    marginRight: spec.page.marginRightPt,
+    marginBottom: spec.page.marginBottomPt,
+    marginLeft: spec.page.marginLeftPt,
+    contentWidth: size.width - spec.page.marginLeftPt - spec.page.marginRightPt,
+    spec,
   };
 
   for (const block of blocks) {
+    // Images resolve asynchronously for their own parallel futures.
+    if (block.type === "image") {
+      await layoutImage(context, block, input.resolveImage);
+      continue;
+    }
+
     layoutBlock(context, block);
   }
+
+  drawRunningText(context);
 
   return doc.save();
 }

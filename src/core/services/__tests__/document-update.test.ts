@@ -8,6 +8,7 @@ import type {
   WorkspaceFileSourceKind,
 } from "@/core/types/app-state";
 import type { WorkspaceRepository } from "@/core/db/repositories/types";
+import { buildDocument } from "@/modules/documents";
 
 const mocks = vi.hoisted(() => ({
   files: new Map<string, { bytes: Uint8Array }>(),
@@ -77,6 +78,10 @@ const { createWorkspaceFileService } = await import(
 
 function makeRepository() {
   const rows = new Map<string, WorkspaceFile>();
+  const sectionsByFile = new Map<
+    string,
+    import("@/core/types/app-state").DocumentSection[]
+  >();
 
   const repository = {
     async create(input: {
@@ -87,6 +92,7 @@ function makeRepository() {
       size?: number | null;
       sourceKind: WorkspaceFileSourceKind;
       sourceMarkdown?: string | null;
+      sourceSpec?: string | null;
     }) {
       const now = "2026-01-01T00:00:00.000Z";
       const row: WorkspaceFile = {
@@ -98,6 +104,7 @@ function makeRepository() {
         relativePath: input.relativePath,
         sourceKind: input.sourceKind,
         sourceMarkdown: input.sourceMarkdown ?? null,
+        sourceSpec: input.sourceSpec ?? null,
         createdAt: now,
         updatedAt: now,
       };
@@ -116,6 +123,7 @@ function makeRepository() {
         relativePath?: string;
         size?: number | null;
         sourceMarkdown?: string | null;
+        sourceSpec?: string | null;
         updatedAt?: string;
       },
     ) {
@@ -138,8 +146,35 @@ function makeRepository() {
           input.sourceMarkdown !== undefined
             ? input.sourceMarkdown
             : current.sourceMarkdown,
+        sourceSpec:
+          input.sourceSpec !== undefined
+            ? input.sourceSpec
+            : current.sourceSpec,
         updatedAt: input.updatedAt ?? current.updatedAt,
       });
+    },
+    async replaceDocumentSections(
+      fileId: string,
+      sections: { title: string; level: number; body: string }[],
+    ) {
+      const now = "2026-01-01T00:00:00.000Z";
+      sectionsByFile.set(
+        fileId,
+        sections.map((section, position) => ({
+          id: `${fileId}-${position}`,
+          fileId,
+          position,
+          title: section.title,
+          level: section.level,
+          body: section.body,
+          charCount: section.body.length,
+          createdAt: now,
+          updatedAt: now,
+        })),
+      );
+    },
+    async listDocumentSections(fileId: string) {
+      return sectionsByFile.get(fileId) ?? [];
     },
     getByIds: vi.fn(async () => []),
     list: vi.fn(async () => []),
@@ -147,7 +182,7 @@ function makeRepository() {
     delete: vi.fn(async () => {}),
   } as unknown as WorkspaceRepository;
 
-  return { repository, rows };
+  return { repository, rows, sectionsByFile };
 }
 
 const SOURCE = `# Progress Report
@@ -275,6 +310,7 @@ describe("workspace document create + update", () => {
       relativePath: "text-1-notes.txt",
       sourceKind: "created",
       sourceMarkdown: null,
+      sourceSpec: null,
       createdAt: "2026-01-01T00:00:00.000Z",
       updatedAt: "2026-01-01T00:00:00.000Z",
     };
@@ -333,5 +369,350 @@ describe("workspace document create + update", () => {
       ["Ada", 10],
       ["Lin", 9],
     ]);
+  });
+
+  it("snapshots an imported docx and keeps its styling on update", async () => {
+    const { repository } = makeRepository();
+    const service = createWorkspaceFileService(repository as WorkspaceRepository);
+
+    const original = await buildDocument({
+      format: "docx",
+      content: "# Imported\n\nOriginal body.",
+      fileName: "original",
+      spec: {
+        fonts: { body: { family: "Georgia", sizePt: 13 } },
+        page: { size: "LETTER" },
+        footer: { text: "Page {PAGE}" },
+      },
+    });
+
+    const imported = await service.importBytesFile({
+      bytes: original.bytes,
+      mimeType:
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      name: "imported.docx",
+    });
+
+    expect(imported.sourceSpec).toBeTruthy();
+    const snapshot = JSON.parse(imported.sourceSpec!) as {
+      fonts: { body: { family: string } };
+      page: { size: string };
+    };
+    expect(snapshot.fonts.body.family).toBe("Georgia");
+    expect(snapshot.page.size).toBe("LETTER");
+    // Imported files have no editable source until they are updated.
+    expect(imported.sourceMarkdown).toBeNull();
+
+    const updated = await service.updateDocumentFile(
+      imported,
+      "# Updated\n\nBrand new body.",
+    );
+
+    expect(updated.sourceSpec).toBe(imported.sourceSpec);
+
+    const bytes = mocks.files.get(
+      `file:///document/mobile-agent/workspace/${updated.relativePath}`,
+    )!.bytes;
+    const zip = await JSZip.loadAsync(bytes);
+    const stylesXml = await zip.file("word/styles.xml")!.async("string");
+    const documentXml = await zip.file("word/document.xml")!.async("string");
+
+    // Original font and page size survive the update.
+    expect(stylesXml).toContain("Georgia");
+    expect(documentXml).toContain('w:pgSz w:w="12240"');
+    expect(documentXml).toContain("Brand new body.");
+  });
+
+  it("does not snapshot non-docx imports", async () => {
+    const { repository } = makeRepository();
+    const service = createWorkspaceFileService(repository as WorkspaceRepository);
+
+    const imported = await service.importBytesFile({
+      bytes: new Uint8Array([0x25, 0x50, 0x44, 0x46]),
+      mimeType: "application/pdf",
+      name: "document.pdf",
+    });
+
+    expect(imported.sourceSpec).toBeNull();
+  });
+
+  it("snapshots an imported xlsx and keeps its styling on update", async () => {
+    const { repository } = makeRepository();
+    const service = createWorkspaceFileService(repository as WorkspaceRepository);
+
+    const original = await buildDocument({
+      format: "xlsx",
+      content: "| Item | Price |\n| --- | --- |\n| Widget | 1234.5 |",
+      fileName: "original",
+      spec: {
+        body: { font: { family: "Georgia", sizePt: 12 } },
+        header: { fill: { color: "1F4E78" } },
+        columns: [{ width: 24 }, { numberFormat: "#,##0.00" }],
+        sheet: { tabColor: "00B050", orientation: "landscape" },
+      },
+    });
+
+    const imported = await service.importBytesFile({
+      bytes: original.bytes,
+      mimeType:
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      name: "imported.xlsx",
+    });
+
+    expect(imported.sourceSpec).toBeTruthy();
+    const snapshot = JSON.parse(imported.sourceSpec!) as {
+      body: { font: { family: string } };
+      header: { fill: { color: string } };
+      sheet: { orientation: string; tabColor: string };
+    };
+    expect(snapshot.body.font.family).toBe("Georgia");
+    expect(snapshot.header.fill.color).toBe("1F4E78");
+    expect(snapshot.sheet.tabColor).toBe("00B050");
+
+    const updated = await service.updateDocumentFile(
+      imported,
+      "| Item | Price |\n| --- | --- |\n| Gadget | 9.99 |",
+    );
+
+    expect(updated.sourceSpec).toBe(imported.sourceSpec);
+
+    const bytes = mocks.files.get(
+      `file:///document/mobile-agent/workspace/${updated.relativePath}`,
+    )!.bytes;
+    const zip = await JSZip.loadAsync(bytes);
+    const stylesXml = await zip.file("xl/styles.xml")!.async("string");
+    const sheetXml = await zip.file("xl/worksheets/sheet1.xml")!.async("string");
+
+    // Original font, header fill and tab colour survive the update.
+    expect(stylesXml).toContain("Georgia");
+    expect(stylesXml).toContain("FF1F4E78");
+    expect(sheetXml).toContain("FF00B050");
+  });
+});
+
+describe("workspace document sections", () => {
+  beforeEach(() => {
+    mocks.files.clear();
+    mocks.nextId = 1;
+    vi.clearAllMocks();
+  });
+
+  async function seedDocx(source = SOURCE) {
+    const { repository, sectionsByFile } = makeRepository();
+    const service = createWorkspaceFileService(repository as WorkspaceRepository);
+    const created = await service.createDocumentFile({
+      bytes: new Uint8Array([0x50, 0x4b]),
+      mimeType:
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      name: "report.docx",
+      sourceMarkdown: source,
+    });
+
+    return { repository, sectionsByFile, service, created };
+  }
+
+  it("indexes heading sections on create and re-indexes on update", async () => {
+    const { sectionsByFile, service, created } = await seedDocx();
+
+    expect(sectionsByFile.get(created.id)?.map((entry) => entry.title)).toEqual([
+      "Progress Report",
+      "Highlights",
+      "Metrics",
+    ]);
+    expect(
+      sectionsByFile.get(created.id)?.map((entry) => entry.position),
+    ).toEqual([0, 1, 2]);
+
+    await service.updateDocumentFile(
+      created,
+      `${SOURCE}\n## Appendix\n\nExtra.\n`,
+    );
+
+    expect(sectionsByFile.get(created.id)?.map((entry) => entry.title)).toEqual([
+      "Progress Report",
+      "Highlights",
+      "Metrics",
+      "Appendix",
+    ]);
+  });
+
+  it("replaces one section and regenerates the binary", async () => {
+    const { service, created } = await seedDocx();
+
+    const result = await service.updateDocumentSection(created, {
+      mode: "replace",
+      section: 1,
+      content: "## Highlights\n\n- Rewritten list\n",
+    });
+
+    expect(result.sections.map((entry) => entry.title)).toEqual([
+      "Progress Report",
+      "Highlights",
+      "Metrics",
+    ]);
+    expect(result.file.id).toBe(created.id);
+    expect(result.file.sourceMarkdown).toContain("Rewritten list");
+    expect(result.file.sourceMarkdown).not.toContain("Shipped the mobile agent");
+    // Untouched sections survive.
+    expect(result.file.sourceMarkdown).toContain("Quarterly summary");
+    expect(result.file.sourceMarkdown).toContain("Releases");
+
+    const zip = await JSZip.loadAsync(
+      mocks.files.get(
+        `file:///document/mobile-agent/workspace/${result.file.relativePath}`,
+      )!.bytes,
+    );
+    const documentXml = await zip.file("word/document.xml")!.async("string");
+    expect(documentXml).toContain("Rewritten list");
+    expect(documentXml).not.toContain("Shipped the mobile agent");
+  });
+
+  it("appends, inserts before/after, and deletes sections", async () => {
+    const { service, created } = await seedDocx();
+
+    const appended = await service.updateDocumentSection(created, {
+      mode: "append",
+      content: "## Appendix\n\nExtra.",
+    });
+    expect(appended.sections.map((entry) => entry.title)).toEqual([
+      "Progress Report",
+      "Highlights",
+      "Metrics",
+      "Appendix",
+    ]);
+    expect(appended.file.sourceMarkdown).toMatch(/Extra\.$/);
+
+    const before = await service.updateDocumentSection(appended.file, {
+      mode: "insertBefore",
+      section: 0,
+      content: "# Cover\n\nCover page.",
+    });
+    expect(before.sections.map((entry) => entry.title)).toEqual([
+      "Cover",
+      "Progress Report",
+      "Highlights",
+      "Metrics",
+      "Appendix",
+    ]);
+
+    const after = await service.updateDocumentSection(before.file, {
+      mode: "insertAfter",
+      section: 0,
+      content: "## Subtitle\n\nSub.",
+    });
+    expect(after.sections.map((entry) => entry.title)).toEqual([
+      "Cover",
+      "Subtitle",
+      "Progress Report",
+      "Highlights",
+      "Metrics",
+      "Appendix",
+    ]);
+
+    const deleted = await service.updateDocumentSection(after.file, {
+      mode: "delete",
+      section: 0,
+    });
+    expect(deleted.sections.map((entry) => entry.title)).toEqual([
+      "Subtitle",
+      "Progress Report",
+      "Highlights",
+      "Metrics",
+      "Appendix",
+    ]);
+    expect(deleted.file.sourceMarkdown).toContain("Sub.");
+    expect(deleted.file.sourceMarkdown).not.toContain("Cover page.");
+  });
+
+  it("validates section targets and content", async () => {
+    const { service, created } = await seedDocx();
+
+    await expect(
+      service.updateDocumentSection(created, {
+        mode: "replace",
+        section: 0,
+        content: "no heading",
+      }),
+    ).rejects.toThrow(/must start with a Markdown heading/);
+
+    await expect(
+      service.updateDocumentSection(created, {
+        mode: "replace",
+        section: 99,
+        content: "# X",
+      }),
+    ).rejects.toThrow(/out of range/);
+
+    await expect(
+      service.updateDocumentSection(created, {
+        mode: "replace",
+        content: "# X",
+      }),
+    ).rejects.toThrow(/section index is required/);
+  });
+
+  it("reads one section by index", async () => {
+    const { service, created } = await seedDocx();
+
+    const section = await service.readDocumentSection(created, 2);
+
+    expect(section.title).toBe("Metrics");
+    expect(section.level).toBe(2);
+    expect(section.body).toBe(
+      "## Metrics\n\n| Metric | Value |\n| --- | --- |\n| Releases | 12 |\n| Issues closed | 340 |\n",
+    );
+    expect(section.charCount).toBe(section.body.length);
+  });
+
+  it("lazily indexes sections for documents created before sectioning", async () => {
+    const { repository, rows, sectionsByFile } = makeRepository();
+    const service = createWorkspaceFileService(repository as WorkspaceRepository);
+
+    const legacy: WorkspaceFile = {
+      id: "legacy-doc",
+      displayName: "legacy.docx",
+      originalName: "legacy.docx",
+      mimeType:
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      size: 2,
+      relativePath: "legacy-doc-legacy.docx",
+      sourceKind: "created",
+      sourceMarkdown: SOURCE,
+      sourceSpec: null,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    };
+    rows.set(legacy.id, legacy);
+    expect(sectionsByFile.get(legacy.id)).toBeUndefined();
+
+    const listed = await service.listDocumentSections(legacy);
+
+    expect(listed.map((entry) => entry.title)).toEqual([
+      "Progress Report",
+      "Highlights",
+      "Metrics",
+    ]);
+    expect(sectionsByFile.get(legacy.id)).toHaveLength(3);
+  });
+
+  it("returns no sections and rejects piecewise edits without stored source", async () => {
+    const { repository } = makeRepository();
+    const service = createWorkspaceFileService(repository as WorkspaceRepository);
+
+    const imported = await service.createDocumentFile({
+      bytes: new Uint8Array([0x50, 0x4b]),
+      mimeType:
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      name: "imported.docx",
+    });
+
+    expect(await service.listDocumentSections(imported)).toEqual([]);
+
+    await expect(
+      service.updateDocumentSection(imported, {
+        mode: "append",
+        content: "## New\n\nBody.",
+      }),
+    ).rejects.toThrow(/no stored source/);
   });
 });

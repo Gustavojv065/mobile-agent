@@ -4,6 +4,7 @@ import { createEditTool } from "@/modules/tools/built-in/edit";
 import { createGlobTool } from "@/modules/tools/built-in/glob";
 import { createGrepTool } from "@/modules/tools/built-in/grep";
 import { createListFilesTool } from "@/modules/tools/built-in/list-files";
+import { createMergeDocumentsTool } from "@/modules/tools/built-in/merge-documents";
 import { createMergePdfsTool } from "@/modules/tools/built-in/merge-pdfs";
 import { createOcrTool } from "@/modules/tools/built-in/ocr";
 import {
@@ -11,6 +12,7 @@ import {
   buildWorkspaceSystemPrompt,
 } from "@/modules/tools/built-in/prompts";
 import { createReadTool } from "@/modules/tools/built-in/read";
+import { createSplitDocumentTool } from "@/modules/tools/built-in/split-document";
 import { createSplitPdfTool } from "@/modules/tools/built-in/split-pdf";
 import type { WorkspaceToolFactoryParams } from "@/modules/tools/built-in/types";
 import { createUpdateDocumentTool } from "@/modules/tools/built-in/update-document";
@@ -31,9 +33,11 @@ export function createWorkspaceTools(
       glob: createGlobTool(params),
       grep: createGrepTool(params),
       listFiles: createListFilesTool(params),
+      mergeDocuments: createMergeDocumentsTool(params),
       mergePdfs: createMergePdfsTool(params),
       ocr: createOcrTool(params),
       read: createReadTool(params),
+      splitDocument: createSplitDocumentTool(params),
       splitPdf: createSplitPdfTool(params),
       updateDocument: createUpdateDocumentTool(params),
       write: createWriteTool(params),

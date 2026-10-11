@@ -139,10 +139,39 @@ export const workspaceFiles = sqliteTable(
     relativePath: text("relative_path").notNull(),
     sourceKind: text("source_kind").$type<WorkspaceFileSourceKind>().notNull(),
     sourceMarkdown: text("source_markdown"),
+    /** JSON snapshot of the original document styling (docx), stored on import. */
+    sourceSpec: text("source_spec"),
     createdAt: text("created_at").notNull(),
     updatedAt: text("updated_at").notNull(),
   },
   (table) => [uniqueIndex("workspace_files_relative_path_unique").on(table.relativePath)],
+);
+
+export const documentSections = sqliteTable(
+  "document_sections",
+  {
+    id: text("id").primaryKey().notNull(),
+    fileId: text("file_id")
+      .notNull()
+      .references(() => workspaceFiles.id, { onDelete: "cascade" }),
+    /** 0-based order of the section within the document. */
+    position: integer("position").notNull(),
+    /** Heading text without the leading `#` markers. */
+    title: text("title").notNull(),
+    /** Heading level 1-6. */
+    level: integer("level").notNull(),
+    /** Exact Markdown slice for the section, including its heading line. */
+    body: text("body").notNull(),
+    charCount: integer("char_count").notNull(),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => [
+    index("idx_document_sections_file_position").on(
+      table.fileId,
+      table.position,
+    ),
+  ],
 );
 
 export const providerConfigs = sqliteTable("provider_configs", {
@@ -389,6 +418,7 @@ export const schema = {
   agents,
   appSettings,
   conversations,
+  documentSections,
   memories,
   messages,
   mcpServers,

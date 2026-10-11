@@ -1,9 +1,6 @@
-export type PdfPageRange = {
-  /** 1-based inclusive page number. */
-  end: number;
-  /** 1-based inclusive page number. */
-  start: number;
-};
+import { parseIndexRanges, type IndexRange } from "@/modules/documents/ranges";
+
+export type PdfPageRange = IndexRange;
 
 /**
  * Parse a page-range spec such as "1-3,5,7-9", "2", "1-", "-3" or "all" into
@@ -13,61 +10,7 @@ export function parsePdfPageRanges(
   spec: string,
   pageCount: number,
 ): PdfPageRange[] {
-  const trimmed = spec.trim().toLowerCase();
-
-  if (!trimmed) {
-    throw new Error("The page ranges are required.");
-  }
-
-  if (pageCount < 1) {
-    throw new Error("The pdf has no pages to split.");
-  }
-
-  if (trimmed === "all") {
-    return [{ start: 1, end: pageCount }];
-  }
-
-  const ranges: PdfPageRange[] = [];
-
-  for (const rawToken of trimmed.split(",")) {
-    const token = rawToken.trim();
-
-    if (!token) {
-      throw new Error(`Invalid page range: "${rawToken}".`);
-    }
-
-    let start: number | null = null;
-    let end: number | null = null;
-
-    if (/^\d+$/.test(token)) {
-      start = Number.parseInt(token, 10);
-      end = start;
-    } else if (/^\d+-\d+$/.test(token)) {
-      const [startPart, endPart] = token.split("-");
-      start = Number.parseInt(startPart ?? "", 10);
-      end = Number.parseInt(endPart ?? "", 10);
-    } else if (/^\d+-$/.test(token)) {
-      start = Number.parseInt(token.slice(0, -1), 10);
-      end = pageCount;
-    } else if (/^-\d+$/.test(token)) {
-      start = 1;
-      end = Number.parseInt(token.slice(1), 10);
-    } else {
-      throw new Error(
-        `Invalid page range: "${rawToken}". Use N, N-M, N-, -M or "all".`,
-      );
-    }
-
-    if (start < 1 || end > pageCount || start > end) {
-      throw new Error(
-        `Page range "${token}" is outside the pdf (1-${pageCount}).`,
-      );
-    }
-
-    ranges.push({ start, end });
-  }
-
-  return ranges;
+  return parseIndexRanges(spec, pageCount, "page");
 }
 
 function pageIndices(range: PdfPageRange): number[] {

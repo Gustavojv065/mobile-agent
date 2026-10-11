@@ -65,9 +65,18 @@ const { createUpdateDocumentTool } = await import(
   "@/modules/tools/built-in/update-document"
 );
 const { createEditTool } = await import("@/modules/tools/built-in/edit");
+const { createCreateFileTool } = await import(
+  "@/modules/tools/built-in/create-file"
+);
+const { createReadTool } = await import("@/modules/tools/built-in/read");
+const { buildDocument } = await import("@/modules/documents");
 
 function makeRepository() {
   const rows = new Map<string, import("@/core/types/app-state").WorkspaceFile>();
+  const sectionsByFile = new Map<
+    string,
+    import("@/core/types/app-state").DocumentSection[]
+  >();
 
   const repository = {
     async create(input: Parameters<WorkspaceRepository["create"]>[0]) {
@@ -81,6 +90,7 @@ function makeRepository() {
         relativePath: input.relativePath,
         sourceKind: input.sourceKind,
         sourceMarkdown: input.sourceMarkdown ?? null,
+        sourceSpec: input.sourceSpec ?? null,
         createdAt: now,
         updatedAt: now,
       } as import("@/core/types/app-state").WorkspaceFile;
@@ -99,6 +109,7 @@ function makeRepository() {
         relativePath?: string;
         size?: number | null;
         sourceMarkdown?: string | null;
+        sourceSpec?: string | null;
         updatedAt?: string;
       },
     ) {
@@ -114,8 +125,35 @@ function makeRepository() {
           input.sourceMarkdown !== undefined
             ? input.sourceMarkdown
             : current.sourceMarkdown,
+        sourceSpec:
+          input.sourceSpec !== undefined
+            ? input.sourceSpec
+            : current.sourceSpec,
         updatedAt: input.updatedAt ?? current.updatedAt,
       });
+    },
+    async replaceDocumentSections(
+      fileId: string,
+      sections: { title: string; level: number; body: string }[],
+    ) {
+      const now = "2026-01-01T00:00:00.000Z";
+      sectionsByFile.set(
+        fileId,
+        sections.map((section, position) => ({
+          id: `${fileId}-${position}`,
+          fileId,
+          position,
+          title: section.title,
+          level: section.level,
+          body: section.body,
+          charCount: section.body.length,
+          createdAt: now,
+          updatedAt: now,
+        })),
+      );
+    },
+    async listDocumentSections(fileId: string) {
+      return sectionsByFile.get(fileId) ?? [];
     },
     getByIds: vi.fn(async () => []),
     list: vi.fn(async () => []),
@@ -123,7 +161,7 @@ function makeRepository() {
     delete: vi.fn(async () => {}),
   } as unknown as WorkspaceRepository;
 
-  return { repository, rows };
+  return { repository, rows, sectionsByFile };
 }
 
 const SOURCE = `# Report
@@ -227,6 +265,69 @@ describe("updateDocument tool", () => {
     const record = onRecord.mock.calls[0][0] as { toolName: string };
     expect(record.toolName).toBe("updateDocument");
   });
+
+  it("persists a spec parameter into the stored source front-matter", async () => {
+    const { repository } = makeRepository();
+    const created = await seedDocument(repository);
+    const updateDocument = createUpdateDocumentTool({ repository });
+
+    await updateDocument.execute!(
+      {
+        fileId: created.id,
+        content: "# styled",
+        spec: { page: { size: "LETTER" } },
+      },
+      {} as never,
+    );
+
+    const updated = await repository.getById(created.id);
+    expect(updated?.sourceMarkdown).toContain("---");
+    expect(updated?.sourceMarkdown).toContain("format:");
+    expect(updated?.sourceMarkdown).toContain("LETTER");
+
+    const zip = await JSZip.loadAsync(
+      mocks.files.get(
+        `file:///document/mobile-agent/workspace/${created.relativePath}`,
+      )!.bytes,
+    );
+    const documentXml = await zip.file("word/document.xml")!.async("string");
+    expect(documentXml).toContain('w:pgSz w:w="12240"');
+  });
+});
+
+describe("createFile tool with document specs", () => {
+  beforeEach(() => {
+    mocks.files.clear();
+    vi.clearAllMocks();
+  });
+
+  it("persists a spec and builds a styled docx", async () => {
+    const { repository } = makeRepository();
+    const createFile = createCreateFileTool({ repository });
+
+    const result = (await createFile.execute!(
+      {
+        name: "styled",
+        content: "# Hello",
+        format: "docx",
+        spec: { fonts: { body: { family: "Georgia" } } },
+      },
+      {} as never,
+    )) as { fileId: string };
+
+    const file = await repository.getById(result.fileId);
+    expect(file?.sourceMarkdown).toContain("---");
+    expect(file?.sourceMarkdown).toContain("format:");
+    expect(file?.sourceMarkdown).toContain("Georgia");
+
+    const zip = await JSZip.loadAsync(
+      mocks.files.get(
+        `file:///document/mobile-agent/workspace/${file!.relativePath}`,
+      )!.bytes,
+    );
+    const stylesXml = await zip.file("word/styles.xml")!.async("string");
+    expect(stylesXml).toContain("Georgia");
+  });
 });
 
 describe("edit tool on documents", () => {
@@ -314,5 +415,262 @@ describe("edit tool on documents", () => {
     expect(result).toMatchObject({ fileId: textFile.id, editsApplied: 1 });
     const after = await repository.getById(textFile.id);
     expect(after?.size).toBe("alpha\ngamma".length);
+  });
+});
+
+describe("read tool style snapshots", () => {
+  beforeEach(() => {
+    mocks.files.clear();
+    vi.clearAllMocks();
+  });
+
+  it("returns the captured styling for an imported docx", async () => {
+    const { repository } = makeRepository();
+    const service = createWorkspaceFileService(repository);
+
+    const original = await buildDocument({
+      format: "docx",
+      content: "# Imported\n\nOriginal body.",
+      fileName: "original",
+      spec: { fonts: { body: { family: "Georgia" } } },
+    });
+
+    const imported = await service.importBytesFile({
+      bytes: original.bytes,
+      mimeType:
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      name: "imported.docx",
+    });
+
+    const read = createReadTool({ repository });
+    const result = (await read.execute!(
+      { fileId: imported.id },
+      {} as never,
+    )) as {
+      content: string;
+      sourceSpec?: { fonts?: { body?: { family?: string } } };
+    };
+
+    expect(result.content).toContain("Original body");
+    expect(result.sourceSpec?.fonts?.body?.family).toBe("Georgia");
+  });
+
+  it("omits sourceSpec for documents without a snapshot", async () => {
+    const { repository } = makeRepository();
+    const service = createWorkspaceFileService(repository);
+
+    const built = await buildDocument({
+      format: "docx",
+      content: "# Report\n\nBody text.",
+      fileName: "report",
+    });
+    const created = await service.createDocumentFile({
+      bytes: built.bytes,
+      mimeType:
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      name: "report.docx",
+    });
+
+    const read = createReadTool({ repository });
+    const result = (await read.execute!(
+      { fileId: created.id },
+      {} as never,
+    )) as { content: string; sourceSpec?: unknown };
+
+    expect(result.content).toContain("Body text");
+    expect(result.sourceSpec).toBeUndefined();
+  });
+});
+
+describe("read tool sections", () => {
+  beforeEach(() => {
+    mocks.files.clear();
+    vi.clearAllMocks();
+  });
+
+  it("lists sections and returns the whole source", async () => {
+    const { repository } = makeRepository();
+    const service = createWorkspaceFileService(repository);
+    const built = await buildDocument({
+      format: "docx",
+      content: SOURCE,
+      fileName: "report",
+    });
+    const created = await service.createDocumentFile({
+      bytes: built.bytes,
+      mimeType:
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      name: "report.docx",
+      sourceMarkdown: SOURCE,
+    });
+    const read = createReadTool({ repository });
+
+    const result = (await read.execute!({ fileId: created.id }, {} as never)) as {
+      sourceMarkdown?: string;
+      sections?: { index: number; title: string; level: number }[];
+    };
+
+    expect(result.sourceMarkdown).toBe(SOURCE);
+    expect(result.sections?.map((entry) => entry.title)).toEqual([
+      "Report",
+      "Section A",
+      "Section B",
+    ]);
+  });
+
+  it("reads a single section by index", async () => {
+    const { repository } = makeRepository();
+    const created = await seedDocument(repository);
+    const read = createReadTool({ repository });
+
+    const result = (await read.execute!(
+      { fileId: created.id, section: 1 },
+      {} as never,
+    )) as unknown as {
+      content: string;
+      section: { index: number; title: string; level: number };
+      sections: { title: string }[];
+      sourceMarkdown?: string;
+    };
+
+    expect(result.content).toBe("## Section A\n\nOriginal paragraph text.\n");
+    expect(result.section).toMatchObject({
+      index: 1,
+      title: "Section A",
+      level: 2,
+    });
+    expect(result.sections.map((entry) => entry.title)).toEqual([
+      "Report",
+      "Section A",
+      "Section B",
+    ]);
+    expect(result.sourceMarkdown).toBeUndefined();
+  });
+
+  it("fails for an out-of-range section", async () => {
+    const { repository } = makeRepository();
+    const created = await seedDocument(repository);
+    const read = createReadTool({ repository });
+
+    await expect(
+      read.execute!({ fileId: created.id, section: 9 }, {} as never),
+    ).rejects.toThrow(/no section at index 9/);
+  });
+});
+
+describe("updateDocument tool sections", () => {
+  beforeEach(() => {
+    mocks.files.clear();
+    vi.clearAllMocks();
+  });
+
+  type SectionResult = {
+    sectionMode: string;
+    section: number | null;
+    sections: { title: string }[];
+  };
+
+  it("rewrites one section and regenerates the document", async () => {
+    const { repository } = makeRepository();
+    const created = await seedDocument(repository);
+    const updateDocument = createUpdateDocumentTool({ repository });
+
+    const result = (await updateDocument.execute!(
+      {
+        fileId: created.id,
+        section: 1,
+        content: "## Section A\n\nRewritten.",
+      },
+      {} as never,
+    )) as unknown as SectionResult;
+
+    expect(result.sectionMode).toBe("replace");
+    expect(result.section).toBe(1);
+    expect(result.sections.map((entry) => entry.title)).toEqual([
+      "Report",
+      "Section A",
+      "Section B",
+    ]);
+
+    const updated = await repository.getById(created.id);
+    expect(updated?.sourceMarkdown).toContain("Rewritten.");
+    expect(updated?.sourceMarkdown).not.toContain("Original paragraph text");
+    expect(updated?.sourceMarkdown).toContain("Keep this part.");
+
+    const zip = await JSZip.loadAsync(
+      mocks.files.get(
+        `file:///document/mobile-agent/workspace/${created.relativePath}`,
+      )!.bytes,
+    );
+    const xml = await zip.file("word/document.xml")!.async("string");
+    expect(xml).toContain("Rewritten.");
+  });
+
+  it("appends and deletes sections", async () => {
+    const { repository } = makeRepository();
+    const created = await seedDocument(repository);
+    const updateDocument = createUpdateDocumentTool({ repository });
+
+    const appended = (await updateDocument.execute!(
+      {
+        fileId: created.id,
+        sectionMode: "append",
+        content: "## Appendix\n\nExtra.",
+      },
+      {} as never,
+    )) as unknown as SectionResult;
+    expect(appended.sections.map((entry) => entry.title)).toEqual([
+      "Report",
+      "Section A",
+      "Section B",
+      "Appendix",
+    ]);
+
+    const deleted = (await updateDocument.execute!(
+      { fileId: created.id, sectionMode: "delete", section: 0 },
+      {} as never,
+    )) as unknown as SectionResult;
+    expect(deleted.sections.map((entry) => entry.title)).toEqual([
+      "Section A",
+      "Section B",
+      "Appendix",
+    ]);
+
+    const updated = await repository.getById(created.id);
+    expect(updated?.sourceMarkdown).not.toContain("# Report");
+    expect(updated?.sourceMarkdown).toContain("Keep this part.");
+  });
+
+  it("requires content or a section operation", async () => {
+    const { repository } = makeRepository();
+    const created = await seedDocument(repository);
+    const updateDocument = createUpdateDocumentTool({ repository });
+
+    await expect(
+      updateDocument.execute!({ fileId: created.id }, {} as never),
+    ).rejects.toThrow(/content is required to replace the whole document/);
+
+    await expect(
+      updateDocument.execute!({ fileId: created.id, section: 0 }, {} as never),
+    ).rejects.toThrow(/content is required for section mode replace/);
+  });
+
+  it("rejects section edits for documents without stored source", async () => {
+    const { repository } = makeRepository();
+    const service = createWorkspaceFileService(repository);
+    const imported = await service.createDocumentFile({
+      bytes: new Uint8Array([0x50, 0x4b]),
+      mimeType:
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      name: "imported.docx",
+    });
+    const updateDocument = createUpdateDocumentTool({ repository });
+
+    await expect(
+      updateDocument.execute!(
+        { fileId: imported.id, section: 0, content: "# New" },
+        {} as never,
+      ),
+    ).rejects.toThrow(/no stored source/);
   });
 });

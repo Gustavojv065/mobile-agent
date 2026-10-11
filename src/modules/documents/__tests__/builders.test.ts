@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildDocument,
   ensureDocumentExtension,
+  extractDocument,
   getDocumentFormat,
   isDocumentFileName,
 } from "@/modules/documents";
@@ -159,5 +160,216 @@ describe("document builders", () => {
       const built = await buildDocument({ format, content, fileName: "u" });
       expect(built.bytes.byteLength).toBeGreaterThan(10);
     }
+  });
+
+  it("strips front-matter from every format body", async () => {
+    const content =
+      "---\nformat:\n  page:\n    size: A5\n---\n\n# The Solar System\n\nBody text.";
+
+    for (const format of ["docx", "pptx", "xlsx"] as const) {
+      const built = await buildDocument({ format, content, fileName: "fm" });
+
+      if (format === "xlsx") {
+        const workbook = XLSX.read(built.bytes, { type: "array" });
+        const firstSheet = workbook.Sheets[workbook.SheetNames[0]!];
+        const csv = XLSX.utils.sheet_to_csv(firstSheet);
+        expect(csv).toContain("The Solar System");
+        expect(csv).not.toContain("page:");
+        continue;
+      }
+
+      const zip = await unzip(built.bytes);
+      const mainFile = Object.keys(zip.files).find((name) =>
+        /\/document\.xml$/.test(name) || /slides\/slide1\.xml$/.test(name),
+      );
+      const xml = await zip.file(mainFile!)?.async("string");
+      expect(xml).toContain("The Solar System");
+      expect(xml ?? "").not.toContain("page:");
+    }
+
+    const pdfBuilt = await buildDocument({
+      format: "pdf",
+      content,
+      fileName: "fm",
+    });
+    const extracted = await extractDocument("pdf", pdfBuilt.bytes);
+    expect(extracted.text).toContain("The Solar System");
+    expect(extracted.text).not.toContain("page:");
+  });
+});
+
+describe("docx spec-driven builder", () => {
+  const ONE_PX_PNG =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+  const STYLED = `---
+format:
+  page:
+    size: LETTER
+  fonts:
+    body:
+      family: Georgia
+      sizePt: 12
+  header:
+    text: "Confidential"
+  footer:
+    text: "Page {PAGE}"
+  includeToc: true
+---
+
+# The Solar System
+
+An essay about our neighborhood in space.
+`;
+
+  it("applies a front-matter spec to the docx output", async () => {
+    const built = await buildDocument({
+      format: "docx",
+      content: STYLED,
+      fileName: "styled",
+    });
+
+    const zip = await unzip(built.bytes);
+
+    const documentXml = await zip.file("word/document.xml")?.async("string");
+    expect(documentXml).toContain("The Solar System");
+    expect(documentXml).toContain("TOC");
+    expect(documentXml).toContain('w:pgSz w:w="12240"');
+
+    const headerXml = await zip.file("word/header1.xml")?.async("string");
+    expect(headerXml).toContain("Confidential");
+
+    const footerXml = await zip.file("word/footer1.xml")?.async("string");
+    expect(footerXml).toContain("Page");
+    expect(footerXml).toContain("PAGE");
+
+    const stylesXml = await zip.file("word/styles.xml")?.async("string");
+    expect(stylesXml).toContain("Georgia");
+    expect(stylesXml).toContain('w:sz w:val="24"');
+  });
+
+  it("lets the spec parameter override front-matter values", async () => {
+    const built = await buildDocument({
+      format: "docx",
+      content: STYLED,
+      fileName: "styled",
+      spec: { fonts: { body: { family: "Arial" } }, page: { size: "A5" } },
+    });
+
+    const zip = await unzip(built.bytes);
+    const stylesXml = await zip.file("word/styles.xml")?.async("string");
+    const documentXml = await zip.file("word/document.xml")?.async("string");
+
+    expect(stylesXml).toContain("Arial");
+    expect(stylesXml).not.toContain("Georgia");
+    expect(documentXml).toContain('w:pgSz w:w="8391"');
+  });
+
+  it("sets an explicit document title from the spec", async () => {
+    const built = await buildDocument({
+      format: "docx",
+      content: "---\nformat:\n  title: My Custom Title\n---\n\n# Body",
+      fileName: "styled",
+    });
+
+    const zip = await unzip(built.bytes);
+    const coreXml = await zip.file("docProps/core.xml")?.async("string");
+    expect(coreXml).toContain("My Custom Title");
+  });
+
+  it("embeds images from data URIs and from the image resolver", async () => {
+    const content = `# Logo page
+
+![Tiny](data:image/png;base64,${ONE_PX_PNG})
+
+![Workspace](images/tiny.png)
+`;
+    const built = await buildDocument({
+      format: "docx",
+      content,
+      fileName: "images",
+      resolveImage: async (src) =>
+        src === "images/tiny.png"
+          ? Uint8Array.from(atob(ONE_PX_PNG), (char) => char.charCodeAt(0))
+          : new Uint8Array(0),
+    });
+
+    const zip = await unzip(built.bytes);
+
+    expect(zip.file("word/media/image1.png")).toBeDefined();
+    expect(zip.file("word/media/image2.png")).toBeDefined();
+
+    const documentXml = await zip.file("word/document.xml")?.async("string");
+    expect(documentXml).toContain("r:embed");
+  });
+
+  it("applies an explicit image width", async () => {
+    const content = `# Logo page
+
+![Sized](data:image/png;base64,${ONE_PX_PNG} "100")
+`;
+    const built = await buildDocument({
+      format: "docx",
+      content,
+      fileName: "sized",
+    });
+
+    const zip = await unzip(built.bytes);
+    const documentXml = await zip.file("word/document.xml")?.async("string");
+
+    // 100 px * 9525 EMU per px = 952500.
+    expect(documentXml).toContain('cx="952500"');
+    expect(documentXml).toContain('cy="952500"');
+  });
+
+  it("rejects invalid specs with a clear error", async () => {
+    await expect(
+      buildDocument({
+        format: "docx",
+        content: "# Hi",
+        fileName: "bad",
+        spec: { page: { size: "NOPE" } },
+      }),
+    ).rejects.toThrow(/Invalid docx spec/);
+  });
+
+  it("applies a base spec below front-matter and parameters", async () => {
+    const content =
+      "---\nformat:\n  fonts:\n    body:\n      family: Times New Roman\n---\n\n# Body";
+
+    const built = await buildDocument({
+      format: "docx",
+      content,
+      fileName: "precedence",
+      baseSpec: {
+        fonts: { body: { family: "Georgia" } },
+        page: { size: "A5" },
+      },
+    });
+
+    const zip = await unzip(built.bytes);
+    const stylesXml = await zip.file("word/styles.xml")?.async("string");
+    const documentXml = await zip.file("word/document.xml")?.async("string");
+
+    // Front-matter beats the stored snapshot, which still supplies its other keys.
+    expect(stylesXml).toContain("Times New Roman");
+    expect(stylesXml).not.toContain("Georgia");
+    expect(documentXml).toContain('w:pgSz w:w="8391"');
+  });
+
+  it("lets the spec parameter beat the base spec", async () => {
+    const built = await buildDocument({
+      format: "docx",
+      content: "# Body",
+      fileName: "base",
+      baseSpec: { fonts: { body: { family: "Georgia" } } },
+      spec: { fonts: { body: { family: "Verdana" } } },
+    });
+
+    const zip = await unzip(built.bytes);
+    const stylesXml = await zip.file("word/styles.xml")?.async("string");
+
+    expect(stylesXml).toContain("Verdana");
+    expect(stylesXml).not.toContain("Georgia");
   });
 });

@@ -34,6 +34,7 @@ export function isDocumentFormat(value: string): value is DocumentFormat {
 export type InlineRun = {
   bold?: boolean;
   code?: boolean;
+  href?: string;
   italic?: boolean;
   text: string;
 };
@@ -44,12 +45,39 @@ export type DocumentBlock =
   | { items: InlineRun[][]; ordered: boolean; type: "list" }
   | { text: string; type: "code" }
   | { headers: string[]; rows: string[][]; type: "table" }
+  | {
+      /** Alternative text shown when the image cannot be rendered. */
+      alt: string;
+      /** Workspace-relative path or a base64 data URI. */
+      src: string;
+      /** Optional explicit width in pixels. */
+      widthPx?: number;
+      type: "image";
+    }
   | { type: "pageBreak" };
 
 export type BuildDocumentInput = {
   content: string;
   fileName?: string;
   format: DocumentFormat;
+  /**
+   * Optional partial format spec for the requested format. Merged on top of
+   * the document's front-matter `format:` block (if any) and validated before
+   * building. All four formats (`docx`, `xlsx`, `pptx`, `pdf`) honor a spec.
+   */
+  spec?: Record<string, unknown>;
+  /**
+   * Stored style snapshot (for example from an imported .docx) applied as the
+   * base styling below any front-matter `format:` block or `spec` parameter.
+   * Precedence: defaults < baseSpec < front-matter < spec.
+   */
+  baseSpec?: Record<string, unknown>;
+  /**
+   * Resolves an image `src` (non-data-URI) to bytes. Builders default to
+   * data-URI decoding only; workspace resolution is wired in by callers that
+   * have filesystem access.
+   */
+  resolveImage?: (src: string) => Promise<Uint8Array>;
 };
 
 export type BuiltDocument = {

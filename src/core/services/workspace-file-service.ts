@@ -14,9 +14,19 @@ import {
   getDocumentFormat,
   getDocumentFormatFromMimeType,
   isDocumentFile,
+  mergeSpecIntoSource,
 } from "@/modules/documents";
+import type { DocumentFormat } from "@/modules/documents/types";
+import { snapshotDocxSpec } from "@/modules/documents/snapshot/docx-snapshot";
+import { snapshotPptxSpec } from "@/modules/documents/snapshot/pptx-snapshot";
+import { snapshotXlsxSpec } from "@/modules/documents/snapshot/xlsx-snapshot";
+import {
+  assembleDocumentSections,
+  parseSectionContent,
+  splitDocumentSections,
+} from "@/modules/documents/sections";
 import type { WorkspaceRepository } from "@/core/db/database";
-import type { WorkspaceFile } from "@/core/types/app-state";
+import type { DocumentSection, WorkspaceFile } from "@/core/types/app-state";
 // Re-exported so existing import paths keep working.
 export { inferFileNameFromUrl, sanitizeFileName };
 
@@ -161,6 +171,45 @@ export function resolveWorkspaceFile(relativePath: string) {
   return new File(getWorkspaceDirectory(), ...segments);
 }
 
+/**
+ * Read a workspace image by workspace-relative path, used by document
+ * builders to embed `![alt](images/logo.png)` references.
+ */
+export async function readWorkspaceImageBytes(src: string): Promise<Uint8Array> {
+  const file = resolveWorkspaceFile(src);
+
+  if (!file.exists) {
+    throw new Error(`Image not found in workspace: ${src}`);
+  }
+
+  return file.bytes();
+}
+
+/**
+ * Parse the stored `source_spec` JSON (a document style snapshot) into the plain
+ * object used as the `baseSpec` for regeneration. Returns undefined when the
+ * file has no snapshot or the value is not a JSON object.
+ */
+export function parseStoredSourceSpec(
+  sourceSpec: string | null | undefined,
+): Record<string, unknown> | undefined {
+  if (!sourceSpec) {
+    return undefined;
+  }
+
+  try {
+    const parsed: unknown = JSON.parse(sourceSpec);
+
+    return parsed !== null &&
+      typeof parsed === "object" &&
+      !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function mimeTypeForCreatedContent(fileName: string) {
   const inferred = inferMimeType(fileName);
   return inferred === "application/octet-stream" ? "text/plain" : inferred;
@@ -241,6 +290,54 @@ export function createWorkspaceFileService(repository: WorkspaceRepository) {
     return directory;
   }
 
+  /**
+   * Capture the styling of an imported document as a JSON spec so later
+   * updates keep the original look. Supported for `.docx`, `.xlsx` and
+   * `.pptx`; other formats (and unreadable packages) return null, and
+   * failures never block the import itself.
+   */
+  async function snapshotImportedSpec(
+    displayName: string,
+    readBytes: () => Promise<Uint8Array>,
+  ): Promise<string | null> {
+    const format = getDocumentFormat(displayName);
+
+    if (format !== "docx" && format !== "xlsx" && format !== "pptx") {
+      return null;
+    }
+
+    try {
+      const bytes = await readBytes();
+      const spec =
+        format === "docx"
+          ? await snapshotDocxSpec(bytes)
+          : format === "xlsx"
+            ? await snapshotXlsxSpec(bytes)
+            : await snapshotPptxSpec(bytes);
+
+      return spec ? JSON.stringify(spec) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Split a document's stored source into heading-delimited sections and
+   * persist them, so large documents can be read and updated piecewise.
+   */
+  async function indexDocumentSections(fileId: string, content: string) {
+    const split = splitDocumentSections(content);
+
+    await repository.replaceDocumentSections(
+      fileId,
+      split.sections.map((section) => ({
+        title: section.title,
+        level: section.level,
+        body: section.body,
+      })),
+    );
+  }
+
   return {
     ensureWorkspaceDirectory,
     async clearAll() {
@@ -273,6 +370,11 @@ export function createWorkspaceFileService(repository: WorkspaceRepository) {
 
       await sourceFile.copy(destinationFile, { overwrite: true });
 
+      const sourceSpec = await snapshotImportedSpec(
+        displayName,
+        async () => destinationFile.bytes(),
+      );
+
       return repository.create({
         id,
         displayName,
@@ -281,6 +383,7 @@ export function createWorkspaceFileService(repository: WorkspaceRepository) {
         relativePath,
         size: asset.size ?? destinationFile.size ?? null,
         sourceKind: "imported",
+        sourceSpec,
       });
     },
     async createTextFile(input: {
@@ -362,6 +465,11 @@ export function createWorkspaceFileService(repository: WorkspaceRepository) {
       });
       file.write(input.bytes);
 
+      const sourceSpec = await snapshotImportedSpec(
+        displayName,
+        async () => input.bytes,
+      );
+
       return repository.create({
         id,
         displayName,
@@ -370,6 +478,7 @@ export function createWorkspaceFileService(repository: WorkspaceRepository) {
         relativePath,
         size: file.size ?? input.bytes.byteLength,
         sourceKind: "imported",
+        sourceSpec,
       });
     },
     async createDocumentFile(input: {
@@ -377,6 +486,7 @@ export function createWorkspaceFileService(repository: WorkspaceRepository) {
       mimeType: string;
       name: string;
       sourceMarkdown?: string | null;
+      sourceSpec?: string | null;
     }) {
       const id = Crypto.randomUUID();
       const displayName = sanitizeFileName(input.name);
@@ -391,7 +501,7 @@ export function createWorkspaceFileService(repository: WorkspaceRepository) {
       });
       file.write(input.bytes);
 
-      return repository.create({
+      const created = await repository.create({
         id,
         displayName,
         mimeType: input.mimeType,
@@ -400,6 +510,40 @@ export function createWorkspaceFileService(repository: WorkspaceRepository) {
         size: file.size ?? input.bytes.byteLength,
         sourceKind: "created",
         sourceMarkdown: input.sourceMarkdown ?? null,
+        sourceSpec: input.sourceSpec ?? null,
+      });
+
+      if (created.sourceMarkdown) {
+        await indexDocumentSections(created.id, created.sourceMarkdown);
+      }
+
+      return created;
+    },
+    /**
+     * Build a document from Markdown source and persist it as a new,
+     * source-editable workspace file. `sourceSpec`, when provided, carries an
+     * imported document's captured styling so split/merged parts keep the look.
+     */
+    async createDocumentFromMarkdown(input: {
+      format: DocumentFormat;
+      name: string;
+      source: string;
+      sourceSpec?: string | null;
+    }) {
+      const built = await buildDocument({
+        format: input.format,
+        content: input.source,
+        fileName: input.name,
+        baseSpec: parseStoredSourceSpec(input.sourceSpec),
+        resolveImage: readWorkspaceImageBytes,
+      });
+
+      return this.createDocumentFile({
+        bytes: built.bytes,
+        mimeType: built.mimeType,
+        name: built.fileName,
+        sourceMarkdown: input.source,
+        sourceSpec: input.sourceSpec ?? null,
       });
     },
     async readTextFile(workspaceFile: WorkspaceFile) {
@@ -463,13 +607,49 @@ export function createWorkspaceFileService(repository: WorkspaceRepository) {
       return file.bytes();
     },
     /**
+     * Resolve a document's canonical editable Markdown source: the stored source
+     * when present, otherwise the binary document's extracted text. Split/merge
+     * use this so imported documents without stored source still work.
+     */
+    async readDocumentSource(workspaceFile: WorkspaceFile): Promise<string> {
+      if (workspaceFile.sourceMarkdown) {
+        return workspaceFile.sourceMarkdown;
+      }
+
+      if (!isDocumentWorkspaceFile(workspaceFile)) {
+        throw new Error(
+          `${workspaceFile.displayName} is not a supported document.`,
+        );
+      }
+
+      const format =
+        getDocumentFormat(workspaceFile.displayName) ??
+        getDocumentFormatFromMimeType(workspaceFile.mimeType);
+
+      if (!format) {
+        throw new Error(
+          `${workspaceFile.displayName} is not a supported document format.`,
+        );
+      }
+
+      const extracted = await extractDocument(
+        format,
+        await this.readDocumentBytes(workspaceFile),
+      );
+
+      return extracted.text;
+    },
+    /**
      * Regenerate an existing document in place from Markdown/plain-text source.
      * The document keeps its format and file name; the binary bytes and the
      * stored source are replaced so the document can be updated again later.
+     * An optional format `spec` is persisted into the stored source's YAML
+     * front-matter so the styling survives future updates without restyling.
      */
     async updateDocumentFile(
       workspaceFile: WorkspaceFile,
       sourceMarkdown: string,
+      spec?: Record<string, unknown>,
     ) {
       if (!isDocumentWorkspaceFile(workspaceFile)) {
         throw new Error(
@@ -487,10 +667,14 @@ export function createWorkspaceFileService(repository: WorkspaceRepository) {
         );
       }
 
+      const storedSource = mergeSpecIntoSource(sourceMarkdown, spec);
+
       const built = await buildDocument({
         format,
-        content: sourceMarkdown,
+        content: storedSource,
         fileName: workspaceFile.displayName,
+        baseSpec: parseStoredSourceSpec(workspaceFile.sourceSpec),
+        resolveImage: readWorkspaceImageBytes,
       });
 
       const file = resolveWorkspaceFile(workspaceFile.relativePath);
@@ -506,8 +690,10 @@ export function createWorkspaceFileService(repository: WorkspaceRepository) {
 
       await repository.updateMetadata(workspaceFile.id, {
         size: file.size ?? built.bytes.byteLength,
-        sourceMarkdown,
+        sourceMarkdown: storedSource,
       });
+
+      await indexDocumentSections(workspaceFile.id, storedSource);
 
       const nextFile = await repository.getById(workspaceFile.id);
 
@@ -516,6 +702,125 @@ export function createWorkspaceFileService(repository: WorkspaceRepository) {
       }
 
       return nextFile;
+    },
+    /**
+     * List a document's heading-delimited sections (0-based positions). Lazily
+     * indexes the stored source when the snapshot is missing or out of date, so
+     * documents created before sectioning still work.
+     */
+    async listDocumentSections(
+      workspaceFile: WorkspaceFile,
+    ): Promise<DocumentSection[]> {
+      if (!workspaceFile.sourceMarkdown) {
+        return [];
+      }
+
+      const stored = await repository.listDocumentSections(workspaceFile.id);
+      const split = splitDocumentSections(workspaceFile.sourceMarkdown);
+      const inSync =
+        stored.length === split.sections.length &&
+        stored.every(
+          (section, index) => section.body === split.sections[index]!.body,
+        );
+
+      if (inSync) {
+        return stored;
+      }
+
+      await indexDocumentSections(workspaceFile.id, workspaceFile.sourceMarkdown);
+
+      return repository.listDocumentSections(workspaceFile.id);
+    },
+    /** Read one section of a document by its 0-based position. */
+    async readDocumentSection(
+      workspaceFile: WorkspaceFile,
+      position: number,
+    ): Promise<DocumentSection> {
+      const sections = await this.listDocumentSections(workspaceFile);
+      const section = sections[position];
+
+      if (!section) {
+        throw new Error(
+          `${workspaceFile.displayName} has no section at index ${position} (it has ${sections.length} section(s)).`,
+        );
+      }
+
+      return section;
+    },
+    /**
+     * Update a document piecewise: replace, insert, append or delete a single
+     * heading-delimited section, then regenerate the document from the
+     * reassembled source. Only the edited section is provided by the caller.
+     */
+    async updateDocumentSection(
+      workspaceFile: WorkspaceFile,
+      input: {
+        mode?: "replace" | "insertBefore" | "insertAfter" | "append" | "delete";
+        section?: number;
+        content?: string;
+        spec?: Record<string, unknown>;
+      },
+    ) {
+      if (!workspaceFile.sourceMarkdown) {
+        throw new Error(
+          `${workspaceFile.displayName} has no stored source; imported documents cannot be edited piecewise. Use updateDocument with the full new content instead.`,
+        );
+      }
+
+      const split = splitDocumentSections(workspaceFile.sourceMarkdown);
+      const sections = [...split.sections];
+      const mode = input.mode ?? "replace";
+      const index = input.section;
+
+      const requireIndex = () => {
+        if (index === undefined) {
+          throw new Error(`A section index is required for ${mode}.`);
+        }
+
+        if (index < 0 || index >= sections.length) {
+          throw new Error(
+            `Section index ${index} is out of range (the document has ${sections.length} section(s)).`,
+          );
+        }
+      };
+
+      switch (mode) {
+        case "replace":
+          requireIndex();
+          sections[index!] = parseSectionContent(input.content ?? "");
+          break;
+        case "insertBefore":
+          requireIndex();
+          sections.splice(index!, 0, parseSectionContent(input.content ?? ""));
+          break;
+        case "insertAfter":
+          requireIndex();
+          sections.splice(index! + 1, 0, parseSectionContent(input.content ?? ""));
+          break;
+        case "append":
+          sections.push(parseSectionContent(input.content ?? ""));
+          break;
+        case "delete":
+          requireIndex();
+          sections.splice(index!, 1);
+          break;
+      }
+
+      const nextSource = assembleDocumentSections({
+        prefix: split.prefix,
+        sections,
+      });
+
+      const nextFile = await this.updateDocumentFile(
+        workspaceFile,
+        nextSource,
+        input.spec,
+      );
+
+      return {
+        file: nextFile,
+        sections: await repository.listDocumentSections(workspaceFile.id),
+      };
     },
     async writeTextFile(
       workspaceFile: WorkspaceFile,

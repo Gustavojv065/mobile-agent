@@ -170,5 +170,7 @@ describe("agent permissions", () => {
     expect(MUTATING_BUILT_IN_TOOL_NAMES.has("updateDocument")).toBe(true);
     expect(MUTATING_BUILT_IN_TOOL_NAMES.has("splitPdf")).toBe(true);
     expect(MUTATING_BUILT_IN_TOOL_NAMES.has("mergePdfs")).toBe(true);
+    expect(MUTATING_BUILT_IN_TOOL_NAMES.has("splitDocument")).toBe(true);
+    expect(MUTATING_BUILT_IN_TOOL_NAMES.has("mergeDocuments")).toBe(true);
   });
 });

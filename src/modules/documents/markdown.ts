@@ -7,11 +7,13 @@ const TABLE_SEPARATOR_PATTERN =
   /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/;
 const HORIZONTAL_RULE_PATTERN = /^\s*([-*_])(\s*\1){2,}\s*$/;
 const FENCE_PATTERN = /^\s*```/;
+const IMAGE_PATTERN =
+  /^!\[([^\]]*)\]\(([^)\s]+)(?:\s+"(\d+(?:\.\d+)?)(?:px)?")?\)\s*$/;
 
 /**
  * Split inline markdown into styled runs. Supports `**bold**`, `__bold__`,
- * `*italic*`, `_italic_`, `` `code` `` and `[label](target)` links (the target
- * is preserved as plain text).
+ * `*italic*`, `_italic_`, `` `code` `` and `[label](target)` links (rendered
+ * as a run with a `href`).
  */
 export function parseInlineRuns(input: string): InlineRun[] {
   const runs: InlineRun[] = [];
@@ -31,7 +33,8 @@ export function parseInlineRuns(input: string): InlineRun[] {
       previous &&
       previous.bold === style?.bold &&
       previous.italic === style?.italic &&
-      previous.code === style?.code
+      previous.code === style?.code &&
+      previous.href === style?.href
     ) {
       previous.text += text;
       return;
@@ -54,7 +57,7 @@ export function parseInlineRuns(input: string): InlineRun[] {
     } else if (match[10] !== undefined) {
       push(match[10], { code: true });
     } else if (match[12] !== undefined) {
-      push(`${match[12]} (${match[13]})`);
+      push(match[12], { href: match[13] });
     }
 
     lastIndex = pattern.lastIndex;
@@ -155,6 +158,23 @@ export function parseMarkdownBlocks(markdown: string): DocumentBlock[] {
       continue;
     }
 
+    const image = IMAGE_PATTERN.exec(line);
+
+    if (image) {
+      const widthRaw = image[3];
+
+      blocks.push({
+        type: "image",
+        alt: image[1] ?? "",
+        src: image[2]!,
+        ...(widthRaw !== undefined
+          ? { widthPx: Math.round(Number.parseFloat(widthRaw)) }
+          : {}),
+      });
+      index += 1;
+      continue;
+    }
+
     if (HORIZONTAL_RULE_PATTERN.test(line)) {
       blocks.push({ type: "pageBreak" });
       index += 1;
@@ -192,6 +212,7 @@ export function parseMarkdownBlocks(markdown: string): DocumentBlock[] {
         !paragraphLine.trim() ||
         FENCE_PATTERN.test(paragraphLine) ||
         HEADING_PATTERN.test(paragraphLine) ||
+        IMAGE_PATTERN.test(paragraphLine) ||
         HORIZONTAL_RULE_PATTERN.test(paragraphLine) ||
         isTableHeader(lines, index) ||
         UNORDERED_LIST_PATTERN.test(paragraphLine) ||

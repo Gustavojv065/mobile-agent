@@ -12,6 +12,7 @@ import type {
   BuiltInToolSettings,
   Conversation,
   DatabaseMode,
+  DocumentSection,
   ExternalFolderSession,
   FileContextSource,
   McpServerAuthMode,
@@ -204,6 +205,8 @@ export interface WorkspaceRepository {
     size?: number | null;
     sourceKind: WorkspaceFileSourceKind;
     sourceMarkdown?: string | null;
+    /** JSON snapshot of original document styling (docx), captured on import. */
+    sourceSpec?: string | null;
   }): Promise<WorkspaceFile>;
   getById(id: string): Promise<WorkspaceFile | null>;
   getByIds(ids: string[]): Promise<WorkspaceFile[]>;
@@ -219,9 +222,19 @@ export interface WorkspaceRepository {
       relativePath?: string;
       size?: number | null;
       sourceMarkdown?: string | null;
+      sourceSpec?: string | null;
       updatedAt?: string;
     },
   ): Promise<void>;
+  /**
+   * Replace the stored heading-delimited sections for a document. Deletes any
+   * existing rows for the file and inserts the given ones in order.
+   */
+  replaceDocumentSections(
+    fileId: string,
+    sections: { title: string; level: number; body: string }[],
+  ): Promise<void>;
+  listDocumentSections(fileId: string): Promise<DocumentSection[]>;
 }
 
 export interface McpServerRepository {

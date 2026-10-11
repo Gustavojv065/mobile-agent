@@ -510,6 +510,29 @@ export type WorkspaceFile = {
   sourceKind: WorkspaceFileSourceKind;
   /** Markdown/plain-text source the document (docx/pdf/pptx/xlsx) was generated from, used to regenerate it on update. */
   sourceMarkdown: string | null;
+  /** JSON snapshot of the document's original styling (docx), captured on import so updates keep the look. */
+  sourceSpec: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+/**
+ * One heading-delimited piece of a document's stored source Markdown. Large
+ * documents are split into ordered sections so the agent can read and update
+ * them individually instead of handling the whole source at once.
+ */
+export type DocumentSection = {
+  id: string;
+  fileId: string;
+  /** 0-based order within the document. */
+  position: number;
+  /** Heading text without the leading `#` markers. */
+  title: string;
+  /** Heading level 1-6. */
+  level: number;
+  /** Exact Markdown slice for the section, including its heading line. */
+  body: string;
+  charCount: number;
   createdAt: string;
   updatedAt: string;
 };

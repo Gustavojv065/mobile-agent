@@ -1,7 +1,7 @@
 import * as Crypto from "expo-crypto";
-import { and, desc, eq, ne, notLike } from "drizzle-orm";
+import { and, asc, desc, eq, ne, notLike } from "drizzle-orm";
 
-import { workspaceFiles } from "@/core/db/schema";
+import { documentSections, workspaceFiles } from "@/core/db/schema";
 import { nowIso } from "@/core/db/repositories/shared";
 import type { AppDatabase, WorkspaceRepository } from "@/core/db/repositories/types";
 
@@ -20,6 +20,7 @@ export function createWorkspaceRepository(db: AppDatabase): WorkspaceRepository 
         size: input.size ?? null,
         sourceKind: input.sourceKind,
         sourceMarkdown: input.sourceMarkdown ?? null,
+        sourceSpec: input.sourceSpec ?? null,
         createdAt: timestamp,
         updatedAt: timestamp,
       });
@@ -67,9 +68,11 @@ export function createWorkspaceRepository(db: AppDatabase): WorkspaceRepository 
         .orderBy(desc(workspaceFiles.updatedAt));
     },
     async deleteAll() {
+      await db.delete(documentSections);
       await db.delete(workspaceFiles);
     },
     async delete(id) {
+      await db.delete(documentSections).where(eq(documentSections.fileId, id));
       await db.delete(workspaceFiles).where(eq(workspaceFiles.id, id));
     },
     async updateMetadata(id, input) {
@@ -100,9 +103,45 @@ export function createWorkspaceRepository(db: AppDatabase): WorkspaceRepository 
             input.sourceMarkdown !== undefined
               ? input.sourceMarkdown
               : current.sourceMarkdown,
+          sourceSpec:
+            input.sourceSpec !== undefined
+              ? input.sourceSpec
+              : current.sourceSpec,
           updatedAt: input.updatedAt ?? nowIso(),
         })
         .where(eq(workspaceFiles.id, id));
+    },
+    async replaceDocumentSections(fileId, sections) {
+      const timestamp = nowIso();
+
+      await db
+        .delete(documentSections)
+        .where(eq(documentSections.fileId, fileId));
+
+      if (sections.length === 0) {
+        return;
+      }
+
+      await db.insert(documentSections).values(
+        sections.map((section, position) => ({
+          id: Crypto.randomUUID(),
+          fileId,
+          position,
+          title: section.title,
+          level: section.level,
+          body: section.body,
+          charCount: section.body.length,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        })),
+      );
+    },
+    async listDocumentSections(fileId) {
+      return db
+        .select()
+        .from(documentSections)
+        .where(eq(documentSections.fileId, fileId))
+        .orderBy(asc(documentSections.position));
     },
   };
 }
