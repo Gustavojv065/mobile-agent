@@ -1,15 +1,17 @@
-import { Download, Monitor, Smartphone, X, Code, Eye } from "lucide-react-native";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { Download, Film, Monitor, Smartphone, X, Code, Eye, Square } from "lucide-react-native";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
   type LayoutChangeEvent,
+  Platform,
   Pressable,
   Text,
   View,
 } from "react-native";
+import { File, Paths } from "expo-file-system";
 import { captureRef } from "react-native-view-shot";
-import { WebView } from "react-native-webview";
+import { WebView, type WebViewMessageEvent } from "react-native-webview";
 
 import {
   Drawer,
@@ -18,10 +20,13 @@ import {
   DrawerTitle,
 } from "@/components/ui/drawer";
 import { useTheme } from "@/hooks/use-theme";
-import { downloadText } from "@/core/services/download-service";
+import { downloadFile, downloadText } from "@/core/services/download-service";
 import { buildCodeDocument } from "@/modules/preview/code-document";
 import { withDesktopPreviewViewport } from "@/modules/preview/html-document";
 import { handlePreviewDownloadMessage, PREVIEW_DOWNLOAD_HOOK } from "@/modules/preview/preview-downloads";
+import { buildVideoExportDocument } from "@/modules/preview/video-recorder";
+import { VideoExportController } from "@/modules/preview/video-export-messages";
+import { getHtmlVideoExportModule } from "html-video-export";
 
 /**
  * CSS viewport width used for desktop rendering. Wide enough to trip the
@@ -121,6 +126,144 @@ export function CodePreviewContent({
     () => mode === "code" ? buildCodeDocument(code, language, theme) : "",
     [code, language, mode, theme],
   );
+  const [videoExport, setVideoExport] = useState<{
+    progress: number;
+    status: "recording" | "finishing";
+  } | null>(null);
+  const webViewRef = useRef<WebView>(null);
+  const exportControllerRef = useRef<VideoExportController | null>(null);
+  const exportFileRef = useRef<File | null>(null);
+  const canExportVideo = Platform.OS === "android" && getHtmlVideoExportModule() !== null;
+  const previousHtml = useRef(html);
+
+  const cleanupExportFile = useCallback(() => {
+    const file = exportFileRef.current;
+    exportFileRef.current = null;
+    if (file) {
+      try {
+        file.delete();
+      } catch {
+        // The cache file may already be gone.
+      }
+    }
+  }, []);
+
+  const shareVideo = useCallback(async (file: File) => {
+    try {
+      const Sharing = await import("expo-sharing");
+      await Sharing.shareAsync(file.uri, {
+        dialogTitle: "Share video",
+        mimeType: "video/mp4",
+      });
+    } catch (error) {
+      Alert.alert(
+        "Share failed",
+        error instanceof Error ? error.message : "The video could not be shared.",
+      );
+    } finally {
+      cleanupExportFile();
+    }
+  }, [cleanupExportFile]);
+
+  const stopExport = useCallback(() => {
+    if (!videoExport) return;
+    webViewRef.current?.injectJavaScript(
+      "window.__cancelMobileAgentVideoExport ? (window.__cancelMobileAgentVideoExport(), true) : false;",
+    );
+    void exportControllerRef.current?.cancel();
+    exportControllerRef.current = null;
+    setVideoExport(null);
+    cleanupExportFile();
+  }, [cleanupExportFile, videoExport]);
+
+  const handleExportVideo = useCallback(() => {
+    if (videoExport || mode !== "preview") return;
+    const module = getHtmlVideoExportModule();
+    if (!module) return;
+
+    cleanupExportFile();
+    const file = new File(Paths.cache, `video-${Date.now()}.mp4`);
+    file.create({ overwrite: true, intermediates: true });
+    exportFileRef.current = file;
+
+    const finishExport = async (result: { uri: string; sizeBytes: number }) => {
+      setVideoExport({ progress: 1, status: "finishing" });
+      try {
+        const saved = await downloadFile(result.uri, `video-${Date.now()}.mp4`, "video/mp4");
+        if (!saved) throw new Error("The video could not be saved to Downloads.");
+        Alert.alert("Video saved", `${saved.name} has been saved to Downloads.`, [
+          { text: "Share", onPress: () => void shareVideo(file) },
+          { text: "OK" },
+        ]);
+      } catch (error) {
+        Alert.alert(
+          "Export failed",
+          error instanceof Error ? error.message : "The video could not be saved.",
+        );
+      }
+    };
+
+    const controller = new VideoExportController({
+      outputPath: file.uri,
+      module,
+      onProgress: (progress) => setVideoExport({ progress, status: "recording" }),
+      onFinishing: () => setVideoExport({ progress: 1, status: "finishing" }),
+      onResult: (result) => {
+        void finishExport(result).finally(() => {
+          exportControllerRef.current = null;
+          setVideoExport(null);
+        });
+      },
+      onError: (message) => {
+        exportControllerRef.current = null;
+        setVideoExport(null);
+        cleanupExportFile();
+        Alert.alert("Video export failed", message);
+      },
+    });
+    exportControllerRef.current = controller;
+    setVideoExport({ progress: 0, status: "recording" });
+
+    // The recorder script ships inside the document, so injectJavaScript may
+    // run before the page evaluated it. Retrying is safe: `start` ignores
+    // calls while an export is already running.
+    const attemptStart = (triesLeft: number) => {
+      webViewRef.current?.injectJavaScript(
+        "window.__startMobileAgentVideoExport ? (window.__startMobileAgentVideoExport(), true) : false;",
+      );
+      if (triesLeft > 0) {
+        setTimeout(() => attemptStart(triesLeft - 1), 200);
+      }
+    };
+    attemptStart(8);
+  }, [cleanupExportFile, mode, shareVideo, videoExport]);
+
+  const handleMessage = useCallback((event: WebViewMessageEvent) => {
+    void handlePreviewDownloadMessage(event);
+    void exportControllerRef.current?.handleMessage(event);
+  }, []);
+
+  // A new message replaces the document, so any in-flight export is stale.
+  useEffect(() => {
+    if (previousHtml.current === html) return;
+    previousHtml.current = html;
+    webViewRef.current?.injectJavaScript(
+      "window.__cancelMobileAgentVideoExport ? (window.__cancelMobileAgentVideoExport(), true) : false;",
+    );
+    void exportControllerRef.current?.cancel();
+    exportControllerRef.current = null;
+    setVideoExport(null);
+    cleanupExportFile();
+  }, [cleanupExportFile, html]);
+
+  // Tear down the export and its temp file when the preview unmounts.
+  useEffect(() => {
+    return () => {
+      void exportControllerRef.current?.cancel();
+      exportControllerRef.current = null;
+      cleanupExportFile();
+    };
+  }, [cleanupExportFile]);
 
   const handleSave = useCallback(async () => {
     if (saving || !frameRef.current) {
@@ -211,10 +354,16 @@ export function CodePreviewContent({
                   : "Fits your screen"}
             </Text>
           </View>
-          <ViewModeToggle value={mode} onChange={setMode} disabled={saving} />
+          <ViewModeToggle value={mode} onChange={setMode} disabled={saving || videoExport !== null} />
+          {canExportVideo && mode === "preview" ? (
+            <ExportVideoButton
+              disabled={videoExport !== null || !frame}
+              onPress={handleExportVideo}
+            />
+          ) : null}
           <SavePreviewButton
             mode={mode}
-            disabled={saving || !frame}
+            disabled={saving || videoExport !== null || !frame}
             onPress={handleSave}
             saving={saving}
           />
@@ -228,7 +377,15 @@ export function CodePreviewContent({
           </DrawerClose>
         </View>
         {mode === "preview" ? (
-          <ViewportToggle value={viewport} onChange={setViewport} />
+          videoExport ? (
+            <VideoExportProgress
+              progress={videoExport.progress}
+              status={videoExport.status}
+              onStop={stopExport}
+            />
+          ) : (
+            <ViewportToggle value={viewport} onChange={setViewport} />
+          )
         ) : null}
         {/*
           `flex-1` with a zero basis, so this frame's size comes from the drawer
@@ -257,13 +414,14 @@ export function CodePreviewContent({
               <View style={{ flex: 1 }}>
                 <WebView
                   key={viewport}
+                  ref={webViewRef}
                   allowsInlineMediaPlayback
                   originWhitelist={["http://*", "https://*"]}
                   scrollEnabled
                   setSupportMultipleWindows={false}
                   injectedJavaScript={PREVIEW_DOWNLOAD_HOOK}
-                  onMessage={handlePreviewDownloadMessage}
-                  source={{ html: previewHtml }}
+                  onMessage={handleMessage}
+                  source={{ html: buildVideoExportDocument(previewHtml) }}
                   style={{ backgroundColor: theme.backgroundElement, flex: 1 }}
                 />
               </View>
@@ -390,6 +548,75 @@ function ViewportToggle({
           </Pressable>
         );
       })}
+    </View>
+  );
+}
+
+/**
+ * Starts exporting the preview as an MP4 from the page's
+ * `window.MOBILE_AGENT_VIDEO` contract. Android-only: the native
+ * `html-video-export` module does the muxing/encoding.
+ */
+function ExportVideoButton({
+  disabled,
+  onPress,
+}: {
+  disabled: boolean;
+  onPress: () => void;
+}) {
+  const theme = useTheme();
+
+  return (
+    <Pressable
+      accessibilityLabel="Export preview as MP4 video"
+      accessibilityRole="button"
+      className="h-11 w-11 items-center justify-center rounded-full bg-card dark:bg-card-dark active:opacity-70"
+      disabled={disabled}
+      onPress={onPress}
+      style={{ opacity: disabled ? 0.4 : 1 }}
+    >
+      <Film color={theme.text} size={20} />
+    </Pressable>
+  );
+}
+
+/** Live export progress bar with a stop button while frames are recorded. */
+function VideoExportProgress({
+  progress,
+  status,
+  onStop,
+}: {
+  progress: number;
+  status: "recording" | "finishing";
+  onStop: () => void;
+}) {
+  const theme = useTheme();
+  const percent = Math.round(progress * 100);
+
+  return (
+    <View className="flex-row items-center gap-3 rounded-xl bg-card p-3 dark:bg-card-dark">
+      <View
+        className="h-2 flex-1 overflow-hidden rounded-full"
+        style={{ backgroundColor: theme.backgroundElement }}
+      >
+        <View
+          className="h-full rounded-full"
+          style={{ backgroundColor: theme.text, width: `${percent}%` }}
+        />
+      </View>
+      <Text className="font-sans text-xs text-muted-foreground dark:text-muted-foreground-dark">
+        {status === "recording" ? `Recording ${percent}%` : "Finalizing…"}
+      </Text>
+      {status === "recording" ? (
+        <Pressable
+          accessibilityLabel="Stop video export"
+          accessibilityRole="button"
+          className="h-8 w-8 items-center justify-center rounded-full active:opacity-70"
+          onPress={onStop}
+        >
+          <Square color={theme.text} size={16} />
+        </Pressable>
+      ) : null}
     </View>
   );
 }

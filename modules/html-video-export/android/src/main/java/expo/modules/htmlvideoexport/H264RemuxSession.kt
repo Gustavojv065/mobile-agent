@@ -1,0 +1,107 @@
+package expo.modules.htmlvideoexport
+
+import android.media.MediaCodec
+import android.media.MediaFormat
+import android.media.MediaMuxer
+import android.util.Base64
+import java.io.File
+import java.nio.ByteBuffer
+
+/**
+ * Wraps a hardware H.264 elementary stream (encoded by WebCodecs inside the
+ * WebView) into an MP4 container. No re-encoding happens here — the compressed
+ * payload is written straight into MediaMuxer, so this is near-zero work.
+ *
+ * The page sends Annex-B NAL units with start codes. SPS/PPS are delivered
+ * separately (as hex, from the first key frame) and attached to the track via
+ * the csd-0/csd-1 media format keys.
+ */
+internal class H264RemuxSession(
+  private val outputPath: String,
+  private val width: Int,
+  private val height: Int,
+  private val fps: Int,
+  private val spsHex: String,
+  private val ppsHex: String,
+) : ExportSession {
+  private var muxer: MediaMuxer? = null
+  private var trackIndex = -1
+  private var finished = false
+
+  fun begin() {
+    val file = File(outputPath)
+    file.parentFile?.mkdirs()
+    if (file.exists()) file.delete()
+
+    val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height)
+    format.setString("csd-0", spsHex)
+    format.setString("csd-1", ppsHex)
+    format.setInteger(MediaFormat.KEY_BIT_RATE, bitrateFor(width, height))
+    format.setInteger(MediaFormat.KEY_FRAME_RATE, fps)
+
+    val muxer = MediaMuxer(outputPath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+    trackIndex = muxer.addTrack(format)
+    muxer.start()
+    this.muxer = muxer
+  }
+
+  @Synchronized
+  fun pushChunk(keyFrame: Boolean, timestampMicros: Long, base64: String) {
+    val muxer = this.muxer ?: throw IllegalStateException("The muxer has not started.")
+    if (finished) return
+    val bytes = Base64.decode(base64, Base64.DEFAULT)
+    val buffer = ByteBuffer.wrap(bytes)
+    val info = MediaCodec.BufferInfo()
+    info.set(
+      0,
+      bytes.size,
+      timestampMicros,
+      if (keyFrame) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0,
+    )
+    muxer.writeSampleData(trackIndex, buffer, info)
+  }
+
+  @Synchronized
+  override fun finish(): Pair<String, Long> {
+    if (!finished) {
+      finished = true
+      val muxer = this.muxer
+      this.muxer = null
+      if (muxer != null) {
+        try {
+          muxer.stop()
+        } catch (_: Exception) {
+          // No samples were written; nothing to finalize.
+        }
+        muxer.release()
+      }
+    }
+    return outputPath to File(outputPath).length()
+  }
+
+  @Synchronized
+  override fun cancel() {
+    finished = true
+    val muxer = this.muxer
+    this.muxer = null
+    if (muxer != null) {
+      try {
+        muxer.stop()
+      } catch (_: Exception) {
+      }
+      muxer.release()
+    }
+    File(outputPath).delete()
+  }
+}
+
+/** Rough VBR target in bits per second, by output resolution. */
+internal fun bitrateFor(width: Int, height: Int): Int {
+  val pixels = width * height
+  return when {
+    pixels <= 640 * 360 -> 2_000_000
+    pixels <= 1280 * 720 -> 6_000_000
+    pixels <= 1920 * 1080 -> 12_000_000
+    else -> 16_000_000
+  }
+}

@@ -363,6 +363,16 @@
       "source": "sleekdotdesign/agent-skills",
       "sourceUrl": "https://github.com/sleekdotdesign/agent-skills/tree/main/skills/design-mobile-apps",
       "extraFiles": []
+    },
+    {
+      "id": "html-video",
+      "label": "html-video",
+      "description": "Use when the user asks to make a video or animation from HTML — an animated canvas, Three.js, or WebGL scene exportable as an MP4. Generates a self-contained HTML document matching the window.MOBILE_AGENT_VIDEO recorder contract.",
+      "url": "https://raw.githubusercontent.com/TecnicalBot/mobile-agent/main/skills/html-video/SKILL.md",
+      "author": "TecnicalBot",
+      "source": "TecnicalBot/mobile-agent",
+      "sourceUrl": "https://github.com/TecnicalBot/mobile-agent/tree/main/skills/html-video",
+      "extraFiles": []
     }
   ]
 }

@@ -147,6 +147,7 @@
           "saf-file-operations",
           "scheduler-alarm",
           "termux-stream",
+          "html-video-export",
           "expo-ai-kit",
           "whisper.rn",
           "react-native-tcp-socket"
