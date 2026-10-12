@@ -1,0 +1,258 @@
+import {
+  activateKeepAwakeAsync,
+  deactivateKeepAwake,
+} from "expo-keep-awake";
+import { File, Paths } from "expo-file-system";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Platform, View } from "react-native";
+import WebView, { type WebViewMessageEvent } from "react-native-webview";
+
+import {
+  setVideoRenderStatus,
+  subscribeVideoRender,
+  type VideoRenderJob,
+} from "@/modules/preview/video-render";
+import { buildVideoExportDocument } from "@/modules/preview/video-recorder";
+import { VideoExportController } from "@/modules/preview/video-export-messages";
+import { getHtmlVideoExportModule } from "html-video-export";
+
+const KEEP_AWAKE_TAG = "mobile-agent-video-render";
+const EXPORT_VIEWPORT_WIDTH = 1280;
+const EXPORT_VIEWPORT_HEIGHT = 720;
+
+/**
+ * Owns the hidden WebView that actually records a video. Mounted once in the
+ * root layout. It subscribes to {@link subscribeVideoRender} and renders one
+ * requested document at a time, resolving the tool's promise with the finished
+ * MP4 (the `renderVideo` tool then persists it and hands it back to the user).
+ *
+ * Progress is published through {@link setVideoRenderStatus} so the active
+ * assistant message can show an inline "Rendering video…" row — no floating
+ * banner over the screen.
+ */
+export function VideoRenderHost() {
+  const canRender =
+    Platform.OS === "android" && getHtmlVideoExportModule() !== null;
+
+  const [pending, setPending] = useState<VideoRenderJob[]>([]);
+  const [active, setActive] = useState(false);
+  const [documentHtml, setDocumentHtml] = useState<string | null>(null);
+
+  const webViewRef = useRef<WebView>(null);
+  const controllerRef = useRef<VideoExportController | null>(null);
+  const fileRef = useRef<File | null>(null);
+  const jobRef = useRef<VideoRenderJob | null>(null);
+  const settledRef = useRef<WeakSet<VideoRenderJob>>(new WeakSet());
+  const abortCleanupRef = useRef<(() => void) | null>(null);
+  const keepAwakeRef = useRef(false);
+  const lastPercentRef = useRef(-1);
+
+  const settle = useCallback(
+    (
+      job: VideoRenderJob,
+      outcome:
+        | { type: "resolve"; result: { uri: string; sizeBytes: number } }
+        | { type: "reject"; error: Error },
+    ) => {
+      if (settledRef.current.has(job)) return;
+      settledRef.current.add(job);
+      if (outcome.type === "resolve") job.resolve(outcome.result);
+      else job.reject(outcome.error);
+    },
+    [],
+  );
+
+  const cleanupFile = useCallback((file: File) => {
+    try {
+      file.delete();
+    } catch {
+      // The cache file may already be gone.
+    }
+  }, []);
+
+  const releaseKeepAwake = useCallback(() => {
+    if (!keepAwakeRef.current) return;
+    keepAwakeRef.current = false;
+    void deactivateKeepAwake(KEEP_AWAKE_TAG).catch(() => {});
+  }, []);
+
+  const abortCurrentFile = useCallback(() => {
+    const file = fileRef.current;
+    fileRef.current = null;
+    if (file) cleanupFile(file);
+  }, [cleanupFile]);
+
+  const finishJob = useCallback(() => {
+    abortCleanupRef.current?.();
+    abortCleanupRef.current = null;
+    controllerRef.current = null;
+    jobRef.current = null;
+    lastPercentRef.current = -1;
+    setVideoRenderStatus(null);
+    setDocumentHtml(null);
+    setActive(false);
+    releaseKeepAwake();
+  }, [releaseKeepAwake]);
+
+  const stopActive = useCallback(
+    (error: Error) => {
+      const job = jobRef.current;
+      if (job) settle(job, { type: "reject", error });
+      webViewRef.current?.injectJavaScript(
+        "window.__cancelMobileAgentVideoExport ? (window.__cancelMobileAgentVideoExport(), true) : false;",
+      );
+      void controllerRef.current?.cancel();
+      abortCurrentFile();
+      finishJob();
+    },
+    [abortCurrentFile, finishJob, settle],
+  );
+
+  const beginRender = useCallback(
+    (job: VideoRenderJob) => {
+      const module = getHtmlVideoExportModule();
+      if (!module) {
+        settle(job, {
+          type: "reject",
+          error: new Error("The video export module is unavailable."),
+        });
+        return;
+      }
+
+      abortCurrentFile();
+      const file = new File(Paths.cache, `video-${Date.now()}.mp4`);
+      file.create({ overwrite: true, intermediates: true });
+      fileRef.current = file;
+      jobRef.current = job;
+      lastPercentRef.current = -1;
+
+      const controller = new VideoExportController({
+        outputPath: file.uri,
+        module,
+        onProgress: (progress) => {
+          job.onProgress?.(progress);
+          const percent = Math.round(progress * 100);
+          if (percent !== lastPercentRef.current) {
+            lastPercentRef.current = percent;
+            setVideoRenderStatus({ finishing: false, progress });
+          }
+        },
+        onFinishing: () =>
+          setVideoRenderStatus({ finishing: true, progress: 1 }),
+        onResult: (result) => {
+          // Ownership of the finished file moves to the caller (the renderVideo
+          // tool persists it and deletes the cache copy), so do not clean it up
+          // here — a queued render could race the tool's read.
+          fileRef.current = null;
+          settle(job, { type: "resolve", result });
+          finishJob();
+        },
+        onError: (message) => {
+          settle(job, { type: "reject", error: new Error(message) });
+          abortCurrentFile();
+          finishJob();
+        },
+      });
+      controllerRef.current = controller;
+
+      if (job.signal) {
+        const onAbort = () =>
+          stopActive(new Error("Video render was cancelled."));
+        job.signal.addEventListener("abort", onAbort);
+        abortCleanupRef.current = () =>
+          job.signal?.removeEventListener("abort", onAbort);
+      }
+
+      setDocumentHtml(job.html);
+      setVideoRenderStatus({ finishing: false, progress: 0 });
+      setActive(true);
+      if (!keepAwakeRef.current) {
+        keepAwakeRef.current = true;
+        void activateKeepAwakeAsync(KEEP_AWAKE_TAG).catch(() => {});
+      }
+    },
+    [abortCurrentFile, finishJob, settle, stopActive],
+  );
+
+  // Drain the queue one render at a time.
+  useEffect(() => {
+    if (active || pending.length === 0) return;
+    const [next, ...rest] = pending;
+    setPending(rest);
+    if (next.signal?.aborted) {
+      settle(next, {
+        type: "reject",
+        error: new Error("Video render was cancelled."),
+      });
+      return;
+    }
+    beginRender(next);
+  }, [active, beginRender, pending, settle]);
+
+  // Collect render requests for as long as rendering is usable.
+  useEffect(() => {
+    if (!canRender) return;
+    return subscribeVideoRender((job) => {
+      setPending((current) => [...current, job]);
+    });
+  }, [canRender]);
+
+  // Reject anything still in flight when the host goes away.
+  useEffect(() => {
+    return () => {
+      abortCleanupRef.current?.();
+      abortCleanupRef.current = null;
+      const inFlight = jobRef.current;
+      if (inFlight) {
+        settle(inFlight, {
+          type: "reject",
+          error: new Error("Video render was interrupted."),
+        });
+      }
+      void controllerRef.current?.cancel();
+      abortCurrentFile();
+      setVideoRenderStatus(null);
+      releaseKeepAwake();
+    };
+  }, [abortCurrentFile, releaseKeepAwake, settle]);
+
+  const attemptStart = (triesLeft: number) => {
+    webViewRef.current?.injectJavaScript(
+      "window.__startMobileAgentVideoExport ? (window.__startMobileAgentVideoExport(), true) : false;",
+    );
+    if (triesLeft > 0) {
+      setTimeout(() => attemptStart(triesLeft - 1), 200);
+    }
+  };
+
+  const handleMessage = useCallback((event: WebViewMessageEvent) => {
+    void controllerRef.current?.handleMessage(event);
+  }, []);
+
+  if (!canRender) return null;
+
+  return documentHtml ? (
+    <View
+      pointerEvents="none"
+      style={{
+        backgroundColor: "transparent",
+        height: EXPORT_VIEWPORT_HEIGHT,
+        left: 0,
+        opacity: 0.01,
+        position: "absolute",
+        top: 0,
+        width: EXPORT_VIEWPORT_WIDTH,
+      }}
+    >
+      <WebView
+        ref={webViewRef}
+        allowsInlineMediaPlayback
+        originWhitelist={["http://*", "https://*"]}
+        onLoadEnd={() => attemptStart(8)}
+        onMessage={handleMessage}
+        source={{ html: buildVideoExportDocument(documentHtml) }}
+        style={{ backgroundColor: "transparent", flex: 1 }}
+      />
+    </View>
+  ) : null;
+}

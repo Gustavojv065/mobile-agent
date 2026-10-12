@@ -44,6 +44,7 @@ import {
   useEffect,
   useMemo,
   useState,
+  useSyncExternalStore,
 } from "react";
 import {
   ActivityIndicator,
@@ -99,6 +100,10 @@ import {
 } from "@/components/ui/file-preview-dialog";
 import { Loading } from "@/components/ui/loading";
 import { Message, MessageFooter } from "@/components/ui/message";
+import {
+  VideoPlayerDialog,
+  type VideoPlayerTarget,
+} from "@/components/ui/video-player-dialog";
 import { CHAT_TEXT_STYLE } from "@/constants/chat-typography";
 import {
   isTextWorkspaceFile,
@@ -128,10 +133,11 @@ import { createDrizzleDb } from "@/core/db/repositories/shared";
 import { createWorkspaceRepository } from "@/core/db/repositories/workspace-repository";
 import { buildPreviewDocument } from "@/modules/preview/html-document";
 import {
-  AUTO_EXPORT_STABILITY_MS,
-  detectAutoExportHtml,
-  enqueueAutoExport,
-} from "@/modules/preview/video-auto-export";
+  getVideoRenderStatus,
+  subscribeVideoRenderStatus,
+} from "@/modules/preview/video-render";
+import { getVideoPoster, toPlayableFileUri } from "@/modules/preview/video-poster";
+import type { VideoThumbnail } from "expo-video";
 
 refractor.register(jsx);
 refractor.register(tsx);
@@ -273,8 +279,41 @@ export type ChatMediaPreviewTarget =
 
 const ChatMediaContext = createContext<{
   onPreviewImage: (target: ChatMediaPreviewTarget) => void;
+  onPreviewVideo: (video: {
+    displayName: string;
+    mimeType: string;
+    uri: string;
+  }) => void;
   workspaceFiles: WorkspaceFile[];
-}>({ onPreviewImage: () => {}, workspaceFiles: [] });
+}>({ onPreviewImage: () => {}, onPreviewVideo: () => {}, workspaceFiles: [] });
+
+/**
+ * The trailing indicator for a streaming message. It renders the idle spinner
+ * by default and swaps to a live "Rendering video…" label while the app-level
+ * render host is recording — subscribed in isolation so progress ticks only
+ * re-render this row, not the whole message.
+ */
+function StreamingIndicator({ idle }: { idle: ReactNode }) {
+  const status = useSyncExternalStore(
+    subscribeVideoRenderStatus,
+    getVideoRenderStatus,
+    getVideoRenderStatus,
+  );
+
+  if (!status) {
+    return <>{idle}</>;
+  }
+
+  return (
+    <Loading
+      label={
+        status.finishing
+          ? "Finalizing video"
+          : `Rendering video ${Math.round(status.progress * 100)}%`
+      }
+    />
+  );
+}
 
 function PreviewUriImage({ uri }: { uri: string }) {
   const [aspectRatio, setAspectRatio] = useState(16 / 9);
@@ -310,6 +349,22 @@ function MarkdownImage({ alt, uri }: { alt: string; uri: string }) {
     }
     return uri;
   }, [uri, workspaceFiles]);
+  const videoAttachment = useMemo(() => {
+    if (!uri.startsWith("workspace://")) return null;
+    const file = workspaceFileFromUrl(uri, workspaceFiles);
+    if (file && isVideoWorkspaceFile(file)) {
+      return {
+        displayName: file.displayName,
+        mimeType: file.mimeType ?? "video/mp4",
+        uri,
+      };
+    }
+    return null;
+  }, [uri, workspaceFiles]);
+
+  if (videoAttachment) {
+    return <VideoAttachmentView {...videoAttachment} />;
+  }
 
   if (!resolvedUri || failed) {
     return alt ? (
@@ -346,6 +401,88 @@ function MarkdownImage({ alt, uri }: { alt: string; uri: string }) {
         source={{ uri: resolvedUri }}
         style={{ aspectRatio, maxWidth: "100%", width: "100%" }}
       />
+    </Pressable>
+  );
+}
+
+/**
+ * A video embedded in a message — either inline where the model placed a
+ * `![name](workspace://fileId)` embed, or as the fallback card at the end of
+ * the message. Shows the first frame as a poster with a play overlay; tapping
+ * opens the video player dialog (play/save/share).
+ */
+function VideoAttachmentView({
+  displayName,
+  mimeType,
+  uri,
+}: {
+  displayName: string;
+  mimeType: string;
+  uri: string;
+}) {
+  const { onPreviewVideo, workspaceFiles } = useContext(ChatMediaContext);
+  const [poster, setPoster] = useState<VideoThumbnail | null>(null);
+
+  const localUri = useMemo(() => {
+    if (uri.startsWith("workspace://")) {
+      const file = workspaceFileFromUrl(uri, workspaceFiles);
+      if (file) {
+        return toPlayableFileUri(resolveWorkspaceFile(file.relativePath).uri);
+      }
+      return null;
+    }
+    return toPlayableFileUri(uri);
+  }, [uri, workspaceFiles]);
+
+  useEffect(() => {
+    if (!localUri) {
+      setPoster(null);
+      return;
+    }
+
+    let cancelled = false;
+    getVideoPoster(localUri).then((thumbnail) => {
+      if (!cancelled) setPoster(thumbnail);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [localUri]);
+
+  return (
+    <Pressable
+      accessibilityHint="Plays the video"
+      accessibilityLabel={`Play video ${displayName}`}
+      accessibilityRole="button"
+      className="overflow-hidden rounded-card border border-border dark:border-border-dark"
+      onPress={() => {
+        onPreviewVideo({ displayName, mimeType, uri });
+      }}
+      style={({ pressed }) => (pressed ? { opacity: 0.9 } : null)}
+    >
+      {poster ? (
+        <Image
+          accessibilityLabel={displayName}
+          accessible
+          contentFit="cover"
+          source={poster}
+          style={{ aspectRatio: 16 / 9, width: "100%" }}
+        />
+      ) : (
+        <View
+          className="items-center justify-center bg-black/90"
+          style={{ aspectRatio: 16 / 9, width: "100%" }}
+        />
+      )}
+      <View
+        className="absolute inset-0 items-center justify-center"
+        pointerEvents="none"
+      >
+        <View className="h-14 w-14 items-center justify-center rounded-full bg-black/60">
+          <Play color="#ffffff" size={28} />
+        </View>
+      </View>
     </Pressable>
   );
 }
@@ -635,21 +772,6 @@ function CopyableCodeBlock({
   // so a preview can never outlive the markup it was built from.
   const [previewOpen, setPreviewOpen] = useRecyclingState(false, [code]);
   const previewable = isPreviewableLanguage(language);
-  const autoExportCandidate = useMemo(
-    () => previewable && detectAutoExportHtml(code),
-    [code, previewable],
-  );
-
-  // A streaming delta keeps rewriting the fence; only queue the document once
-  // the block has been stable long enough to be the final version. Enqueue is
-  // idempotent per exact html, so re-renders never double-export.
-  useEffect(() => {
-    if (!autoExportCandidate) return;
-    const timer = setTimeout(() => {
-      enqueueAutoExport(code);
-    }, AUTO_EXPORT_STABILITY_MS);
-    return () => clearTimeout(timer);
-  }, [autoExportCandidate, code]);
   const previewDocument = useMemo(
     () => (previewable ? buildPreviewDocument(code, language) : null),
     [code, language, previewable],
@@ -1096,6 +1218,8 @@ export const ChatMessage = memo(function ChatMessage({
   );
   const [imagePreview, setImagePreview] =
     useRecyclingState<ChatMediaPreviewTarget | null>(null, [message.id]);
+  const [videoPreview, setVideoPreview] =
+    useRecyclingState<VideoPlayerTarget | null>(null, [message.id]);
   const [previewFile, setPreviewFile] = useRecyclingState<WorkspaceFile | null>(
     null,
     [message.id],
@@ -1233,11 +1357,47 @@ export const ChatMessage = memo(function ChatMessage({
     () => createWorkspaceRepository(createDrizzleDb(sqlite)),
     [sqlite],
   );
+  const openImagePreview = useCallback((target: ChatMediaPreviewTarget) => {
+    setImagePreview(target);
+  }, [setImagePreview]);
+  const openVideoFile = useCallback(
+    async (video: { displayName: string; mimeType: string; uri: string }) => {
+      let localUri = video.uri;
+      const file = workspaceFileFromUrl(video.uri, workspaceFiles);
+
+      if (file) {
+        localUri = resolveWorkspaceFile(file.relativePath).uri;
+      } else if (video.uri.startsWith("workspace://")) {
+        const id = video.uri.slice("workspace://".length);
+        const record = await workspaceRepository.getById(id).catch(() => null);
+
+        if (record) {
+          localUri = resolveWorkspaceFile(record.relativePath).uri;
+        }
+      }
+
+      setVideoPreview({
+        displayName: video.displayName,
+        localUri,
+        mimeType: video.mimeType,
+      });
+    },
+    [setVideoPreview, workspaceFiles, workspaceRepository],
+  );
   const handleLinkPress = useCallback(
     (url: string) => {
       const workspaceFile = workspaceFileFromUrl(url, workspaceFiles);
 
       if (workspaceFile) {
+        if (isVideoWorkspaceFile(workspaceFile)) {
+          void openVideoFile({
+            displayName: workspaceFile.displayName,
+            mimeType: workspaceFile.mimeType ?? "video/mp4",
+            uri: `workspace://${workspaceFile.id}`,
+          }).catch(console.error);
+          return false;
+        }
+
         setPreviewFile(workspaceFile);
         return false;
       }
@@ -1245,8 +1405,21 @@ export const ChatMessage = memo(function ChatMessage({
       if (url.startsWith("workspace://")) {
         const id = url.slice("workspace://".length);
         workspaceRepository.getById(id).then((file) => {
-          if (file) setPreviewFile(file);
-          else Alert.alert("File unavailable", "This file is no longer in the workspace.");
+          if (!file) {
+            Alert.alert("File unavailable", "This file is no longer in the workspace.");
+            return;
+          }
+
+          if (isVideoWorkspaceFile(file)) {
+            void openVideoFile({
+              displayName: file.displayName,
+              mimeType: file.mimeType ?? "video/mp4",
+              uri: `workspace://${file.id}`,
+            }).catch(console.error);
+            return;
+          }
+
+          setPreviewFile(file);
         }).catch((error) => Alert.alert("Could not open file", String(error)));
         return false;
       }
@@ -1254,14 +1427,21 @@ export const ChatMessage = memo(function ChatMessage({
 
       return false;
     },
-    [setPreviewFile, workspaceFiles, workspaceRepository],
+    [openVideoFile, setPreviewFile, workspaceFiles, workspaceRepository],
   );
-  const openImagePreview = useCallback((target: ChatMediaPreviewTarget) => {
-    setImagePreview(target);
-  }, [setImagePreview]);
   const mediaContext = useMemo(
-    () => ({ onPreviewImage: openImagePreview, workspaceFiles }),
-    [openImagePreview, workspaceFiles],
+    () => ({
+      onPreviewImage: openImagePreview,
+      onPreviewVideo: (video: {
+        displayName: string;
+        mimeType: string;
+        uri: string;
+      }) => {
+        openVideoFile(video).catch(console.error);
+      },
+      workspaceFiles,
+    }),
+    [openImagePreview, openVideoFile, workspaceFiles],
   );
   const closePreview = () => {
     setImageAction(null);
@@ -1402,6 +1582,15 @@ export const ChatMessage = memo(function ChatMessage({
     setOpeningFileId(workspaceFile.id);
 
     try {
+      if (isVideoWorkspaceFile(workspaceFile)) {
+        await openVideoFile({
+          displayName: workspaceFile.displayName,
+          mimeType: workspaceFile.mimeType ?? "video/mp4",
+          uri: `workspace://${workspaceFile.id}`,
+        });
+        return;
+      }
+
       if (getFilePreviewKind(workspaceFile)) {
         setPreviewFile(workspaceFile);
         return;
@@ -1544,6 +1733,16 @@ export const ChatMessage = memo(function ChatMessage({
     );
   }
   const generatedImages = message.metadata?.generatedImages ?? [];
+  const generatedVideos = message.metadata?.generatedVideos ?? [];
+  // Videos the model already embedded inline with `![name](workspace://id)`
+  // render in place — only the rest get the fallback card at the end.
+  const embeddedVideoUris = useMemo(
+    () => collectEmbeddedVideoUris(message.content),
+    [message.content],
+  );
+  const visibleGeneratedVideos = generatedVideos.filter(
+    (video) => !embeddedVideoUris.has(video.uri),
+  );
   const attachedFiles = (message.metadata?.selectedFileIds ?? [])
     .map((fileId) => workspaceFiles.find((file) => file.id === fileId))
     .filter((file): file is WorkspaceFile => file !== undefined);
@@ -1904,8 +2103,20 @@ export const ChatMessage = memo(function ChatMessage({
                       ))}
                     </View>
                   ) : null}
+                  {visibleGeneratedVideos.length > 0 ? (
+                    <View className="gap-sp-2">
+                      {visibleGeneratedVideos.map((video) => (
+                        <VideoAttachmentView
+                          key={video.fileId}
+                          displayName={video.displayName}
+                          mimeType={video.mimeType}
+                          uri={video.uri}
+                        />
+                      ))}
+                    </View>
+                  ) : null}
                   {message.status === "streaming" && !hasRunningTermuxRun ? (
-                    <Loading />
+                    <StreamingIndicator idle={<Loading />} />
                   ) : null}
                 </View>
               ) : (
@@ -2245,6 +2456,10 @@ export const ChatMessage = memo(function ChatMessage({
         file={previewFile}
         onDismiss={() => setPreviewFile(null)}
       />
+      <VideoPlayerDialog
+        onDismiss={() => setVideoPreview(null)}
+        video={videoPreview}
+      />
       </ChatMediaContext.Provider>
     </Message>
   );
@@ -2293,6 +2508,37 @@ function isUserCanceledFileAction(error: unknown) {
 
 function isUserCanceledShare(error: unknown) {
   return error instanceof Error && /cancel/i.test(error.message);
+}
+
+const VIDEO_FILE_EXTENSIONS = new Set(["mp4", "mov", "m4v", "webm", "mkv"]);
+
+function isVideoWorkspaceFile(file: WorkspaceFile) {
+  if (file.mimeType?.startsWith("video/")) {
+    return true;
+  }
+
+  const extension = file.displayName.split(".").pop()?.toLowerCase();
+  return extension ? VIDEO_FILE_EXTENSIONS.has(extension) : false;
+}
+
+/**
+ * The `workspace://` URIs a message already embeds inline as
+ * `![alt](workspace://id)` images — used to avoid showing the same video twice
+ * (once inline, once as the end-of-message card). Plain `[text](uri)` links do
+ * not count; those still get the fallback card.
+ */
+function collectEmbeddedVideoUris(content: string): Set<string> {
+  const uris = new Set<string>();
+
+  for (const match of content.matchAll(
+    /!\[[^\]]*\]\(\s*<?(workspace:\/\/[^\s)>]+)>?\s*\)/g,
+  )) {
+    if (match[1]) {
+      uris.add(match[1]);
+    }
+  }
+
+  return uris;
 }
 
 function getMemoryEventLabel(kind: "created" | "deleted" | "updated") {

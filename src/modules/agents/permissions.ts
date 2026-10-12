@@ -17,6 +17,7 @@ export const MUTATING_BUILT_IN_TOOL_NAMES = new Set([
   "mergePdfs",
   "moveEntry",
   "renameEntry",
+  "renderVideo",
   "requestSecret",
   "splitDocument",
   "splitPdf",

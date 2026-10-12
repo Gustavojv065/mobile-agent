@@ -53,6 +53,7 @@ export type BuiltInToolKey =
   | "workspaceRead"
   | "workspaceWrite"
   | "workspaceCreateFile"
+  | "workspaceRenderVideo"
   | "workspaceGrep"
   | "workspaceGlob"
   | "workspaceEdit"
@@ -246,6 +247,16 @@ export type GeneratedImageAttachment = {
   uri: string;
 };
 
+/** An MP4 produced by the `renderVideo` tool and attached to the reply. */
+export type GeneratedVideoAttachment = {
+  fileId: string;
+  displayName: string;
+  mimeType: string;
+  size: number;
+  /** `workspace://<id>` reference, resolved to a local file for playback. */
+  uri: string;
+};
+
 export type ToolExecutionRecord = {
   id?: string;
   toolName: string;
@@ -352,6 +363,7 @@ export type MessageMetadata = {
   externalFolderDisplayName?: string | null;
   fileContextSource?: FileContextSource;
   generatedImages?: GeneratedImageAttachment[];
+  generatedVideos?: GeneratedVideoAttachment[];
   memoryEvents?: MemoryEvent[];
   promptArtifacts?: PromptArtifact[];
   reasoning?: ReasoningBlock[];

@@ -27,6 +27,8 @@ internal class JpegFrameRecorder(
   private val height: Int,
   private val fps: Int,
 ) : ExportSession {
+  /** `MediaMuxer`/`File` need a raw path; the page hands us a `file://` URI. */
+  private val filePath = fileUriToPath(outputPath)
   private var codec: MediaCodec? = null
   private var surface: Surface? = null
   private var muxer: MediaMuxer? = null
@@ -37,7 +39,7 @@ internal class JpegFrameRecorder(
   private var pendingTimestampUs = 0L
 
   fun begin() {
-    val file = File(outputPath)
+    val file = File(filePath)
     file.parentFile?.mkdirs()
     if (file.exists()) file.delete()
 
@@ -57,7 +59,7 @@ internal class JpegFrameRecorder(
 
     this.codec = codec
     this.surface = surface
-    muxer = MediaMuxer(outputPath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+    muxer = MediaMuxer(filePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
   }
 
   @Synchronized
@@ -80,7 +82,7 @@ internal class JpegFrameRecorder(
     val canvas = lockCanvas(surface)
     canvas.drawColor(Color.BLACK)
     canvas.drawBitmap(source, null, Rect(0, 0, width, height), null)
-    surface.unlockCanvasAndPost()
+    surface.unlockCanvasAndPost(canvas)
 
     if (source !== decoded) source.recycle()
     decoded.recycle()
@@ -90,7 +92,7 @@ internal class JpegFrameRecorder(
 
   @Synchronized
   override fun finish(): Pair<String, Long> {
-    if (finished) return outputPath to File(outputPath).length()
+    if (finished) return outputPath to File(filePath).length()
     finished = true
     try {
       codec?.signalEndOfInputStream()
@@ -98,14 +100,14 @@ internal class JpegFrameRecorder(
     }
     drainUntilDone()
     release()
-    return outputPath to File(outputPath).length()
+    return outputPath to File(filePath).length()
   }
 
   @Synchronized
   override fun cancel() {
     finished = true
     release()
-    File(outputPath).delete()
+    File(filePath).delete()
   }
 
   private fun lockCanvas(surface: Surface): Canvas {

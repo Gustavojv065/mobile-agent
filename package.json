@@ -58,6 +58,7 @@
     "expo-system-ui": "~57.0.4",
     "expo-text-extractor": "2.0.0",
     "expo-updates": "~57.0.25",
+    "expo-video": "~57.0.5",
     "expo-web-browser": "~57.0.3",
     "fast-xml-parser": "^5.11.2",
     "fflate": "^0.8.3",

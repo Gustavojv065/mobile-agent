@@ -95,6 +95,7 @@ const BUILT_IN_TOOL_LABELS: Record<BuiltInToolKey, string> = {
   workspaceGrep: "Search text",
   workspaceListFiles: "List files",
   workspaceRead: "Read files",
+  workspaceRenderVideo: "Render videos",
   workspaceWrite: "Write files",
 };
 

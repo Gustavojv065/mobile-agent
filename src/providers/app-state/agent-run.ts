@@ -76,7 +76,9 @@ import {
   stopBackgroundAgent,
 } from "background-agent-service";
 import { Platform } from "react-native";
-import { dismissApprovalNotification } from "@/modules/notifications/run-notifications";import { persistGeneratedImages } from "@/modules/tools/generated-images";
+import { dismissApprovalNotification } from "@/modules/notifications/run-notifications";
+import { collectGeneratedVideos } from "@/modules/tools/generated-videos";
+import { persistGeneratedImages } from "@/modules/tools/generated-images";
 import {
   buildSelectedFilesInlineContext,
   buildWorkspaceSystemPrompt,
@@ -141,6 +143,7 @@ const WORKSPACE_AUTO_APPROVED_BUILT_IN_TOOL_NAMES = new Set([
   "grep",
   "listFiles",
   "read",
+  "renderVideo",
   "write",
 ]);
 
@@ -1285,6 +1288,7 @@ export async function executeClaimedAgentRun(
                 ["mergePdfs", enabledFor("workspaceCreateFile")],
                 ["ocr", enabledFor("workspaceRead")],
                 ["read", enabledFor("workspaceRead")],
+                ["renderVideo", enabledFor("workspaceRenderVideo")],
                 ["splitDocument", enabledFor("workspaceCreateFile")],
                 ["splitPdf", enabledFor("workspaceCreateFile")],
                 ["updateDocument", enabledFor("workspaceEdit")],
@@ -1970,9 +1974,14 @@ export async function executeClaimedAgentRun(
     const generatedImages = await persistGeneratedImages(
       runtimeResult.generatedFiles ?? [],
     );
+    const generatedVideos = collectGeneratedVideos(runtimeResult.toolResults);
 
-    if (!assistantText.trim() && generatedImages.length > 0) {
-      assistantText = "Generated an image.";
+    if (
+      !assistantText.trim() &&
+      (generatedImages.length > 0 || generatedVideos.length > 0)
+    ) {
+      assistantText =
+        generatedVideos.length > 0 ? "Rendered a video." : "Generated an image.";
     }
 
     if (!assistantText.trim()) {
@@ -1996,6 +2005,19 @@ export async function executeClaimedAgentRun(
       );
     }
 
+    if (generatedVideos.length > 0) {
+      pushTimelineEvent(
+        createExecutionTimelineEvent({
+          detail: `${generatedVideos.length} video${
+            generatedVideos.length === 1 ? "" : "s"
+          }`,
+          kind: "image",
+          status: "completed",
+          title: "Rendered video output",
+        }),
+      );
+    }
+
     const assistantUsage = buildUsageSnapshot({
       contextWindow: contextWindowFromCatalog,
       model: resolvedModel,
@@ -2013,6 +2035,7 @@ export async function executeClaimedAgentRun(
         }),
       ],
       generatedImages,
+      generatedVideos,
       memoryEvents,
       promptArtifacts,
       pluginOutputs: pluginSnapshot?.pluginOutputs,

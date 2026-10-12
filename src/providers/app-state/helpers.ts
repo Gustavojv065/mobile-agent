@@ -174,6 +174,7 @@ export function hasEnabledWorkspaceTools(settings: BuiltInToolSettings) {
     settings.workspaceGlob ||
     settings.workspaceListFiles ||
     settings.workspaceRead ||
+    settings.workspaceRenderVideo ||
     settings.workspaceWrite ||
     settings.downloadFile
   );
@@ -476,6 +477,7 @@ export function buildAssistantMetadata(input: {
   appliedSkillIds?: string[];
   executionTimeline?: ExecutionTimelineEvent[];
   generatedImages?: GeneratedImageAttachment[];
+  generatedVideos?: import("@/core/types/app-state").GeneratedVideoAttachment[];
   memoryEvents?: MemoryEvent[];
   promptArtifacts?: PromptArtifact[];
   pluginOutputs?: import("@/core/types/app-state").PluginOutputRecord[];
@@ -502,6 +504,10 @@ export function buildAssistantMetadata(input: {
 
   if (input.generatedImages && input.generatedImages.length > 0) {
     metadata.generatedImages = input.generatedImages;
+  }
+
+  if (input.generatedVideos && input.generatedVideos.length > 0) {
+    metadata.generatedVideos = input.generatedVideos;
   }
 
   if (input.memoryEvents && input.memoryEvents.length > 0) {

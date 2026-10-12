@@ -3,6 +3,7 @@ package expo.modules.htmlvideoexport
 import android.media.MediaCodec
 import android.media.MediaFormat
 import android.media.MediaMuxer
+import android.net.Uri
 import android.util.Base64
 import java.io.File
 import java.nio.ByteBuffer
@@ -24,12 +25,14 @@ internal class H264RemuxSession(
   private val spsHex: String,
   private val ppsHex: String,
 ) : ExportSession {
+  /** `MediaMuxer`/`File` need a raw path; the page hands us a `file://` URI. */
+  private val filePath = fileUriToPath(outputPath)
   private var muxer: MediaMuxer? = null
   private var trackIndex = -1
   private var finished = false
 
   fun begin() {
-    val file = File(outputPath)
+    val file = File(filePath)
     file.parentFile?.mkdirs()
     if (file.exists()) file.delete()
 
@@ -39,7 +42,7 @@ internal class H264RemuxSession(
     format.setInteger(MediaFormat.KEY_BIT_RATE, bitrateFor(width, height))
     format.setInteger(MediaFormat.KEY_FRAME_RATE, fps)
 
-    val muxer = MediaMuxer(outputPath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+    val muxer = MediaMuxer(filePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
     trackIndex = muxer.addTrack(format)
     muxer.start()
     this.muxer = muxer
@@ -76,7 +79,7 @@ internal class H264RemuxSession(
         muxer.release()
       }
     }
-    return outputPath to File(outputPath).length()
+    return outputPath to File(filePath).length()
   }
 
   @Synchronized
@@ -91,7 +94,7 @@ internal class H264RemuxSession(
       }
       muxer.release()
     }
-    File(outputPath).delete()
+    File(filePath).delete()
   }
 }
 
@@ -103,5 +106,22 @@ internal fun bitrateFor(width: Int, height: Int): Int {
     pixels <= 1280 * 720 -> 6_000_000
     pixels <= 1920 * 1080 -> 12_000_000
     else -> 16_000_000
+  }
+}
+
+/**
+ * `MediaMuxer` and `java.io.File` take a filesystem path, but the JS layer hands
+ * us the `file://` URI from `expo-file-system`'s `File`. Passing that URI through
+ * makes the encoder try to open a path literally beginning with `file:` and fail
+ * with `ENOENT`, so strip the scheme (and decode any percent-escapes).
+ */
+internal fun fileUriToPath(uriOrPath: String): String {
+  if (!uriOrPath.startsWith("file:")) {
+    return uriOrPath
+  }
+  return try {
+    Uri.parse(uriOrPath).path ?: uriOrPath.removePrefix("file:")
+  } catch (_: Exception) {
+    uriOrPath.removePrefix("file:")
   }
 }

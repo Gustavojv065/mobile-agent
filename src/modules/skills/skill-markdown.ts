@@ -49,6 +49,7 @@ export const TOOL_ALIAS_TO_BUILT_IN_KEY: Record<string, BuiltInToolKey> = {
   moveentry: "folderMoveEntry",
   question: "question",
   read: "workspaceRead",
+  rendervideo: "workspaceRenderVideo",
   renameentry: "folderRenameEntry",
   schedule: "schedules",
   schedules: "schedules",
@@ -63,6 +64,7 @@ export const TOOL_ALIAS_TO_BUILT_IN_KEY: Record<string, BuiltInToolKey> = {
   workspaceglob: "workspaceGlob",
   workspacegrep: "workspaceGrep",
   workspacelistfiles: "workspaceListFiles",
+  workspacerendervideo: "workspaceRenderVideo",
   workspaceread: "workspaceRead",
   workspacewrite: "workspaceWrite",
   write: "workspaceWrite",
@@ -92,6 +94,7 @@ const BUILT_IN_TOOL_KEY_TO_SKILL_NAME: Record<BuiltInToolKey, string> = {
   workspaceGrep: "Grep",
   workspaceListFiles: "List",
   workspaceRead: "Read",
+  workspaceRenderVideo: "RenderVideo",
   workspaceWrite: "Write",
 };
 

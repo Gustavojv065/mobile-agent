@@ -12,6 +12,7 @@ import {
   buildWorkspaceSystemPrompt,
 } from "@/modules/tools/built-in/prompts";
 import { createReadTool } from "@/modules/tools/built-in/read";
+import { createRenderVideoTool } from "@/modules/tools/built-in/render-video";
 import { createSplitDocumentTool } from "@/modules/tools/built-in/split-document";
 import { createSplitPdfTool } from "@/modules/tools/built-in/split-pdf";
 import type { WorkspaceToolFactoryParams } from "@/modules/tools/built-in/types";
@@ -37,6 +38,7 @@ export function createWorkspaceTools(
       mergePdfs: createMergePdfsTool(params),
       ocr: createOcrTool(params),
       read: createReadTool(params),
+      renderVideo: createRenderVideoTool(params),
       splitDocument: createSplitDocumentTool(params),
       splitPdf: createSplitPdfTool(params),
       updateDocument: createUpdateDocumentTool(params),

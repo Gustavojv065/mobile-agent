@@ -5,6 +5,7 @@ export const DEFAULT_BUILT_IN_TOOL_SETTINGS: BuiltInToolSettings = {
   workspaceRead: true,
   workspaceWrite: true,
   workspaceCreateFile: true,
+  workspaceRenderVideo: true,
   workspaceGrep: true,
   workspaceGlob: true,
   workspaceEdit: true,
@@ -75,6 +76,10 @@ export const BUILT_IN_FILE_TOOL_CONTROLS: Array<{
   {
     label: "Create file",
     keys: ["workspaceCreateFile", "folderCreateFile"],
+  },
+  {
+    label: "Render video",
+    keys: ["workspaceRenderVideo"],
   },
   {
     label: "Search files",

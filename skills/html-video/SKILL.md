@@ -1,11 +1,33 @@
+---
+name: html-video
+description: Make videos, animations, and MP4s by writing a self-contained HTML canvas scene, then render it with the renderVideo tool.
+keywords:
+  - video
+  - mp4
+  - animation
+  - animate
+  - canvas
+  - render video
+  - make a video
+allowed-tools:
+  - RenderVideo
+  - Read
+  - Create
+---
+
 # HTML Video Export
 
 Use this skill when the user asks you to **make a video**, an animation, a
 "recordable" scene, or an MP4 — for example "make a video about how a black
 hole works" or "animate the solar system and export it".
 
-The app embeds a recorder in the HTML preview. When the user taps **Export
-MP4**, the recorder:
+Your job: produce a **single, self-contained HTML document** that implements the
+contract below, then render it to an MP4 with the **`renderVideo` tool**. The
+tool records the scene in a hidden WebView and returns an MP4 that is delivered
+to the user directly in the chat as a playable video card — the user can play,
+save, or share it. No preview taps, no manual export.
+
+Under the hood the recorder:
 
 1. Finds the page's canvas and resizes it to the export resolution.
 2. Calls `render(t, canvas, ctx)` once per frame at the requested FPS.
@@ -13,10 +35,6 @@ MP4**, the recorder:
    `VideoEncoder`) and streams the H.264 chunks to a native MP4 muxer. On
    WebViews without WebCodecs it falls back to JPEG frames re-encoded on the
    native hardware encoder.
-
-Your job: produce a **single, self-contained HTML document** that implements
-the contract below. The user previews and records whatever the page shows — no
-interaction, no audio, one canvas.
 
 ## Contract
 
@@ -41,6 +59,41 @@ Define this before the body finishes loading:
 The recorder picks `document.getElementById(canvasId)`, or the first visible
 `<canvas>` on the page when no id is given.
 
+## Delivering the MP4
+
+When the user wants the finished file — "make a video and give me the MP4" —
+call the **`renderVideo` tool** with the complete HTML document:
+
+- `html`: the full self-contained HTML (preferred).
+- `fileId`: alternatively, the id of an HTML file you already saved to the
+  workspace.
+- `name`: optional output name; a `.mp4` extension is added if missing.
+
+```
+renderVideo({ html: "<!doctype html>…", name: "black-hole.mp4" })
+```
+
+The tool waits for the recording to finish and returns the saved MP4
+(`fileId`, `link`, `size`). It does **not** need a preview, a meta tag, or any
+user interaction. Rendering is real time: a 10-second video takes ~10 seconds,
+so call it once with a finished scene and do not retry needlessly.
+
+After the tool returns, embed the video **inline** in your response exactly
+where you talk about it, the same way you would embed an image:
+
+```
+![black-hole.mp4](workspace://<fileId from the tool result>)
+```
+
+Use the returned `fileId`. The embed renders as a playable in-chat video with
+its first frame as the poster — tap to play, save, or share. Do not paste a
+bare `workspace://` link and do not describe the video as attached at the end;
+place the embed where it belongs in your message.
+
+When the user instead wants to **iterate on a preview**, just return the HTML in
+a fenced ```html code block so it renders in the preview dialog. Do not call the
+tool until the scene is ready.
+
 ## Hard rules
 
 1. **One visible `<canvas>`** holding the animation. Use `canvasId` whenever
@@ -58,22 +111,6 @@ The recorder picks `document.getElementById(canvasId)`, or the first visible
 5. **Self-contained file.** Inline all CSS/JS. Avoid CDNs (the device may be
    offline). Three.js is allowed if you inline it.
 6. **Silent.** v1 output has no audio track.
-
-## Auto-export (skip the preview step)
-
-When the user asks for the finished video file directly — "make a video and
-give me the MP4" — add this meta tag to the document `<head>`:
-
-```html
-<meta name="mobile-agent-video" content="auto-export">
-```
-
-The app then records the page automatically in a hidden WebView and saves the
-MP4 to Downloads, with no preview and no taps. Everything in the hard rules
-above still applies; the recorder starts as soon as the document finishes
-loading, so the scene must be ready at `t = 0`. Leave the meta tag out when the
-user only wants something to preview or iterate on — they keep the manual
-Export button in the preview dialog.
 
 ## Patterns
 
@@ -139,8 +176,7 @@ Three.js/WebGL notes:
   real-time.
 - No per-frame allocations: create gradients, paths, and geometry once.
 - Complex scenes: WebGL. Avoid heavy 2D effects like `shadowBlur` everywhere.
-- The export is real time: a 10-second video takes ~10 seconds to record. What
-  the user sees in the preview is exactly what gets recorded.
+- The export is real time: a 10-second video takes ~10 seconds to record.
 
 ## When plain scrolling/DOM footage is requested
 
@@ -157,6 +193,6 @@ inside one canvas scene.
 - [ ] exactly one recorded canvas, sized to `width × height`
 - [ ] config values inside the allowed ranges (duration 1–45, fps 5–60)
 - [ ] self-contained (no external CDN without warning the user about offline)
-- [ ] if the user asked for the file directly:
-      `<meta name="mobile-agent-video" content="auto-export">` in `<head>`
+- [ ] if the user asked for the file directly: called `renderVideo` with the
+      full HTML and reported the returned MP4 (do **not** rely on a meta tag)
 - [ ] complete scene: start state at t=0, motion clearly readable in 10 s
