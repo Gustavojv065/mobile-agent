@@ -84,7 +84,8 @@ export default function LibraryScreen() {
 
     try {
       // Previewable kinds (images, html, csv, text) open in the in-app
-      // dialog; everything else still goes to the external handler.
+      // dialog; pdf/docx/xlsx/pptx and everything else go to the external
+      // handler so they render faithfully in their real apps.
       if (getFilePreviewKind(workspaceFile)) {
         setPreviewFile(workspaceFile);
         return;
