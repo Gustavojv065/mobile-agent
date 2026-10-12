@@ -47,24 +47,27 @@ type Viewport = "desktop" | "mobile";
 type ViewMode = "code" | "preview";
 
 export type CodePreviewDialogProps = {
-  /** Complete HTML document, as built by `buildPreviewDocument`. */
-  html: string;
+  /** Complete HTML document, as built by `buildPreviewDocument`. Omit to open straight in source (code) mode. */
+  html?: string;
   /** Raw fenced code, shown when the user switches to the code view. */
   code: string;
   language: string;
+  /** Which mode the dialog opens in. Defaults to "preview" when `html` is present. */
+  initialMode?: ViewMode;
   onDismiss: () => void;
 };
 
 /**
- * Full-screen rendered output for a markup code fence.
+ * Full-screen code/preview viewer.
  *
- * Desktop uses a 1280px browser viewport scaled to the measured frame width.
- * The native WebView stays frame-sized so clipping and scrolling agree.
+ * Usually you open it for a rendered markup fence, but non-markup code can
+ * open straight into the highlighted source view by omitting `html`.
  */
 export function CodePreviewDialog({
-  html,
+  html = "",
   code,
   language,
+  initialMode,
   onDismiss,
 }: CodePreviewDialogProps) {
   return (
@@ -81,6 +84,7 @@ export function CodePreviewDialog({
         <CodePreviewContent
           code={code}
           html={html}
+          initialMode={initialMode}
           language={language}
           onDismiss={onDismiss}
         />
@@ -95,14 +99,20 @@ export function CodePreviewDialog({
  * unmounts/remounts (which reads as a blink).
  */
 export function CodePreviewContent({
-  html,
+  html = "",
   code,
   language,
+  initialMode,
   onDismiss,
 }: CodePreviewDialogProps) {
   const theme = useTheme();
+  // Without markup there is nothing to preview, so the dialog opens in (and is
+  // locked to) the highlighted source view.
+  const canPreview = html.trim().length > 0;
   const [viewport, setViewport] = useState<Viewport>("mobile");
-  const [mode, setMode] = useState<ViewMode>("preview");
+  const [mode, setMode] = useState<ViewMode>(
+    initialMode ?? (canPreview ? "preview" : "code"),
+  );
   const [frame, setFrame] = useState<{ height: number; width: number } | null>(
     null,
   );
@@ -354,7 +364,13 @@ export function CodePreviewContent({
                   : "Fits your screen"}
             </Text>
           </View>
-          <ViewModeToggle value={mode} onChange={setMode} disabled={saving || videoExport !== null} />
+          {canPreview ? (
+            <ViewModeToggle
+              value={mode}
+              onChange={setMode}
+              disabled={saving || videoExport !== null}
+            />
+          ) : null}
           {canExportVideo && mode === "preview" ? (
             <ExportVideoButton
               disabled={videoExport !== null || !frame}

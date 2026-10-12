@@ -1291,11 +1291,23 @@ const ChatInput = memo(function ChatInput({
   }, [editDraft, editNonce]);
 
   const maxComposerInputHeight = Math.min(320, screenHeight * 0.35);
-  const composerInputHeight = Math.min(
-    maxComposerInputHeight,
-    Math.max(76, composerContentHeight),
-  );
-  const composerScrollEnabled = composerContentHeight > maxComposerInputHeight;
+  // The native content size can go stale when the field is cleared while
+  // blurred (iOS does not always re-emit `onContentSizeChange`), which used to
+  // leave an emptied composer stuck at max height until the user typed again.
+  // Gating on real content and resetting the measurement on empty keeps the
+  // height honest without depending on that event.
+  const hasComposerText = prompt.trim().length > 0;
+  const composerInputHeight = hasComposerText
+    ? Math.min(maxComposerInputHeight, Math.max(76, composerContentHeight))
+    : 76;
+  const composerScrollEnabled =
+    hasComposerText && composerContentHeight > maxComposerInputHeight;
+
+  useEffect(() => {
+    if (!hasComposerText) {
+      setComposerContentHeight(0);
+    }
+  }, [hasComposerText]);
 
   const composerTrigger = useMemo(() => getComposerTrigger(prompt), [prompt]);
 

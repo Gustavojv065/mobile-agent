@@ -11,7 +11,6 @@ import {
   Bookmark,
   Check,
   CheckCircle2,
-  ChevronDown,
   ChevronRight,
   Circle,
   Clock3,
@@ -26,6 +25,7 @@ import {
   FileText,
   FileVideo,
   Loader,
+  Maximize2,
   Pencil,
   Play,
   Presentation,
@@ -75,11 +75,12 @@ import Animated, {
 import { refractor } from "refractor";
 import jsx from "refractor/jsx";
 import tsx from "refractor/tsx";
-import { SvgXml } from "react-native-svg";
+import { Svg, SvgXml, Defs, LinearGradient, Rect, Stop } from "react-native-svg";
 
 import { Bubble, BubbleContent } from "@/components/ui/bubble";
 import { Button } from "@/components/ui/button";
 import { CodePreviewDialog } from "@/components/ui/code-preview-dialog";
+import { CollapsibleChevron, CollapsibleSection } from "@/components/ui/collapsible-section";
 import {
   Drawer,
   DrawerBody,
@@ -725,7 +726,187 @@ function CopyableMarkdownBlock({
   );
 }
 
-const MAX_HIGHLIGHT_LENGTH = 4000;
+const SYNC_HIGHLIGHT_LENGTH = 2000;
+const HIGHLIGHT_CACHE_LIMIT = 64;
+/** Taller blocks start collapsed so a long file can't swallow the message. */
+const COLLAPSED_CODE_LINES = 18;
+
+/**
+ * Refractor is synchronous, so it can noticeably block the JS thread on large
+ * files. Highlighting the rendered slice (usually the collapsed first lines)
+ * and caching the AST keeps streaming smooth without dropping color to plain
+ * text the way the old length cap did.
+ */
+const highlightNodeCache = new Map<string, SyntaxNode[] | null>();
+
+function highlightCacheKey(code: string, language: string) {
+  return `${language}\u0000${code}`;
+}
+
+function computeHighlightNodes(
+  code: string,
+  language: string,
+): SyntaxNode[] | null {
+  if (!language || !refractor.registered(language)) {
+    return null;
+  }
+
+  const key = highlightCacheKey(code, language);
+  const cached = highlightNodeCache.get(key);
+
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  let nodes: SyntaxNode[] | null = null;
+
+  try {
+    nodes = refractor.highlight(code, language).children as SyntaxNode[];
+  } catch {
+    nodes = null;
+  }
+
+  if (highlightNodeCache.size >= HIGHLIGHT_CACHE_LIMIT) {
+    const oldest = highlightNodeCache.keys().next().value;
+
+    if (oldest !== undefined) {
+      highlightNodeCache.delete(oldest);
+    }
+  }
+
+  highlightNodeCache.set(key, nodes);
+
+  return nodes;
+}
+
+/**
+ * Code text with optional syntax highlighting. Small snippets highlight
+ * synchronously; large ones render plain first and upgrade after paint so a
+ * big fence never stalls the message list.
+ */
+function SyntaxCodeText({
+  code,
+  language,
+  textColor,
+}: {
+  code: string;
+  language: string;
+  textColor: string;
+}) {
+  const theme = useTheme();
+  const cacheKey = highlightCacheKey(code, language);
+  const immediateNodes = useMemo(
+    () =>
+      code.length <= SYNC_HIGHLIGHT_LENGTH
+        ? computeHighlightNodes(code, language)
+        : null,
+    [code, language],
+  );
+  const [deferred, setDeferred] = useState<{
+    key: string;
+    nodes: SyntaxNode[] | null;
+  } | null>(null);
+
+  useEffect(() => {
+    if (code.length <= SYNC_HIGHLIGHT_LENGTH) {
+      return;
+    }
+
+    if (highlightNodeCache.has(cacheKey)) {
+      setDeferred({
+        key: cacheKey,
+        nodes: highlightNodeCache.get(cacheKey) ?? null,
+      });
+      return;
+    }
+
+    let cancelled = false;
+    const timeout = setTimeout(() => {
+      if (!cancelled) {
+        setDeferred({
+          key: cacheKey,
+          nodes: computeHighlightNodes(code, language),
+        });
+      }
+    }, 0);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timeout);
+    };
+  }, [code, language, cacheKey]);
+
+  const nodes =
+    code.length <= SYNC_HIGHLIGHT_LENGTH
+      ? immediateNodes
+      : deferred?.key === cacheKey
+        ? deferred.nodes
+        : null;
+
+  return (
+    <Text
+      selectable
+      style={{
+        color: textColor,
+        fontFamily: "monospace",
+        fontSize: 14,
+        lineHeight: 22,
+        padding: 12,
+      }}
+    >
+      {nodes ? renderSyntaxNodes(nodes, textColor, theme) : code}
+    </Text>
+  );
+}
+
+/** Soft fade over the last visible lines of a collapsed code block. */
+function CodeFade({ color }: { color: string }) {
+  return (
+    <Svg height={28} width="100%">
+      <Defs>
+        <LinearGradient id="codeBlockFade" x1="0" y1="0" x2="0" y2="1">
+          <Stop offset="0" stopColor={color} stopOpacity={0} />
+          <Stop offset="1" stopColor={color} stopOpacity={1} />
+        </LinearGradient>
+      </Defs>
+      <Rect fill="url(#codeBlockFade)" height={28} width="100%" />
+    </Svg>
+  );
+}
+
+/** Small round icon button used in code-block headers (e.g. full screen). */
+function ViewerIconButton({
+  accessibilityLabel,
+  icon,
+  onPress,
+}: {
+  accessibilityLabel: string;
+  icon: ReactNode;
+  onPress: () => void;
+}) {
+  const theme = useTheme();
+
+  return (
+    <Pressable
+      accessibilityLabel={accessibilityLabel}
+      accessibilityRole="button"
+      onPress={onPress}
+      style={({ pressed }) => [
+        {
+          alignItems: "center",
+          backgroundColor: theme.backgroundSelected,
+          borderRadius: 999,
+          height: 26,
+          justifyContent: "center",
+          width: 26,
+        },
+        pressed ? { opacity: 0.7 } : null,
+      ]}
+    >
+      {icon}
+    </Pressable>
+  );
+}
 
 const PREVIEWABLE_LANGUAGES = new Set(["htm", "html", "svg", "xml"]);
 
@@ -768,75 +949,102 @@ function CopyableCodeBlock({
   language?: string;
 }) {
   const theme = useTheme();
-  // Recycling, or a streaming delta that rewrites the fence, closes the dialog
-  // so a preview can never outlive the markup it was built from.
-  const [previewOpen, setPreviewOpen] = useRecyclingState(false, [code]);
+  // Recycling, or a streaming delta that rewrites the fence, closes the viewer
+  // so it can never outlive the code it was built from.
+  const [viewer, setViewer] = useRecyclingState<null | "code" | "preview">(
+    null,
+    [code],
+  );
   const previewable = isPreviewableLanguage(language);
   const previewDocument = useMemo(
     () => (previewable ? buildPreviewDocument(code, language) : null),
     [code, language, previewable],
   );
-  const highlighted = useMemo(() => {
-    if (
-      !language ||
-      !refractor.registered(language) ||
-      code.length > MAX_HIGHLIGHT_LENGTH
-    ) {
-      return null;
-    }
-
-    try {
-      const nodes = refractor.highlight(code, language)
-        .children as SyntaxNode[];
-      return nodes;
-    } catch {
-      return null;
-    }
-  }, [code, language]);
+  const lines = useMemo(() => code.split("\n"), [code]);
+  const collapsible = lines.length > COLLAPSED_CODE_LINES;
+  const [expanded, setExpanded] = useRecyclingState(!collapsible, [code]);
+  const collapsed = collapsible && !expanded;
+  const visibleCode = collapsed
+    ? lines.slice(0, COLLAPSED_CODE_LINES).join("\n")
+    : code;
+  const hiddenLineCount = Math.max(lines.length - COLLAPSED_CODE_LINES, 0);
 
   return (
     <CopyableMarkdownBlock
       copyLabel="Copy code"
       copyValue={code}
       headerAccessory={
-        previewable ? (
-          <PreviewButton
+        <>
+          {previewable ? (
+            <PreviewButton
+              onPress={() => {
+                setViewer("preview");
+              }}
+            />
+          ) : null}
+          <ViewerIconButton
+            accessibilityLabel="Open code in full screen"
+            icon={<Maximize2 color={theme.text} size={14} />}
             onPress={() => {
-              setPreviewOpen(true);
+              setViewer("code");
             }}
           />
-        ) : null
+        </>
       }
       label={language || "Code"}
     >
-      <ScrollView
-        horizontal
-        nestedScrollEnabled
-        showsHorizontalScrollIndicator
-        style={{ maxWidth: "100%" }}
-      >
-        <Text
-          selectable
-          style={{
-            color: theme.text,
-            fontFamily: "monospace",
-            fontSize: 14,
-            lineHeight: 22,
-            padding: 12,
-          }}
+      <View className="relative">
+        <ScrollView
+          horizontal
+          nestedScrollEnabled
+          showsHorizontalScrollIndicator
+          style={{ maxWidth: "100%" }}
         >
-          {highlighted
-            ? renderSyntaxNodes(highlighted, theme.text, theme)
-            : code}
-        </Text>
-      </ScrollView>
-      {previewOpen && previewDocument ? (
+          <SyntaxCodeText
+            code={visibleCode}
+            language={language}
+            textColor={theme.text}
+          />
+        </ScrollView>
+        {collapsed ? (
+          <View
+            className="absolute bottom-0 left-0 right-0"
+            pointerEvents="none"
+          >
+            <CodeFade color={theme.backgroundSelected} />
+          </View>
+        ) : null}
+      </View>
+      {collapsible ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityState={{ expanded }}
+          className="h-9 flex-row items-center justify-center gap-sp-1 border-t border-border dark:border-border-dark"
+          onPress={() => {
+            setExpanded((current) => !current);
+          }}
+          style={({ pressed }) => (pressed ? { opacity: 0.72 } : null)}
+        >
+          <Text className="font-sans text-xs font-medium text-muted-foreground dark:text-muted-foreground-dark">
+            {expanded
+              ? "Show less"
+              : `Show ${hiddenLineCount} more line${
+                  hiddenLineCount === 1 ? "" : "s"
+                }`}
+          </Text>
+          <CollapsibleChevron color={theme.textSecondary} expanded={expanded} />
+        </Pressable>
+      ) : null}
+      {viewer ? (
         <CodePreviewDialog
           code={code}
-          html={previewDocument}
+          html={
+            viewer === "preview" && previewDocument ? previewDocument : ""
+          }
+          initialMode={viewer}
           language={language}
           onDismiss={() => {
-            setPreviewOpen(false);
+            setViewer(null);
           }}
         />
       ) : null}
@@ -1119,39 +1327,6 @@ function getFileTypeIcon(file: WorkspaceFile) {
   }
 
   return FileIcon;
-}
-
-function ExpandChevron({
-  color,
-  expanded,
-}: {
-  color: string;
-  expanded: boolean;
-}) {
-  const reduceMotion = useReducedMotion();
-  const rotation = useSharedValue(expanded ? 180 : 0);
-
-  useEffect(() => {
-    rotation.value = withTiming(expanded ? 180 : 0, {
-      duration: reduceMotion ? 0 : 180,
-      easing: Easing.inOut(Easing.quad),
-    });
-
-    return () => cancelAnimation(rotation);
-  }, [expanded, reduceMotion, rotation]);
-
-  const animatedStyle = useAnimatedStyle(() => ({
-    transform: [{ rotate: `${rotation.value}deg` }],
-  }));
-
-  return (
-    <Animated.View
-      className="h-3.5 w-3.5 shrink-0 items-center justify-center"
-      style={animatedStyle}
-    >
-      <ChevronDown color={color} size={14} />
-    </Animated.View>
-  );
 }
 
 function SpinningLoader({ color, size }: { color: string; size: number }) {
@@ -1854,161 +2029,96 @@ export const ChatMessage = memo(function ChatMessage({
               {isAssistant ? (
                 <View className="gap-sp-3">
                   {reasoningLabel ? (
-                    <View className="gap-sp-2">
-                      <Pressable
-                        accessibilityRole="button"
-                        accessibilityState={{ expanded: reasoningExpanded }}
-                        className="self-start flex-row items-center gap-sp-2"
-                        onPress={() => {
-                          setReasoningExpanded((current) => !current);
-                        }}
-                        style={({ pressed }) =>
-                          pressed ? { opacity: 0.72 } : null
-                        }
-                      >
-                        <Text className="font-sans text-sm text-muted-foreground dark:text-muted-foreground-dark">
-                          {reasoningLabel}
+                    <CollapsibleSection
+                      contentClassName="flex-row gap-sp-2"
+                      expanded={reasoningExpanded}
+                      label={reasoningLabel}
+                      onExpandedChange={setReasoningExpanded}
+                    >
+                      <View className="w-5 items-center">
+                        <Clock3 color={theme.textSecondary} size={16} />
+                        <View className="my-1 min-h-6 w-px flex-1 bg-border dark:bg-border-dark" />
+                        <Check color={theme.textSecondary} size={16} />
+                      </View>
+                      <View className="min-w-0 flex-1 gap-sp-3 pb-0.5">
+                        <Text selectable style={reasoningMarkdownStyles.body}>
+                          {reasoningText}
                         </Text>
-                        <ExpandChevron
-                          color={theme.textSecondary}
-                          expanded={reasoningExpanded}
-                        />
-                      </Pressable>
-
-                      {reasoningExpanded ? (
-                        <View className="flex-row gap-sp-2">
-                          <View className="w-5 items-center">
-                            <Clock3 color={theme.textSecondary} size={16} />
-                            <View className="my-1 min-h-6 w-px flex-1 bg-border dark:bg-border-dark" />
-                            <Check color={theme.textSecondary} size={16} />
-                          </View>
-                          <View className="min-w-0 flex-1 gap-sp-3 pb-0.5">
-                            <Text
-                              selectable
-                              style={reasoningMarkdownStyles.body}
-                            >
-                              {reasoningText}
-                            </Text>
-                            <Text className="font-sans text-sm text-muted-foreground dark:text-muted-foreground-dark">
-                              {reasoningInProgress ? "Working" : "Done"}
-                            </Text>
-                          </View>
-                        </View>
-                      ) : null}
-                    </View>
+                        <Text className="font-sans text-sm text-muted-foreground dark:text-muted-foreground-dark">
+                          {reasoningInProgress ? "Working" : "Done"}
+                        </Text>
+                      </View>
+                    </CollapsibleSection>
                   ) : null}
 
                   {memoryEventLabel ? (
-                    <View className="gap-sp-2">
-                      <Pressable
-                        accessibilityLabel={memoryEventLabel}
-                        accessibilityRole="button"
-                        accessibilityState={{ expanded: memoryExpanded }}
-                        className="self-start flex-row items-center gap-sp-2"
-                        onPress={() => {
-                          setMemoryExpanded((current) => !current);
-                        }}
-                        style={({ pressed }) =>
-                          pressed ? { opacity: 0.72 } : null
-                        }
-                      >
-                        <Text className="font-sans text-sm text-muted-foreground dark:text-muted-foreground-dark">
-                          {memoryEventLabel}
-                        </Text>
-                        <ExpandChevron
-                          color={theme.textSecondary}
-                          expanded={memoryExpanded}
-                        />
-                      </Pressable>
-                      {memoryExpanded ? (
-                        <View className="gap-sp-2">
-                          {memoryEvents.map((event) => (
-                            <View key={event.id} className="gap-1">
-                              {memoryEvents.length > 1 ? (
-                                <Text className="font-sans text-sm font-medium text-muted-foreground dark:text-muted-foreground-dark">
-                                  {getMemoryEventLabel(event.kind)}
-                                </Text>
-                              ) : null}
-                              <Text
-                                selectable
-                                className="font-sans text-sm text-muted-foreground dark:text-muted-foreground-dark"
-                              >
-                                {event.content}
-                              </Text>
-                            </View>
-                          ))}
+                    <CollapsibleSection
+                      contentClassName="gap-sp-2"
+                      expanded={memoryExpanded}
+                      label={memoryEventLabel}
+                      onExpandedChange={setMemoryExpanded}
+                    >
+                      {memoryEvents.map((event) => (
+                        <View key={event.id} className="gap-1">
+                          {memoryEvents.length > 1 ? (
+                            <Text className="font-sans text-sm font-medium text-muted-foreground dark:text-muted-foreground-dark">
+                              {getMemoryEventLabel(event.kind)}
+                            </Text>
+                          ) : null}
+                          <Text
+                            selectable
+                            className="font-sans text-sm text-muted-foreground dark:text-muted-foreground-dark"
+                          >
+                            {event.content}
+                          </Text>
                         </View>
-                      ) : null}
-                    </View>
+                      ))}
+                    </CollapsibleSection>
                   ) : null}
 
                   {taskLabel ? (
-                    <View className="gap-sp-2">
-                      <Pressable
-                        accessibilityRole="button"
-                        className="self-start flex-row items-center gap-sp-2"
-                        onPress={() => {
-                          setTasksExpanded((current) => !current);
-                        }}
-                        style={({ pressed }) =>
-                          pressed ? { opacity: 0.72 } : null
-                        }
-                      >
-                        {/* <ListChecks color={theme.textSecondary} size={16} /> */}
-                        <Text className="font-sans text-sm text-muted-foreground dark:text-muted-foreground-dark">
-                          {taskLabel}
-                        </Text>
-                        <ChevronDown
-                          color={theme.textSecondary}
-                          size={14}
-                          style={{
-                            transform: [
-                              { rotate: tasksExpanded ? "180deg" : "0deg" },
-                            ],
-                          }}
-                        />
-                      </Pressable>
-
-                      {tasksExpanded ? (
-                        <View className="gap-sp-1.5 border-l border-border pl-sp-3 dark:border-border-dark">
-                          {todoList.map((task) => (
-                            <View
-                              key={task.id}
-                              className="flex-row items-start gap-sp-2"
-                            >
-                              {task.status === "completed" ? (
-                                <CheckCircle2
-                                  color={theme.textSecondary}
-                                  size={16}
-                                  style={{ marginTop: 1 }}
-                                />
-                              ) : task.status === "in_progress" ? (
-                                <SpinningLoader
-                                  color={theme.textSecondary}
-                                  size={16}
-                                />
-                              ) : (
-                                <Circle
-                                  color={theme.textSecondary}
-                                  size={16}
-                                  style={{ marginTop: 1 }}
-                                />
-                              )}
-                              <Text
-                                className={cn(
-                                  "min-w-0 flex-1 font-sans text-sm",
-                                  task.status === "completed"
-                                    ? "text-muted-foreground line-through dark:text-muted-foreground-dark"
-                                    : "text-foreground dark:text-foreground-dark",
-                                )}
-                              >
-                                {task.title}
-                              </Text>
-                            </View>
-                          ))}
+                    <CollapsibleSection
+                      contentClassName="gap-sp-1.5 border-l border-border pl-sp-3 dark:border-border-dark"
+                      expanded={tasksExpanded}
+                      label={taskLabel}
+                      onExpandedChange={setTasksExpanded}
+                    >
+                      {todoList.map((task) => (
+                        <View
+                          key={task.id}
+                          className="flex-row items-start gap-sp-2"
+                        >
+                          {task.status === "completed" ? (
+                            <CheckCircle2
+                              color={theme.textSecondary}
+                              size={16}
+                              style={{ marginTop: 1 }}
+                            />
+                          ) : task.status === "in_progress" ? (
+                            <SpinningLoader
+                              color={theme.textSecondary}
+                              size={16}
+                            />
+                          ) : (
+                            <Circle
+                              color={theme.textSecondary}
+                              size={16}
+                              style={{ marginTop: 1 }}
+                            />
+                          )}
+                          <Text
+                            className={cn(
+                              "min-w-0 flex-1 font-sans text-sm",
+                              task.status === "completed"
+                                ? "text-muted-foreground line-through dark:text-muted-foreground-dark"
+                                : "text-foreground dark:text-foreground-dark",
+                            )}
+                          >
+                            {task.title}
+                          </Text>
                         </View>
-                      ) : null}
-                    </View>
+                      ))}
+                    </CollapsibleSection>
                   ) : null}
 
                   {anchoredTermuxRuns.length > 0 ? (
