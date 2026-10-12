@@ -25,7 +25,7 @@ import { buildCodeDocument } from "@/modules/preview/code-document";
 import { withDesktopPreviewViewport } from "@/modules/preview/html-document";
 import { handlePreviewDownloadMessage, PREVIEW_DOWNLOAD_HOOK } from "@/modules/preview/preview-downloads";
 import { buildVideoExportDocument } from "@/modules/preview/video-recorder";
-import { VideoExportController } from "@/modules/preview/video-export-messages";
+import { VideoExportController, type VideoExportResult } from "@/modules/preview/video-export-messages";
 import { getHtmlVideoExportModule } from "html-video-export";
 
 /**
@@ -186,12 +186,12 @@ export function CodePreviewContent({
     file.create({ overwrite: true, intermediates: true });
     exportFileRef.current = file;
 
-    const finishExport = async (result: { uri: string; sizeBytes: number }) => {
+    const finishExport = async (result: VideoExportResult) => {
       setVideoExport({ progress: 1, status: "finishing" });
       try {
         const saved = await downloadFile(result.uri, `video-${Date.now()}.mp4`, "video/mp4");
         if (!saved) throw new Error("The video could not be saved to Downloads.");
-        Alert.alert("Video saved", `${saved.name} has been saved to Downloads.`, [
+        Alert.alert("Video saved", `${saved.name} has been saved to Downloads${result.hasAudio ? " with audio" : ""}.`, [
           { text: "Share", onPress: () => void shareVideo(file) },
           { text: "OK" },
         ]);

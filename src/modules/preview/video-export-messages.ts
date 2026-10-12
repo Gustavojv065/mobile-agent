@@ -28,9 +28,28 @@ export type VideoExportMessage =
       base64: string;
     }
   | { type: "mobileAgentVideoFrame"; index: number; frameCount: number; base64: string }
+  | {
+      type: "mobileAgentVideoAudioConfig";
+      sampleRate: number;
+      channels: number;
+      encoding?: "aac" | "pcm16";
+    }
+  | { type: "mobileAgentVideoAudioChunk"; pts: number; base64: string }
+  | { type: "mobileAgentVideoAudioPcmChunk"; pts: number; base64: string }
+  | { type: "mobileAgentVideoAudioUnsupported"; reason?: string }
+  | { type: "mobileAgentVideoAudioWarning"; reason?: string }
   | { type: "mobileAgentVideoDone"; emitted?: number }
   | { type: "mobileAgentVideoUnsupported" }
   | { type: "mobileAgentVideoError"; message: string };
+
+export type VideoExportResult = {
+  uri: string;
+  sizeBytes: number;
+  /** True when the muxer wrote at least one audio sample. */
+  hasAudio: boolean;
+  /** Non-fatal audio notes (skipped cues, blocked playback, ...). */
+  audioWarnings: string[];
+};
 
 export function isVideoExportMessage(value: unknown): value is VideoExportMessage {
   if (typeof value !== "object" || value === null) return false;
@@ -43,7 +62,7 @@ export type VideoExportControllerOptions = {
   module: HtmlVideoExportNativeModule;
   onProgress: (progress: number) => void;
   onFinishing: () => void;
-  onResult: (result: { uri: string; sizeBytes: number }) => void | Promise<void>;
+  onResult: (result: VideoExportResult) => void | Promise<void>;
   onError: (message: string, kind?: "unsupported") => void;
 };
 
@@ -61,6 +80,12 @@ export class VideoExportController {
   private chain: Promise<void> = Promise.resolve();
   private session: VideoExportSession = "idle";
   private config: VideoExportConfigMessage | null = null;
+  private audioFormat: {
+    sampleRate: number;
+    channels: number;
+    encoding: "aac" | "pcm16";
+  } | null = null;
+  private audioWarnings: string[] = [];
   private lastProgress = 0;
   private queued = 0;
 
@@ -130,6 +155,7 @@ export class VideoExportController {
         const config = this.config;
         if (!config) throw new Error("Video export config was not received.");
         if (this.session === "recording") return;
+        await this.configureAudio();
         await this.module.beginH264(
           this.outputPath,
           config.width,
@@ -160,6 +186,7 @@ export class VideoExportController {
         const config = this.config;
         if (!config) throw new Error("Video export config was not received.");
         if (this.session !== "recording") {
+          await this.configureAudio();
           await this.module.beginFrames(
             this.outputPath,
             config.width,
@@ -184,7 +211,60 @@ export class VideoExportController {
         this.onFinishing();
         const result = await this.module.finish();
         this.session = "done";
-        await this.onResult(result);
+        await this.onResult({ ...result, audioWarnings: this.audioWarnings });
+        return;
+      }
+      case "mobileAgentVideoAudioConfig": {
+        const sampleRate = Math.round(message.sampleRate);
+        const channels = Math.round(message.channels);
+        const encoding = message.encoding ?? "aac";
+        if (
+          !Number.isFinite(sampleRate) ||
+          sampleRate <= 0 ||
+          !Number.isFinite(channels) ||
+          channels <= 0 ||
+          (encoding !== "aac" && encoding !== "pcm16")
+        ) {
+          throw new Error("Invalid audio configuration from the page.");
+        }
+        if (this.session !== "idle") {
+          throw new Error("Audio configuration arrived after the export started.");
+        }
+        this.audioFormat = { sampleRate, channels, encoding };
+        // PCM can arrive before the first video frame/CSD. Start its native
+        // encoder now; encoded samples are buffered until the muxer exists.
+        if (encoding === "pcm16") {
+          await this.module.setAudioPcmFormat(sampleRate, channels);
+        }
+        return;
+      }
+      case "mobileAgentVideoAudioChunk": {
+        if (this.session === "failed" || this.session === "done") return;
+        if (!this.audioFormat) {
+          throw new Error("Audio arrived before its configuration.");
+        }
+        if (this.audioFormat.encoding !== "aac") {
+          throw new Error("AAC audio arrived on a PCM audio track.");
+        }
+        await this.module.pushAudioChunk(Math.round(message.pts), message.base64);
+        return;
+      }
+      case "mobileAgentVideoAudioPcmChunk": {
+        if (this.session === "failed" || this.session === "done") return;
+        if (!this.audioFormat) {
+          throw new Error("Audio arrived before its configuration.");
+        }
+        if (this.audioFormat.encoding !== "pcm16") {
+          throw new Error("PCM audio arrived on an AAC audio track.");
+        }
+        await this.module.pushPcmChunk(Math.round(message.pts), message.base64);
+        return;
+      }
+      case "mobileAgentVideoAudioUnsupported":
+      case "mobileAgentVideoAudioWarning": {
+        const reason = message.reason || "Audio was skipped.";
+        this.audioWarnings.push(reason);
+        console.warn(`[video-export] ${reason}`);
         return;
       }
       case "mobileAgentVideoUnsupported": {
@@ -198,6 +278,16 @@ export class VideoExportController {
         this.fail(message.message || "Video export failed.");
         return;
       }
+    }
+  }
+
+  private async configureAudio(): Promise<void> {
+    if (!this.audioFormat) return;
+    const { channels, encoding, sampleRate } = this.audioFormat;
+    if (encoding === "pcm16") {
+      return;
+    } else {
+      await this.module.setAudioFormat(sampleRate, channels);
     }
   }
 

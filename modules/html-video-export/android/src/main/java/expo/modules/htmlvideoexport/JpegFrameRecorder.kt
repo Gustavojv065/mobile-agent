@@ -26,7 +26,9 @@ internal class JpegFrameRecorder(
   private val width: Int,
   private val height: Int,
   private val fps: Int,
-) : ExportSession {
+  private val audioSpec: AudioSpec? = null,
+  private val bufferedAudio: List<Pair<Long, ByteArray>> = emptyList(),
+) : ExportSession, AudioCapable {
   /** `MediaMuxer`/`File` need a raw path; the page hands us a `file://` URI. */
   private val filePath = fileUriToPath(outputPath)
   private var codec: MediaCodec? = null
@@ -34,6 +36,7 @@ internal class JpegFrameRecorder(
   private var muxer: MediaMuxer? = null
   private var muxerStarted = false
   private var trackIndex = -1
+  private var audio: AudioTrackWriter? = null
   private var finished = false
   private val bufferInfo = MediaCodec.BufferInfo()
   private var pendingTimestampUs = 0L
@@ -59,6 +62,13 @@ internal class JpegFrameRecorder(
 
     this.codec = codec
     this.surface = surface
+    if (audioSpec != null) {
+      val writer = AudioTrackWriter(audioSpec)
+      for ((pts, bytes) in bufferedAudio) {
+        writer.enqueue(pts, bytes)
+      }
+      audio = writer
+    }
     muxer = MediaMuxer(filePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
   }
 
@@ -91,8 +101,16 @@ internal class JpegFrameRecorder(
   }
 
   @Synchronized
-  override fun finish(): Pair<String, Long> {
-    if (finished) return outputPath to File(filePath).length()
+  override fun pushAudio(timestampMicros: Long, bytes: ByteArray) {
+    if (finished) return
+    val writer = audio ?: return
+    writer.enqueue(timestampMicros, bytes)
+    writer.drainTo(if (muxerStarted) muxer else null)
+  }
+
+  @Synchronized
+  override fun finish(): Triple<String, Long, Boolean> {
+    if (finished) return Triple(outputPath, File(filePath).length(), (audio?.samplesWritten ?: 0) > 0)
     finished = true
     try {
       codec?.signalEndOfInputStream()
@@ -100,7 +118,7 @@ internal class JpegFrameRecorder(
     }
     drainUntilDone()
     release()
-    return outputPath to File(filePath).length()
+    return Triple(outputPath, File(filePath).length(), (audio?.samplesWritten ?: 0) > 0)
   }
 
   @Synchronized
@@ -131,8 +149,10 @@ internal class JpegFrameRecorder(
         outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
           if (!muxerStarted) {
             trackIndex = muxer.addTrack(codec.outputFormat)
+            audio?.addTrack(muxer)
             muxer.start()
             muxerStarted = true
+            audio?.drainTo(muxer)
           }
         }
         outIndex >= 0 -> if (writeOutput(codec, muxer, outIndex)) return
@@ -151,8 +171,10 @@ internal class JpegFrameRecorder(
         outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
           if (!muxerStarted) {
             trackIndex = muxer.addTrack(codec.outputFormat)
+            audio?.addTrack(muxer)
             muxer.start()
             muxerStarted = true
+            audio?.drainTo(muxer)
           }
         }
         outIndex >= 0 -> if (writeOutput(codec, muxer, outIndex)) return

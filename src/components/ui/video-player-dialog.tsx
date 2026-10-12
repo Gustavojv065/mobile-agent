@@ -66,7 +66,7 @@ export function VideoPlayerDialog({
     try {
       // Loaded lazily so expo-media-library (a native-only module) is never
       // evaluated in the node/server-manifest bundle during `export:embed`.
-      const { createAssetAsync, requestPermissionsAsync } = await import(
+      const { Asset, requestPermissionsAsync } = await import(
         "expo-media-library"
       );
 
@@ -80,7 +80,7 @@ export function VideoPlayerDialog({
         return;
       }
 
-      await createAssetAsync(playableUri);
+      await Asset.create(playableUri);
       Alert.alert("Video saved", "The video has been saved to your gallery.");
     } catch (error) {
       Alert.alert(

@@ -28,7 +28,7 @@ describe("requestVideoRender", () => {
   it("hands the job to a subscriber and resolves with its result", async () => {
     const listener = vi.fn(
       (job: Parameters<Parameters<typeof subscribeVideoRender>[0]>[0]) => {
-        job.resolve({ uri: "file:///cache/v.mp4", sizeBytes: 42 });
+        job.resolve({ uri: "file:///cache/v.mp4", sizeBytes: 42, hasAudio: false, audioWarnings: [] });
       },
     );
     const unsubscribe = subscribeVideoRender(listener);
@@ -36,7 +36,7 @@ describe("requestVideoRender", () => {
     const result = await requestVideoRender(CONTRACT_HTML);
 
     expect(listener).toHaveBeenCalledTimes(1);
-    expect(result).toEqual({ uri: "file:///cache/v.mp4", sizeBytes: 42 });
+    expect(result).toEqual({ uri: "file:///cache/v.mp4", sizeBytes: 42, hasAudio: false, audioWarnings: [] });
 
     unsubscribe();
   });

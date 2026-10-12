@@ -2,7 +2,7 @@
  * Recorder injected into the HTML preview document.
  *
  * The page declares `window.MOBILE_AGENT_VIDEO = { duration, fps, width,
- * height, canvasId?, render(t, canvas, ctx) }`. The recorder drives `render`
+ * height, canvasId?, render(t, canvas, ctx), audio? }`. The recorder drives `render`
  * once per frame at the requested FPS:
  *
  *  - GPU path: `new VideoFrame(canvas)` is fed to WebCodecs `VideoEncoder`
@@ -10,6 +10,11 @@
  *    `html-video-export` module for muxing into an MP4.
  *  - Fallback path (no WebCodecs): each frame is posted as a JPEG and
  *    re-encoded on the native hardware encoder.
+ *  - Audio path (optional `audio` schedule): file cues (data-URI audio, inlined
+ *    by the renderVideo tool) and synthesized cues are mixed in a WebAudio
+ *    graph, captured, AAC-encoded (WebCodecs or native PCM fallback), and muxed
+ *    as a second track. Missing audio
+ *    APIs degrade to a silent video with a warning, never a failure.
  *
  * Determinism rules for the page's `render`: everything must be a pure
  * function of `t` (seconds) — no `Math.random`, `Date.now`, or
@@ -30,6 +35,8 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
   var stage = null;
   var hijackedCanvas = null;
   var saved = null;
+  var activeAudio = null;
+  var activeAudioSchedule = null;
 
   function post(payload) {
     try {
@@ -41,6 +48,144 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
 
   function clamp(value, min, max) {
     return Math.max(min, Math.min(max, value));
+  }
+
+  function midiToFreq(midi) {
+    return 440 * Math.pow(2, (midi - 69) / 12);
+  }
+
+  function parseNoteName(name) {
+    if (typeof name !== 'string') return null;
+    var m = /^\\s*([A-Ga-g])([#b]?)(-?\\d+)\\s*$/.exec(name);
+    if (!m) return null;
+    var base = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 }[m[1].toUpperCase()];
+    if (base == null) return null;
+    var acc = m[2] === '#' ? 1 : (m[2] === 'b' ? -1 : 0);
+    var octave = parseInt(m[3], 10);
+    if (isNaN(octave)) return null;
+    return base + acc + (octave + 1) * 12;
+  }
+
+  function noteToFreq(value) {
+    if (typeof value === 'number' && isFinite(value)) {
+      if (value > 0 && value < 128) return midiToFreq(Math.round(value));
+      return null;
+    }
+    var midi = parseNoteName(value);
+    return midi == null ? null : midiToFreq(midi);
+  }
+
+  function validWave(wave, fallback) {
+    if (wave === 'sine' || wave === 'square' || wave === 'triangle' || wave === 'sawtooth') return wave;
+    return fallback;
+  }
+
+  function normalizeSynth(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    var kind = String(raw.kind || raw.type || 'tone').toLowerCase();
+    var i, freqs, f;
+    if (kind === 'tone' || kind === 'pluck' || kind === 'lead' || kind === 'bass') {
+      freqs = [];
+      if (Array.isArray(raw.notes)) {
+        for (i = 0; i < raw.notes.length && freqs.length < 32; i += 1) {
+          f = noteToFreq(raw.notes[i]);
+          if (f) freqs.push(f);
+        }
+      }
+      var single = Number(raw.freq) || 0;
+      if (freqs.length === 0) {
+        if (!(single >= 20 && single <= 20000)) return null;
+        freqs.push(single);
+      }
+      return {
+        kind: 'tone', freqs: freqs,
+        wave: validWave(raw.wave, 'sine'),
+        noteDur: clamp(Number(raw.noteDur) || 0.5, 0.05, 8),
+        attack: clamp(Number(raw.attack) || 0.01, 0.001, 4),
+        release: clamp(Number(raw.release) || 0.2, 0.001, 4)
+      };
+    }
+    if (kind === 'pad' || kind === 'chord' || kind === 'strings') {
+      freqs = [];
+      if (Array.isArray(raw.notes)) {
+        for (i = 0; i < raw.notes.length && freqs.length < 8; i += 1) {
+          f = noteToFreq(raw.notes[i]);
+          if (f) freqs.push(f);
+        }
+      }
+      if (freqs.length === 0) return null;
+      return {
+        kind: 'pad', freqs: freqs,
+        wave: validWave(raw.wave, 'triangle'),
+        attack: clamp(Number(raw.attack) || 1.5, 0.05, 8),
+        release: clamp(Number(raw.release) || 1.5, 0.05, 8)
+      };
+    }
+    if (kind === 'noise' || kind === 'sweep' || kind === 'whoosh' || kind === 'wind' || kind === 'rain') {
+      var filter = (raw.filter === 'highpass' || raw.filter === 'bandpass') ? raw.filter : 'lowpass';
+      return {
+        kind: 'noise', filter: filter,
+        filterFreq: clamp(Number(raw.filterFreq) || 800, 20, 20000),
+        filterEnd: raw.filterEnd == null ? null : clamp(Number(raw.filterEnd), 20, 20000),
+        q: clamp(Number(raw.q) || 1, 0.1, 20),
+        attack: clamp(Number(raw.attack) || 0.3, 0.001, 4),
+        release: clamp(Number(raw.release) || 0.5, 0.001, 4)
+      };
+    }
+    return null;
+  }
+
+  function normalizeAudioCue(raw, duration) {
+    if (!raw || typeof raw !== 'object') return null;
+    var cue = null;
+    if (typeof raw.file === 'string' && raw.file) {
+      cue = { kind: 'file', src: raw.file };
+    } else if (raw.synth) {
+      var synth = normalizeSynth(raw.synth);
+      if (!synth) return null;
+      cue = { kind: 'synth', synth: synth };
+    } else {
+      return null;
+    }
+    cue.start = clamp(Number(raw.start) || 0, 0, duration);
+    var maxDur = Math.max(0, duration - cue.start);
+    cue.duration = raw.duration == null ? maxDur : clamp(Number(raw.duration) || 0, 0, maxDur);
+    if (!(cue.duration > 0)) return null;
+    cue.volume = raw.volume == null ? 0.8 : clamp(Number(raw.volume), 0, 1);
+    if (isNaN(cue.volume)) cue.volume = 0.8;
+    cue.fadeIn = clamp(Number(raw.fadeIn) || 0, 0, cue.duration);
+    cue.fadeOut = clamp(Number(raw.fadeOut) || 0, 0, cue.duration);
+    if (cue.kind === 'file') {
+      cue.offset = Math.max(0, Number(raw.offset) || 0);
+      cue.loop = raw.loop === true;
+    }
+    return cue;
+  }
+
+  function readAudioSchedule(contract, duration) {
+    var audio = contract.audio;
+    if (!audio || typeof audio !== 'object') return null;
+    var tracks = audio.tracks;
+    if (!Array.isArray(tracks) || tracks.length === 0) return null;
+    var master = audio.master == null ? 1 : clamp(Number(audio.master), 0, 1);
+    if (isNaN(master)) master = 1;
+    var cues = [];
+    for (var i = 0; i < tracks.length && cues.length < 8; i += 1) {
+      var cue = normalizeAudioCue(tracks[i], duration);
+      if (cue) cues.push(cue);
+    }
+    if (cues.length === 0) return null;
+    return { master: master, cues: cues };
+  }
+
+  function mulberry32(seed) {
+    var state = seed >>> 0;
+    return function () {
+      state |= 0; state = (state + 0x6D2B79F5) | 0;
+      var t = Math.imul(state ^ (state >>> 15), 1 | state);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
   }
 
   function bitrateFor(width, height) {
@@ -130,6 +275,10 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
       if (activeEncoder) activeEncoder.close();
     } catch (_) {}
     activeEncoder = null;
+    var audio = activeAudio;
+    activeAudio = null;
+    activeAudioSchedule = null;
+    if (audio) teardownAudioCapture(audio);
     timers.forEach(function (timer) { clearTimeout(timer); });
     timers = [];
     restoreCanvas();
@@ -163,6 +312,572 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
     return VideoEncoder.isConfigSupported(config)
       .then(function (info) { return !!(info && info.supported); })
       .catch(function () { return false; });
+  }
+
+  function teardownAudioCapture(handle) {
+    if (!handle) return;
+    try {
+      if (handle.autoplayTimer) clearTimeout(handle.autoplayTimer);
+    } catch (_) {}
+    handle.autoplayTimer = null;
+    try {
+      if (handle.reader) handle.reader.cancel().catch(function () {});
+    } catch (_) {}
+    handle.reader = null;
+    stopLegacyPcmCapture(handle);
+    try {
+      if (handle.encoder) handle.encoder.close();
+    } catch (_) {}
+    handle.encoder = null;
+    try {
+      if (handle.context) handle.context.close().catch(function () {});
+    } catch (_) {}
+    handle.context = null;
+    handle.pendingPts = [];
+    handle.pcmParts = [];
+    handle.pcmByteLength = 0;
+    handle.pcmFirstPts = null;
+  }
+
+  function postAudioWarning(reason) {
+    post({ type: 'mobileAgentVideoAudioWarning', reason: String(reason || 'Audio was skipped.') });
+  }
+
+  function noiseBuffer(ctx) {
+    if (ctx.__mobileAgentNoise) return ctx.__mobileAgentNoise;
+    var len = Math.floor(ctx.sampleRate * 2);
+    var buf = ctx.createBuffer(1, len, ctx.sampleRate);
+    var data = buf.getChannelData(0);
+    var rand = mulberry32(0xC0FFEE);
+    for (var i = 0; i < len; i += 1) data[i] = rand() * 2 - 1;
+    ctx.__mobileAgentNoise = buf;
+    return buf;
+  }
+
+  function schedulePluck(handle, s, freq, startAt, endAt, out) {
+    var ctx = handle.context;
+    var osc = ctx.createOscillator();
+    osc.type = s.wave;
+    osc.frequency.value = freq;
+    var g = ctx.createGain();
+    var peakAt = startAt + Math.min(s.attack, Math.max(0.005, (endAt - startAt) / 2));
+    g.gain.setValueAtTime(0.0001, startAt);
+    g.gain.linearRampToValueAtTime(1, peakAt);
+    g.gain.setValueAtTime(1, Math.max(peakAt, endAt - s.release));
+    g.gain.linearRampToValueAtTime(0.0001, endAt);
+    osc.connect(g);
+    g.connect(out);
+    osc.start(startAt);
+    try { osc.stop(endAt + 0.05); } catch (_) {}
+  }
+
+  function schedulePadVoice(handle, s, freq, startAt, endAt, out) {
+    var ctx = handle.context;
+    var g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, startAt);
+    g.gain.linearRampToValueAtTime(0.5, startAt + Math.min(s.attack, Math.max(0.05, endAt - startAt)));
+    g.gain.setValueAtTime(0.5, Math.max(startAt, endAt - s.release));
+    g.gain.linearRampToValueAtTime(0.0001, endAt);
+    g.connect(out);
+    var ratios = [1, 1.003];
+    for (var i = 0; i < ratios.length; i += 1) {
+      var osc = ctx.createOscillator();
+      osc.type = s.wave;
+      osc.frequency.value = freq * ratios[i];
+      osc.connect(g);
+      osc.start(startAt);
+      try { osc.stop(endAt + 0.05); } catch (_) {}
+    }
+  }
+
+  function scheduleNoiseWash(handle, s, startAt, endAt, out) {
+    var ctx = handle.context;
+    var src = ctx.createBufferSource();
+    src.buffer = noiseBuffer(ctx);
+    src.loop = true;
+    var filter = ctx.createBiquadFilter();
+    filter.type = s.filter;
+    filter.frequency.setValueAtTime(s.filterFreq, startAt);
+    if (s.filterEnd != null) {
+      try { filter.frequency.exponentialRampToValueAtTime(s.filterEnd, endAt); } catch (_) {}
+    }
+    filter.Q.value = s.q;
+    var g = ctx.createGain();
+    var span = Math.max(0.01, endAt - startAt);
+    g.gain.setValueAtTime(0.0001, startAt);
+    g.gain.linearRampToValueAtTime(0.9, startAt + Math.min(s.attack, span));
+    g.gain.setValueAtTime(0.9, Math.max(startAt, endAt - s.release));
+    g.gain.linearRampToValueAtTime(0.0001, endAt);
+    src.connect(filter);
+    filter.connect(g);
+    g.connect(out);
+    src.start(startAt);
+    try { src.stop(endAt + 0.05); } catch (_) {}
+  }
+
+  function scheduleSynthCue(handle, cue, startAt, endAt, out) {
+    var s = cue.synth;
+    var i;
+    if (s.kind === 'tone') {
+      for (i = 0; i < s.freqs.length; i += 1) {
+        var nStart = startAt + i * s.noteDur;
+        if (nStart >= endAt) break;
+        schedulePluck(handle, s, s.freqs[i], nStart, Math.min(endAt, nStart + s.noteDur + s.release), out);
+      }
+    } else if (s.kind === 'pad') {
+      for (i = 0; i < s.freqs.length; i += 1) {
+        schedulePadVoice(handle, s, s.freqs[i], startAt, endAt, out);
+      }
+    } else if (s.kind === 'noise') {
+      scheduleNoiseWash(handle, s, startAt, endAt, out);
+    }
+  }
+
+  function scheduleAudioCue(handle, cue, t0) {
+    var ctx = handle.context;
+    var startAt = t0 + cue.start;
+    var endAt = startAt + cue.duration;
+    var gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.0001, startAt);
+    gain.gain.linearRampToValueAtTime(Math.max(0.0001, cue.volume), startAt + Math.min(cue.fadeIn, cue.duration));
+    gain.gain.setValueAtTime(Math.max(0.0001, cue.volume), Math.max(startAt, endAt - cue.fadeOut));
+    gain.gain.linearRampToValueAtTime(0.0001, endAt);
+    gain.connect(handle.master);
+    if (cue.kind === 'file') {
+      var entry = null;
+      for (var i = 0; i < handle.decoded.length; i += 1) {
+        if (handle.decoded[i].cue === cue) { entry = handle.decoded[i]; break; }
+      }
+      if (!entry) return;
+      var src = ctx.createBufferSource();
+      src.buffer = entry.buffer;
+      src.loop = cue.loop === true;
+      src.connect(gain);
+      if (cue.loop) {
+        var loopOffset = cue.offset % entry.buffer.duration;
+        src.start(startAt, loopOffset < 0 ? 0 : loopOffset);
+        try { src.stop(endAt + 0.05); } catch (_) {}
+      } else {
+        var avail = Math.max(0, entry.buffer.duration - cue.offset);
+        var playDur = Math.min(cue.duration, avail);
+        if (playDur <= 0) return;
+        src.start(startAt, cue.offset, playDur);
+        try { src.stop(startAt + playDur + 0.05); } catch (_) {}
+      }
+      return;
+    }
+    scheduleSynthCue(handle, cue, startAt, endAt, gain);
+  }
+
+  function onAudioChunk(handle, chunk) {
+    if (cancelled || !handle || activeAudio !== handle) return;
+    var pts = handle.pendingPts.length > 0 ? handle.pendingPts.shift() : 0;
+    var bytes = new Uint8Array(chunk.byteLength);
+    try {
+      chunk.copyTo(bytes);
+    } catch (_) {
+      return;
+    }
+    if (bytes.byteLength === 0) return;
+    post({ type: 'mobileAgentVideoAudioChunk', pts: pts, base64: bytesToBase64(bytes) });
+  }
+
+  function audioDataToS16(data, expectedChannels) {
+    var channels = data ? (data.numberOfChannels | 0) : 0;
+    var frames = data ? (data.numberOfFrames | 0) : 0;
+    if (!(channels >= 1 && channels <= 2) || !(frames > 0)) return null;
+    var format = String((data && data.format) || '');
+    var isPlanar = format.indexOf('planar') >= 0;
+    var out = new Int16Array(frames * channels);
+    var ch = 0;
+    var f = 0;
+    var i = 0;
+    var v = 0;
+    try {
+      if (format.indexOf('s16') === 0) {
+        if (!isPlanar) {
+          var size = data.allocationSize({ planeIndex: 0, format: 's16' });
+          var buf = new ArrayBuffer(size);
+          data.copyTo(buf, { planeIndex: 0, format: 's16' });
+          var s16 = new Int16Array(buf);
+          if (s16.length < frames * channels) return null;
+          if (channels === expectedChannels || expectedChannels == null) {
+            return { bytes: new Uint8Array(buf, 0, frames * channels * 2), channels: channels, frames: frames };
+          }
+          out.set(s16.subarray(0, frames * channels));
+        } else {
+          for (ch = 0; ch < channels; ch += 1) {
+            var psize = data.allocationSize({ planeIndex: ch, format: 's16-planar' });
+            var pbuf = new ArrayBuffer(psize);
+            data.copyTo(pbuf, { planeIndex: ch, format: 's16-planar' });
+            var pin = new Int16Array(pbuf);
+            for (f = 0; f < frames; f += 1) out[f * channels + ch] = pin[f];
+          }
+        }
+      } else if (format.indexOf('f32') === 0) {
+        if (!isPlanar) {
+          var fsize = data.allocationSize({ planeIndex: 0, format: 'f32' });
+          var fbuf = new ArrayBuffer(fsize);
+          data.copyTo(fbuf, { planeIndex: 0, format: 'f32' });
+          var fin = new Float32Array(fbuf);
+          for (i = 0; i < frames * channels; i += 1) {
+            v = fin[i];
+            if (v > 1) v = 1;
+            else if (v < -1) v = -1;
+            out[i] = Math.round(v * 32767);
+          }
+        } else {
+          for (ch = 0; ch < channels; ch += 1) {
+            var qsize = data.allocationSize({ planeIndex: ch, format: 'f32-planar' });
+            var qbuf = new ArrayBuffer(qsize);
+            data.copyTo(qbuf, { planeIndex: ch, format: 'f32-planar' });
+            var qin = new Float32Array(qbuf);
+            for (f = 0; f < frames; f += 1) {
+              v = qin[f];
+              if (v > 1) v = 1;
+              else if (v < -1) v = -1;
+              out[f * channels + ch] = Math.round(v * 32767);
+            }
+          }
+        }
+      } else {
+        return null;
+      }
+    } catch (_) {
+      return null;
+    }
+    if (channels === 1 && expectedChannels === 2) {
+      var stereo = new Int16Array(frames * 2);
+      for (f = 0; f < frames; f += 1) {
+        stereo[f * 2] = out[f];
+        stereo[f * 2 + 1] = out[f];
+      }
+      return { bytes: new Uint8Array(stereo.buffer), channels: 2, frames: frames };
+    }
+    if (channels !== expectedChannels && expectedChannels != null) return null;
+    return { bytes: new Uint8Array(out.buffer), channels: channels, frames: frames };
+  }
+
+  function flushPcmBatch(handle) {
+    if (!handle || !handle.pcmMode) return;
+    if (!handle.pcmParts || handle.pcmByteLength <= 0 || handle.pcmFirstPts == null) {
+      handle.pcmParts = [];
+      handle.pcmByteLength = 0;
+      handle.pcmFirstPts = null;
+      return;
+    }
+    var merged = new Uint8Array(handle.pcmByteLength);
+    var offset = 0;
+    for (var i = 0; i < handle.pcmParts.length; i += 1) {
+      merged.set(handle.pcmParts[i], offset);
+      offset += handle.pcmParts[i].length;
+    }
+    var pts = handle.pcmFirstPts;
+    handle.pcmParts = [];
+    handle.pcmByteLength = 0;
+    handle.pcmFirstPts = null;
+    if (merged.length === 0) return;
+    post({ type: 'mobileAgentVideoAudioPcmChunk', pts: pts, base64: bytesToBase64(merged) });
+  }
+
+  function accumulatePcm(handle, pcm, pts) {
+    if (!handle || !pcm || !pcm.bytes || pcm.bytes.length === 0) return;
+    handle.pcmBytesCaptured = (handle.pcmBytesCaptured || 0) + pcm.bytes.length;
+    if (handle.pcmFirstPts == null) handle.pcmFirstPts = pts;
+    handle.pcmParts.push(pcm.bytes);
+    handle.pcmByteLength += pcm.bytes.length;
+    if (handle.pcmByteLength >= 16384) flushPcmBatch(handle);
+  }
+
+  function stopLegacyPcmCapture(handle) {
+    if (!handle || !handle.pcmProcessor) return;
+    handle.pcmProcessor.onaudioprocess = null;
+    try { handle.master.disconnect(handle.pcmProcessor); } catch (_) {}
+    try { handle.pcmProcessor.disconnect(); } catch (_) {}
+    try { handle.pcmSink.disconnect(); } catch (_) {}
+    handle.pcmProcessor = null;
+    handle.pcmSink = null;
+  }
+
+  // Compatibility only: some WebViews expose TrackProcessor but reject audio
+  // tracks. ScriptProcessor is deprecated, but works without secure-context
+  // AudioWorklet support on the existing inline HTML/about:blank renderer.
+  function startLegacyPcmCapture(handle) {
+    var ctx = handle.context;
+    var channels = handle.pcmChannels;
+    var processor = ctx.createScriptProcessor(4096, channels, channels);
+    var sink = ctx.createGain();
+    sink.gain.value = 0;
+    handle.pcmProcessor = processor;
+    handle.pcmSink = sink;
+    var capturedFrames = 0;
+    processor.onaudioprocess = function (event) {
+      if (cancelled || activeAudio !== handle) return;
+      var input = event.inputBuffer;
+      var frames = input.length;
+      var pcm = new Int16Array(frames * channels);
+      for (var ch = 0; ch < channels; ch += 1) {
+        var samples = input.getChannelData(Math.min(ch, input.numberOfChannels - 1));
+        for (var f = 0; f < frames; f += 1) {
+          pcm[f * channels + ch] = Math.round(clamp(samples[f], -1, 1) * 32767);
+        }
+      }
+      var pts = Math.max(0, Math.round(capturedFrames * 1000000 / ctx.sampleRate - handle.leadUs));
+      capturedFrames += frames;
+      accumulatePcm(handle, { bytes: new Uint8Array(pcm.buffer) }, pts);
+    };
+    handle.master.connect(processor);
+    processor.connect(sink);
+    sink.connect(ctx.destination);
+  }
+
+  function pumpAudio(handle) {
+    var reader = handle.reader;
+    if (!reader) return;
+    reader.read().then(function (result) {
+      if (cancelled || activeAudio !== handle || !result || result.done) return;
+      var data = result.value;
+      if (handle.stopping) {
+        try { data.close(); } catch (_) {}
+        return;
+      }
+      try {
+        if (handle.firstTs < 0) handle.firstTs = data.timestamp;
+        var pts = Math.round(data.timestamp - handle.firstTs - handle.leadUs);
+        if (pts < 0 || isNaN(pts)) pts = 0;
+        if (handle.pcmMode) {
+          var pcm = audioDataToS16(data, handle.pcmChannels || 2);
+          if (!pcm) {
+            postAudioWarning('Audio samples could not be read; continuing silent.');
+            teardownAudioCapture(handle);
+            if (activeAudio === handle) activeAudio = null;
+            return;
+          }
+          accumulatePcm(handle, pcm, pts);
+        } else {
+          handle.pendingPts.push(pts);
+          handle.encoder.encode(data);
+        }
+      } catch (error) {
+        postAudioWarning('Audio sample processing failed; continuing silent.');
+        teardownAudioCapture(handle);
+        if (activeAudio === handle) activeAudio = null;
+      } finally {
+        try { data.close(); } catch (_) {}
+      }
+      pumpAudio(handle);
+    }).catch(function () {
+      // Reader was cancelled during teardown.
+    });
+  }
+
+  function startAudioReader(handle) {
+    var track = null;
+    try {
+      var stream = handle.dest.stream;
+      track = stream && stream.getAudioTracks ? stream.getAudioTracks()[0] : null;
+      if (!track) throw new Error('no audio track');
+      var processor = new MediaStreamTrackProcessor({ track: track });
+      handle.reader = processor.readable.getReader();
+    } catch (error) {
+      if (handle.pcmMode && typeof handle.context.createScriptProcessor === 'function') {
+        try {
+          startLegacyPcmCapture(handle);
+          return;
+        } catch (_) {
+          stopLegacyPcmCapture(handle);
+        }
+      }
+      postAudioWarning('Audio capture is unavailable on this device; continuing silent.');
+      teardownAudioCapture(handle);
+      if (activeAudio === handle) activeAudio = null;
+      return;
+    }
+    pumpAudio(handle);
+  }
+
+  function beginAudioCapture() {
+    var handle = activeAudio;
+    var schedule = activeAudioSchedule;
+    if (!handle || !schedule || handle.started) return;
+    handle.started = true;
+    handle.context.resume().catch(function () {}).then(function () {
+      if (cancelled || activeAudio !== handle) return;
+      var t0 = handle.context.currentTime + 0.03;
+      try {
+        for (var i = 0; i < schedule.cues.length; i += 1) {
+          scheduleAudioCue(handle, schedule.cues[i], t0);
+        }
+      } catch (error) {
+        postAudioWarning('Audio scheduling failed; continuing silent.');
+        teardownAudioCapture(handle);
+        activeAudio = null;
+        return;
+      }
+      startAudioReader(handle);
+      handle.autoplayTimer = setTimeout(function () {
+        handle.autoplayTimer = null;
+        if (cancelled || activeAudio !== handle) return;
+        try {
+          if (handle.context && handle.context.state !== 'running') {
+            postAudioWarning('Audio playback was blocked; continuing silent.');
+            teardownAudioCapture(handle);
+            activeAudio = null;
+          }
+        } catch (_) {}
+      }, 800);
+      timers.push(handle.autoplayTimer);
+    });
+  }
+
+  function flushAudioCapture() {
+    var handle = activeAudio;
+    if (!handle) return Promise.resolve();
+    handle.stopping = true;
+    if (handle.autoplayTimer) {
+      try { clearTimeout(handle.autoplayTimer); } catch (_) {}
+      handle.autoplayTimer = null;
+    }
+    try {
+      if (handle.reader) handle.reader.cancel().catch(function () {});
+    } catch (_) {}
+    handle.reader = null;
+    stopLegacyPcmCapture(handle);
+    flushPcmBatch(handle);
+    if (handle.pcmMode && !handle.pcmBytesCaptured) {
+      postAudioWarning('The audio capture produced no samples; this video is silent.');
+    }
+    var enc = handle.encoder;
+    handle.encoder = null;
+    if (!enc) return Promise.resolve();
+    return enc.flush().then(function () {
+      try { enc.close(); } catch (_) {}
+    }).catch(function () {
+      try { enc.close(); } catch (_) {}
+    });
+  }
+
+  function prepareAudioCapture(schedule, duration) {
+    var AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) {
+      post({ type: 'mobileAgentVideoAudioUnsupported', reason: 'This WebView does not support Web Audio.' });
+      return Promise.resolve(null);
+    }
+    var ctx = null;
+    try {
+      // Force a standard rate so the AAC track's AudioSpecificConfig is always
+      // expressible (48 kHz is universally supported by the native muxer).
+      ctx = new AC({ sampleRate: 48000 });
+    } catch (error) {
+      try {
+        ctx = new AC();
+      } catch (fallbackError) {
+        post({ type: 'mobileAgentVideoAudioUnsupported', reason: 'Audio could not start.' });
+        return Promise.resolve(null);
+      }
+    }
+    var context = ctx;
+    var decoded = [];
+    var standardRates = [96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000];
+    if (standardRates.indexOf(context.sampleRate) < 0) {
+      try { context.close().catch(function () {}); } catch (_) {}
+      post({
+        type: 'mobileAgentVideoAudioUnsupported',
+        reason: 'Unsupported audio sample rate: ' + context.sampleRate + ' Hz.'
+      });
+      return Promise.resolve(null);
+    }
+    return context.suspend().catch(function () {}).then(function () {
+      var chain = Promise.resolve();
+      schedule.cues.forEach(function (cue) {
+        if (cue.kind !== 'file') return;
+        chain = chain.then(function () {
+          return fetch(cue.src).then(function (res) {
+            if (!res.ok) throw new Error('fetch failed');
+            return res.arrayBuffer();
+          }).then(function (buf) {
+            return context.decodeAudioData(buf);
+          }).then(function (audioBuf) {
+            decoded.push({ cue: cue, buffer: audioBuf });
+          }).catch(function () {
+            postAudioWarning('An audio file could not be decoded and was skipped.');
+          });
+        });
+      });
+      return chain;
+    }).then(function () {
+      var master = context.createGain();
+      master.gain.value = schedule.master;
+      var dest = context.createMediaStreamDestination();
+      try { dest.channelCount = 2; } catch (_) {}
+      master.connect(dest);
+      var pcmChannels = dest.channelCount || 2;
+      if (pcmChannels !== 1 && pcmChannels !== 2) pcmChannels = 2;
+      var aacConfig = {
+        codec: 'mp4a.40.2',
+        sampleRate: context.sampleRate,
+        numberOfChannels: 2,
+        bitrate: 128000
+      };
+      var aacPossible = null;
+      if (!window.AudioEncoder || !window.MediaStreamTrackProcessor) {
+        aacPossible = Promise.resolve(false);
+      } else if (window.AudioEncoder.isConfigSupported) {
+        try {
+          aacPossible = window.AudioEncoder.isConfigSupported(aacConfig).then(function (info) {
+            return !!(info && info.supported);
+          }).catch(function () {
+            return false;
+          });
+        } catch (_) {
+          aacPossible = Promise.resolve(false);
+        }
+      } else {
+        aacPossible = Promise.resolve(true);
+      }
+      return aacPossible.then(function (ok) {
+        var handle = {
+          context: context, encoder: null, master: master, dest: dest,
+          decoded: decoded, started: false, firstTs: -1, pendingPts: [],
+          reader: null, autoplayTimer: null, leadUs: 30000,
+          pcmMode: !ok, pcmChannels: pcmChannels,
+          pcmParts: [], pcmByteLength: 0, pcmFirstPts: null
+        };
+        if (ok) {
+          try {
+            var encoder = new AudioEncoder({
+              output: function (chunk) { onAudioChunk(handle, chunk); },
+              error: function () {
+                postAudioWarning('Audio encoding failed; continuing silent.');
+                if (activeAudio === handle) {
+                  teardownAudioCapture(handle);
+                  activeAudio = null;
+                } else {
+                  teardownAudioCapture(handle);
+                }
+              }
+            });
+            encoder.configure(aacConfig);
+            handle.encoder = encoder;
+            handle.pcmMode = false;
+            post({ type: 'mobileAgentVideoAudioConfig', sampleRate: context.sampleRate, channels: 2, encoding: 'aac' });
+          } catch (_) {
+            try { if (encoder) encoder.close(); } catch (closeError) {}
+            handle.encoder = null;
+            handle.pcmMode = true;
+            post({ type: 'mobileAgentVideoAudioConfig', sampleRate: context.sampleRate, channels: pcmChannels, encoding: 'pcm16' });
+          }
+        } else {
+          post({ type: 'mobileAgentVideoAudioConfig', sampleRate: context.sampleRate, channels: pcmChannels, encoding: 'pcm16' });
+        }
+        return handle;
+      });
+    }).catch(function (error) {
+      try { context.close().catch(function () {}); } catch (_) {}
+      var detail = error && error.message ? ' ' + error.message : '';
+      post({ type: 'mobileAgentVideoAudioUnsupported', reason: 'Audio could not start on this device.' + detail });
+      return null;
+    });
   }
 
   function start() {
@@ -202,9 +917,17 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
     cancelled = false;
     try { window.MOBILE_AGENT_VIDEO_RECORDING = true; } catch (_) {}
 
-    supportsH264Encoder(width, height, fps).then(function (supported) {
-      if (cancelled) return;
-      if (supported) runH264(contract, canvas, ctx, width, height, fps, frameCount);
+    var schedule = readAudioSchedule(contract, duration);
+    activeAudioSchedule = schedule;
+    var audioReady = schedule ? prepareAudioCapture(schedule, duration) : Promise.resolve(null);
+    var videoReady = supportsH264Encoder(width, height, fps);
+    Promise.all([audioReady, videoReady]).then(function (results) {
+      if (cancelled) {
+        if (results[0]) teardownAudioCapture(results[0]);
+        return;
+      }
+      activeAudio = results[0];
+      if (results[1]) runH264(contract, canvas, ctx, width, height, fps, frameCount);
       else runJpeg(contract, canvas, ctx, width, height, fps, frameCount);
     });
   }
@@ -298,8 +1021,11 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
       enc.flush().then(function () {
         try { enc.close(); } catch (_) {}
         if (cancelled) return;
-        post({ type: 'mobileAgentVideoDone', emitted: emitted });
-        teardown();
+        flushAudioCapture().then(function () {
+          if (cancelled) return;
+          post({ type: 'mobileAgentVideoDone', emitted: emitted });
+          teardown();
+        });
       }).catch(function (error) {
         try { enc.close(); } catch (_) {}
         if (cancelled) return;
@@ -320,6 +1046,7 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
       onError(error);
       return;
     }
+    beginAudioCapture();
     tick();
   }
 
@@ -332,8 +1059,11 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
     function tick() {
       if (cancelled) { teardown(); return; }
       if (index >= frameCount) {
-        post({ type: 'mobileAgentVideoDone', emitted: emitted });
-        teardown();
+        flushAudioCapture().then(function () {
+          if (cancelled) { teardown(); return; }
+          post({ type: 'mobileAgentVideoDone', emitted: emitted });
+          teardown();
+        });
         return;
       }
       var t = index / fps;
@@ -354,6 +1084,7 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
       timers.push(setTimeout(tick, Math.max(0, nextAt - performance.now())));
     }
 
+    beginAudioCapture();
     tick();
   }
 

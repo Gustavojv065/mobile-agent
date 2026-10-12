@@ -3,7 +3,12 @@ import { tool } from "ai";
 import { z } from "zod";
 
 import type { WorkspaceRepository } from "@/core/db/database";
-import { createWorkspaceFileService } from "@/core/services/workspace-file-service";
+import { createWorkspaceFileService, resolveWorkspaceFile } from "@/core/services/workspace-file-service";
+import {
+  assertAudioFileUsable,
+  buildAudioDataUri,
+  extractWorkspaceAudioIds,
+} from "@/modules/preview/video-audio";
 import { requestVideoRender } from "@/modules/preview/video-render";
 import {
   createRecord,
@@ -29,7 +34,7 @@ export function createRenderVideoTool({
   const workspaceService = createWorkspaceFileService(repository);
   return tool({
     description:
-      "Render a self-contained HTML document into an MP4 video and deliver the finished file to the user. The document must define window.MOBILE_AGENT_VIDEO = { duration, fps, width, height, canvasId?, render(t, canvas, ctx) } and draw its animation on a single <canvas>; see the html-video skill for the full contract. Pass the complete HTML either inline as `html` or point at an existing HTML workspace file with `fileId`. Rendering is real time: a 10 second video takes about 10 seconds, so do not call this repeatedly. Returns the saved MP4 as a workspace file for the user. After the tool returns, embed the video inline in your response exactly where you discuss it with ![displayName](workspace://fileId) using the returned fileId, so it renders as a playable in-chat video — do not paste a bare workspace:// link and do not rely on an end-of-message card.",
+      "Render a self-contained HTML document into an MP4 video and deliver the finished file to the user. The document must define window.MOBILE_AGENT_VIDEO = { duration, fps, width, height, canvasId?, render(t, canvas, ctx) } and draw its animation on a single <canvas>; see the html-video skill for the full contract. Pass the complete HTML either inline as `html` or point at an existing HTML workspace file with `fileId`. Rendering is real time: a 10 second video takes about 10 seconds, so do not call this repeatedly. Returns the saved MP4 as a workspace file for the user. After the tool returns, embed the video inline in your response exactly where you discuss it with ![displayName](workspace://fileId) using the returned fileId, so it renders as a playable in-chat video — do not paste a bare workspace:// link and do not rely on an end-of-message card. Optional sound: add an `audio` schedule to the contract — { master?, tracks: [...] } — where each track is either { file: 'workspace://<audio-file-id>', start?, offset?, duration?, loop?, volume?, fadeIn?, fadeOut? } using an MP3, WAV, M4A, AAC, OGG, or WebM file already in the workspace (max 15 MB, inlined automatically) or { synth: {...}, start?, duration?, volume?, fadeIn?, fadeOut? } with synth tones (freq or notes as MIDI numbers/note names like 'C4', wave, noteDur, attack, release), pads (chord notes), or filtered noise sweeps (filter, filterFreq, filterEnd, q). Keep per-track volumes modest so the mix stays near 1. Omit `audio` for a silent video. The result reports hasAudio and any audioWarnings.",
     inputSchema: z.object({
       html: z
         .string()
@@ -61,18 +66,23 @@ export function createRenderVideoTool({
       });
 
       try {
-        const documentHtml = await resolveHtml({
+        const rawHtml = await resolveHtml({
           fileId,
           html,
           repository,
           workspaceService,
         });
 
-        if (!documentHtml.includes("MOBILE_AGENT_VIDEO")) {
+        if (!rawHtml.includes("MOBILE_AGENT_VIDEO")) {
           throw new Error(
             "The HTML is missing the window.MOBILE_AGENT_VIDEO contract, so there is nothing to record.",
           );
         }
+
+        const { html: documentHtml, audioFiles } = await inlineAudioAssets(
+          rawHtml,
+          repository,
+        );
 
         const result = await requestVideoRender(documentHtml, {
           signal: abortSignal,
@@ -104,6 +114,9 @@ export function createRenderVideoTool({
           link: `workspace://${file.id}`,
           mimeType: "video/mp4",
           size: file.size,
+          audioFiles,
+          hasAudio: result.hasAudio,
+          audioWarnings: result.audioWarnings,
         };
 
         onRecord?.(
@@ -163,4 +176,47 @@ async function resolveHtml({
 function normalizeName(name: string | undefined) {
   const base = (name ?? `video-${Date.now()}`).trim() || `video-${Date.now()}`;
   return /\.mp4$/i.test(base) ? base : `${base}.mp4`;
+}
+
+/**
+ * Replaces every `workspace://<id>` audio reference in the document with a
+ * data URI the hidden render WebView can fetch. The recorder script only ever
+ * sees data URIs or synth cues; the workspace itself stays unreadable to it.
+ */
+async function inlineAudioAssets(
+  html: string,
+  repository: WorkspaceRepository,
+): Promise<{ html: string; audioFiles: string[] }> {
+  const ids = extractWorkspaceAudioIds(html);
+  if (ids.length === 0) {
+    return { html, audioFiles: [] };
+  }
+
+  const audioFiles: string[] = [];
+  let next = html;
+  for (const id of ids) {
+    const record = await repository.getById(id);
+    if (!record) {
+      throw new Error(
+        `No workspace audio file found with id ${id}. Save the audio to the workspace first, or remove its track from the audio schedule.`,
+      );
+    }
+    const file = resolveWorkspaceFile(record.relativePath);
+    if (!file.exists) {
+      throw new Error(
+        `Audio file "${record.displayName}" is no longer available locally.`,
+      );
+    }
+    const bytes = await file.bytes();
+    const mimeType = assertAudioFileUsable(
+      record.displayName,
+      record.mimeType,
+      bytes.length,
+    );
+    audioFiles.push(record.displayName);
+    next = next
+      .split(`workspace://${id}`)
+      .join(buildAudioDataUri(mimeType, bytes));
+  }
+  return { html: next, audioFiles };
 }

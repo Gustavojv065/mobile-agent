@@ -24,11 +24,14 @@ internal class H264RemuxSession(
   private val fps: Int,
   private val spsHex: String,
   private val ppsHex: String,
-) : ExportSession {
+  private val audioSpec: AudioSpec? = null,
+  private val bufferedAudio: List<Pair<Long, ByteArray>> = emptyList(),
+) : ExportSession, AudioCapable {
   /** `MediaMuxer`/`File` need a raw path; the page hands us a `file://` URI. */
   private val filePath = fileUriToPath(outputPath)
   private var muxer: MediaMuxer? = null
   private var trackIndex = -1
+  private var audio: AudioTrackWriter? = null
   private var finished = false
 
   fun begin() {
@@ -44,8 +47,20 @@ internal class H264RemuxSession(
 
     val muxer = MediaMuxer(filePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
     trackIndex = muxer.addTrack(format)
+    val audioSpec = this.audioSpec
+    if (audioSpec != null) {
+      val writer = AudioTrackWriter(audioSpec)
+      writer.addTrack(muxer)
+      audio = writer
+      for ((pts, bytes) in bufferedAudio) {
+        writer.enqueue(pts, bytes)
+      }
+    }
     muxer.start()
     this.muxer = muxer
+    // Samples may only be written once the muxer has started; replay the audio
+    // that arrived before the video track existed.
+    audio?.drainTo(muxer)
   }
 
   @Synchronized
@@ -65,7 +80,15 @@ internal class H264RemuxSession(
   }
 
   @Synchronized
-  override fun finish(): Pair<String, Long> {
+  override fun pushAudio(timestampMicros: Long, bytes: ByteArray) {
+    if (finished) return
+    val writer = audio ?: return
+    writer.enqueue(timestampMicros, bytes)
+    writer.drainTo(muxer)
+  }
+
+  @Synchronized
+  override fun finish(): Triple<String, Long, Boolean> {
     if (!finished) {
       finished = true
       val muxer = this.muxer
@@ -79,7 +102,7 @@ internal class H264RemuxSession(
         muxer.release()
       }
     }
-    return outputPath to File(filePath).length()
+    return Triple(outputPath, File(filePath).length(), (audio?.samplesWritten ?: 0) > 0)
   }
 
   @Synchronized

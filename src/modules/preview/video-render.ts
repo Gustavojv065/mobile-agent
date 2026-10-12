@@ -16,6 +16,10 @@ export type VideoRenderResult = {
   /** Cache-directory `file://` URI of the finished MP4. */
   uri: string;
   sizeBytes: number;
+  /** True when the muxer wrote at least one audio sample. */
+  hasAudio: boolean;
+  /** Non-fatal audio notes (skipped cues, blocked playback, ...). */
+  audioWarnings: string[];
 };
 
 export type VideoRenderJob = {

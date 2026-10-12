@@ -1,6 +1,6 @@
 ---
 name: html-video
-description: Make videos, animations, and MP4s by writing a self-contained HTML canvas scene, then render it with the renderVideo tool.
+description: Make videos, animations, and MP4s by writing a self-contained HTML canvas scene, then render it with the renderVideo tool. Supports optional soundtracks from audio files or synthesized cues.
 keywords:
   - video
   - mp4
@@ -52,6 +52,10 @@ Define this before the body finishes loading:
       // Draw the frame at time t (seconds). Must be deterministic and
       // synchronous — the recorder captures immediately after it returns.
     },
+    audio: {           // optional: omit for a silent video (see Audio below)
+      master: 0.9,
+      tracks: []
+    }
   };
 </script>
 ```
@@ -94,6 +98,64 @@ When the user instead wants to **iterate on a preview**, just return the HTML in
 a fenced ```html code block so it renders in the preview dialog. Do not call the
 tool until the scene is ready.
 
+## Audio (optional)
+
+Omit `audio` for a silent video. To add sound, attach a schedule:
+
+```html
+<script>
+  window.MOBILE_AGENT_VIDEO = {
+    duration: 12, fps: 30, width: 1280, height: 720,
+    render: function (t) { /* ... */ },
+    audio: {
+      master: 0.9,               // overall gain 0–1, default 1
+      tracks: [
+        { file: "workspace://<audio-file-id>", start: 0, loop: true, volume: 0.5, fadeOut: 2 },
+        { synth: { kind: "pad", notes: ["C3", "G3", "Bb3"], attack: 2 }, start: 0, duration: 12, volume: 0.3 },
+        { synth: { kind: "tone", notes: [60, 64, 67, 72], noteDur: 0.5, wave: "triangle" }, start: 4, duration: 4, volume: 0.4 },
+        { synth: { kind: "noise", filterFreq: 400, filterEnd: 6000 }, start: 10, duration: 2, volume: 0.5 }
+      ]
+    }
+  };
+</script>
+```
+
+Track fields (both kinds): `start` (seconds into the video, default 0),
+`duration` (default: runs to the end of the video), `volume` 0–1 (default
+0.8), `fadeIn`/`fadeOut` in seconds (default 0). File tracks also take `offset`
+(seconds into the source file, default 0) and `loop` (default false).
+
+File tracks:
+
+- Must reference an audio file **already in the workspace**: MP3, WAV, M4A,
+  AAC, OGG, or WebM, max 15 MB. Ask the user to attach it, or use one they
+  already gave you — never invent a `workspace://` id.
+- The tool inlines the file automatically. A missing, unreadable, or
+  oversized file fails the render with a clear error before recording starts.
+
+Synth cues (`synth.kind`):
+
+- `tone`: `freq` (Hz) or `notes` played in sequence — MIDI numbers like 60 or
+  note names like `"C4"`, `"F#3"`, `"Bb2"`; `noteDur` seconds per note;
+  `wave` sine (default) / triangle / square / sawtooth; `attack`, `release`.
+- `pad`: `notes` as a chord (up to 8 notes); slow `attack`/`release` by
+  default (1.5 s each).
+- `noise`: filtered-noise bed or sweep; `filter` lowpass (default) / highpass
+  / bandpass, `filterFreq` → `filterEnd` sweep in Hz, `q`.
+
+Mixing rules:
+
+- Encoding is handled by the app: when WebView's audio encoder is unavailable,
+  raw audio is encoded to AAC natively on Android. Use the same schedule for
+  both paths; do not declare audio unsupported without a tool warning.
+- Simple additive mix with per-track volumes — no auto-ducking. Keep the sum
+  of audible track volumes near 1 (e.g. music 0.5 + pad 0.3) to avoid clipping.
+- Sync is realtime within ~50 ms, not frame-accurate: score beds, swells, and
+  approximate hits — never promise lip-sync or sample-exact SFX.
+- The tool result reports `hasAudio` and `audioWarnings` (e.g. a cue that had
+  to be skipped). If `hasAudio` is false after you asked for sound, tell the
+  user the video came out silent and why.
+
 ## Hard rules
 
 1. **One visible `<canvas>`** holding the animation. Use `canvasId` whenever
@@ -110,7 +172,8 @@ tool until the scene is ready.
    `window.MOBILE_AGENT_VIDEO_RECORDING` and pause when it is `true`.
 5. **Self-contained file.** Inline all CSS/JS. Avoid CDNs (the device may be
    offline). Three.js is allowed if you inline it.
-6. **Silent.** v1 output has no audio track.
+6. **Silent by default.** Omit `audio` for a silent video; add the schedule
+   from the Audio section when the video should have sound.
 
 ## Patterns
 
@@ -195,4 +258,8 @@ inside one canvas scene.
 - [ ] self-contained (no external CDN without warning the user about offline)
 - [ ] if the user asked for the file directly: called `renderVideo` with the
       full HTML and reported the returned MP4 (do **not** rely on a meta tag)
+- [ ] if audio was requested: every `file:` id exists in the workspace
+      (MP3/WAV/M4A/AAC/OGG/WebM, ≤ 15 MB), cues fit inside `duration`, volumes
+      sum near 1, and `hasAudio` came back true (otherwise told the user why
+      the video is silent)
 - [ ] complete scene: start state at t=0, motion clearly readable in 10 s

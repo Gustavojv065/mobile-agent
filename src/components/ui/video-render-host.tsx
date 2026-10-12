@@ -11,6 +11,7 @@ import {
   setVideoRenderStatus,
   subscribeVideoRender,
   type VideoRenderJob,
+  type VideoRenderResult,
 } from "@/modules/preview/video-render";
 import { buildVideoExportDocument } from "@/modules/preview/video-recorder";
 import { VideoExportController } from "@/modules/preview/video-export-messages";
@@ -51,7 +52,7 @@ export function VideoRenderHost() {
     (
       job: VideoRenderJob,
       outcome:
-        | { type: "resolve"; result: { uri: string; sizeBytes: number } }
+        | { type: "resolve"; result: VideoRenderResult }
         | { type: "reject"; error: Error },
     ) => {
       if (settledRef.current.has(job)) return;
@@ -247,6 +248,7 @@ export function VideoRenderHost() {
       <WebView
         ref={webViewRef}
         allowsInlineMediaPlayback
+        mediaPlaybackRequiresUserAction={false}
         originWhitelist={["http://*", "https://*"]}
         onLoadEnd={() => attemptStart(8)}
         onMessage={handleMessage}
