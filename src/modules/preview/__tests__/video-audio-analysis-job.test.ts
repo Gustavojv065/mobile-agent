@@ -97,6 +97,7 @@ describe("video-audio-analysis-job queue", () => {
         sampleRate: 16000,
         maxBeats: 5,
         curvePoints: 8,
+        pcmSampleRate: 16000,
       });
       promise.catch(() => {});
       const job = received as unknown as AudioAnalysisJob;
@@ -104,7 +105,46 @@ describe("video-audio-analysis-job queue", () => {
       expect(job.sampleRate).toBe(16000);
       expect(job.maxBeats).toBe(5);
       expect(job.curvePoints).toBe(8);
+      expect(job.pcmSampleRate).toBe(16000);
       job.reject(new Error("done"));
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it("passes the decoded PCM through the job result", async () => {
+    let received: AudioAnalysisJob | null = null;
+    const unsubscribe = subscribeAudioAnalysis((job) => {
+      received = job;
+    });
+    try {
+      const promise = requestAudioAnalysis({
+        src: "data:audio/x;base64,QQ==",
+        pcmSampleRate: 16000,
+      });
+      const job = received as unknown as AudioAnalysisJob;
+      job.resolve({
+        summary: {
+          ready: true,
+          duration: 1,
+          frameRate: 10,
+          bpm: null,
+          beatCount: 0,
+          beats: [],
+          curvePoints: 2,
+          curveStepSeconds: 0.5,
+          energy: [0, 0],
+          low: [0, 0],
+          mid: [0, 0],
+          high: [0, 0],
+          onset: [0, 0],
+        },
+        pcm: { base64: "AAAA", sampleRate: 16000 },
+      });
+
+      await expect(promise).resolves.toMatchObject({
+        pcm: { base64: "AAAA", sampleRate: 16000 },
+      });
     } finally {
       unsubscribe();
     }

@@ -16,6 +16,7 @@ import { createReadTool } from "@/modules/tools/built-in/read";
 import { createRenderVideoTool } from "@/modules/tools/built-in/render-video";
 import { createSplitDocumentTool } from "@/modules/tools/built-in/split-document";
 import { createSplitPdfTool } from "@/modules/tools/built-in/split-pdf";
+import { createTranscribeAudioTool } from "@/modules/tools/built-in/transcribe-audio";
 import type { WorkspaceToolFactoryParams } from "@/modules/tools/built-in/types";
 import { createUpdateDocumentTool } from "@/modules/tools/built-in/update-document";
 import { createWriteTool } from "@/modules/tools/built-in/write";
@@ -43,6 +44,7 @@ export function createWorkspaceTools(
       renderVideo: createRenderVideoTool(params),
       splitDocument: createSplitDocumentTool(params),
       splitPdf: createSplitPdfTool(params),
+      transcribeAudio: createTranscribeAudioTool(params),
       updateDocument: createUpdateDocumentTool(params),
       write: createWriteTool(params),
     },

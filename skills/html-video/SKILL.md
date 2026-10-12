@@ -12,6 +12,7 @@ keywords:
 allowed-tools:
   - RenderVideo
   - AnalyzeAudio
+  - TranscribeAudio
   - Read
   - Create
 ---
@@ -210,6 +211,49 @@ Rules:
   `workspace://` file id; then hard-code those times or rely on the live
   `audio` object at render time.
 
+## Speech sync and captions
+
+When the recording has **speech** and the user wants the visuals (or captions)
+to follow the **words**, transcribe it first with the **`transcribeAudio`
+tool** on the `workspace://` file id. It runs on device with the Whisper model
+downloaded in Settings → Voice input and returns:
+
+```json
+{
+  "language": "en",
+  "duration": 12.4,
+  "text": "full transcript ...",
+  "segments": [
+    { "start": 0.0, "end": 2.3, "text": "first phrase" },
+    { "start": 2.3, "end": 5.1, "text": "second phrase" }
+  ]
+}
+```
+
+`segments` are sentence/phrase spans in **seconds** (ascending). Bake those
+times into your HTML as constants — the transcript is deterministic, so a
+segment list is enough to drive captions, word pops, scene changes, or
+emphasis without any render-time audio access:
+
+```js
+var CUES = [
+  { t: 0.0, text: "first phrase" },
+  { t: 2.3, text: "second phrase" }
+];
+// in render: find the cue whose start is the latest <= t and draw it
+```
+
+Rules:
+
+- **Only for speech.** `transcribeAudio` ignores music; use `analyzeAudio` for
+  rhythm and `transcribeAudio` for words. You can run both on the same file.
+- Keep transcribed text **verbatim** in the caption; do not "fix" the wording
+  silently. If a word is clearly wrong you may correct an obvious
+  transcription slip, but never invent lines the speaker did not say.
+- Do not read audio at render time for speech — pass **times**, not samples.
+- The tool needs a Whisper model downloaded in Settings → Voice input; if it
+  fails with that message, tell the user and offer to proceed without captions.
+
 ## Hard rules
 
 1. **One visible `<canvas>`** holding the animation. Use `canvasId` whenever
@@ -320,4 +364,7 @@ inside one canvas scene.
       file (or used the live `audio` argument) and drove at least one visual
       property from `level`/`lowAt`/`beatPulse`/`beats` instead of ignoring the
       soundtrack
+- [ ] if the user asked for captions or word-synced visuals: ran
+      `transcribeAudio` on the file and timed the text from `segments`
+      (verbatim wording, no invented lines)
 - [ ] complete scene: start state at t=0, motion clearly readable in 10 s

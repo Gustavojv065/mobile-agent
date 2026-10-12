@@ -145,6 +145,7 @@ const WORKSPACE_AUTO_APPROVED_BUILT_IN_TOOL_NAMES = new Set([
   "listFiles",
   "read",
   "renderVideo",
+  "transcribeAudio",
   "write",
 ]);
 
@@ -1293,6 +1294,7 @@ export async function executeClaimedAgentRun(
                 ["renderVideo", enabledFor("workspaceRenderVideo")],
                 ["splitDocument", enabledFor("workspaceCreateFile")],
                 ["splitPdf", enabledFor("workspaceCreateFile")],
+                ["transcribeAudio", enabledFor("workspaceRenderVideo")],
                 ["updateDocument", enabledFor("workspaceEdit")],
                 ["write", enabledFor("workspaceWrite")],
               ]),

@@ -621,6 +621,11 @@ export type AudioAnalysisDocumentOptions = {
   sampleRate?: number;
   maxBeats?: number;
   curvePoints?: number;
+  /**
+   * When set, also post the decoded audio as mono 16-bit PCM resampled to this
+   * rate (used to feed on-device speech recognition). 0 (default) omits it.
+   */
+  pcmSampleRate?: number;
 };
 
 /**
@@ -630,6 +635,10 @@ export type AudioAnalysisDocumentOptions = {
  *
  *   { type: "mobileAgentAudioAnalysis", summary }        // success
  *   { type: "mobileAgentAudioAnalysisError", message }   // failure
+ *
+ * When `pcmSampleRate` is set (> 0), the success message also carries the
+ * decoded audio as mono 16-bit PCM (`pcmBase64`, base64 of little-endian
+ * Int16) plus `pcmSampleRate`, which feeds on-device speech recognition.
  *
  * Call `window.__startMobileAgentAudioAnalysis()` (after load) to begin.
  */
@@ -642,6 +651,7 @@ export function buildAudioAnalysisDocument(
     sampleRate: options.sampleRate ?? 22050,
     maxBeats: options.maxBeats ?? 300,
     curvePoints: options.curvePoints ?? 24,
+    pcmSampleRate: options.pcmSampleRate ?? 0,
   })
     .replace(/</g, "\\u003c")
     .replace(/>/g, "\\u003e")
@@ -659,6 +669,24 @@ export function buildAudioAnalysisDocument(
     "  }",
     "  function fail(message) {",
     "    post({ type: 'mobileAgentAudioAnalysisError', message: String(message || 'Audio analysis failed.') });",
+    "  }",
+    "  function encodePcm16Base64(samples) {",
+    "    var n = samples.length;",
+    "    var bytes = new Uint8Array(n * 2);",
+    "    var view = new DataView(bytes.buffer);",
+    "    for (var i = 0; i < n; i += 1) {",
+    "      var s = samples[i];",
+    "      if (isNaN(s)) s = 0;",
+    "      else if (s > 1) s = 1;",
+    "      else if (s < -1) s = -1;",
+    "      view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);",
+    "    }",
+    "    var chunk = 0x4000;",
+    "    var parts = [];",
+    "    for (var o = 0; o < bytes.length; o += chunk) {",
+    "      parts.push(String.fromCharCode.apply(null, bytes.subarray(o, o + chunk)));",
+    "    }",
+    "    return btoa(parts.join(''));",
     "  }",
     "  function run() {",
     "    try {",
@@ -691,7 +719,16 @@ export function buildAudioAnalysisDocument(
     "            { channels: channels, sampleRate: audioBuffer.sampleRate || rate, start: 0, offset: 0, duration: duration, loop: false, volume: 1, fadeIn: 0, fadeOut: 0 }",
     "          ], duration, rate, 1);",
     "          var features = aa.analyzeAudio(samples, rate, duration);",
-    "          post({ type: 'mobileAgentAudioAnalysis', summary: aa.summarizeFeatures(features, { maxBeats: cfg.maxBeats, curvePoints: cfg.curvePoints }) });",
+    "          var payload = { type: 'mobileAgentAudioAnalysis', summary: aa.summarizeFeatures(features, { maxBeats: cfg.maxBeats, curvePoints: cfg.curvePoints }) };",
+    "          if (cfg.pcmSampleRate > 0) {",
+    "            var pcmRate = cfg.pcmSampleRate;",
+    "            var pcmSamples = pcmRate === rate ? samples : aa.mixClipsToMono([",
+    "              { channels: channels, sampleRate: audioBuffer.sampleRate || rate, start: 0, offset: 0, duration: duration, loop: false, volume: 1, fadeIn: 0, fadeOut: 0 }",
+    "            ], duration, pcmRate, 1);",
+    "            payload.pcmBase64 = encodePcm16Base64(pcmSamples);",
+    "            payload.pcmSampleRate = pcmRate;",
+    "          }",
+    "          post(payload);",
     "          try { ctx.close(); } catch (closeError) {}",
     "        })",
     "        .catch(function (error) { fail((error && error.message) || error); });",

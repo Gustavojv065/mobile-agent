@@ -20,6 +20,10 @@ const ANALYSIS_TIMEOUT_MS = 30000;
  * decoded feature summary (tempo, onsets, energy curves) back to the tool so
  * the agent can plan visuals that follow the actual soundtrack.
  *
+ * It also serves the `transcribeAudio` tool: when a job asks for a
+ * `pcmSampleRate`, the same decode is exported as mono 16-bit PCM for on-device
+ * speech recognition.
+ *
  * It shares the same engine as the recorder (video-audio-analysis.ts), so the
  * numbers the agent plans with match what the page sees at render time.
  */
@@ -76,6 +80,7 @@ export function AudioAnalysisHost() {
           sampleRate: job.sampleRate,
           maxBeats: job.maxBeats,
           curvePoints: job.curvePoints,
+          pcmSampleRate: job.pcmSampleRate,
         }),
       );
 
@@ -147,7 +152,13 @@ export function AudioAnalysisHost() {
 
   const handleMessage = useCallback(
     (event: WebViewMessageEvent) => {
-      let payload: { type?: unknown; summary?: unknown; message?: unknown };
+      let payload: {
+        type?: unknown;
+        summary?: unknown;
+        message?: unknown;
+        pcmBase64?: unknown;
+        pcmSampleRate?: unknown;
+      };
       try {
         payload = JSON.parse(event.nativeEvent.data);
       } catch {
@@ -158,10 +169,20 @@ export function AudioAnalysisHost() {
       const job = jobRef.current;
       if (payload.type === "mobileAgentAudioAnalysis") {
         if (job) {
-          settle(job, {
-            type: "resolve",
-            result: { summary: payload.summary as AudioAnalysisSummary },
-          });
+          const result: AudioAnalysisJobResult = {
+            summary: payload.summary as AudioAnalysisSummary,
+          };
+          if (
+            typeof payload.pcmBase64 === "string" &&
+            typeof payload.pcmSampleRate === "number" &&
+            payload.pcmSampleRate > 0
+          ) {
+            result.pcm = {
+              base64: payload.pcmBase64,
+              sampleRate: payload.pcmSampleRate,
+            };
+          }
+          settle(job, { type: "resolve", result });
         }
         finishJob();
       } else if (payload.type === "mobileAgentAudioAnalysisError") {

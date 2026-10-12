@@ -9,6 +9,7 @@ import {
   loadVoiceLanguage,
   loadVoiceSettings,
   modelFile,
+  resolveTranscriptionModel,
   saveVoiceEngine,
   saveVoiceLanguage,
 } from "./models";
@@ -171,5 +172,36 @@ describe("Whisper model downloads and selection", () => {
     expect(isModelDownloaded("small")).toBe(true);
     await saveVoiceEngine("small");
     expect(await loadVoiceEngine()).toBe("small");
+  });
+
+  async function install(id: string) {
+    const model = WHISPER_MODELS.find((entry) => entry.id === id)!;
+    mocks.download.mockImplementation(async () => {
+      mocks.files.set(mocks.uri, { size: model.sizeBytes });
+      mocks.progress!({
+        totalBytesWritten: model.sizeBytes,
+        totalBytesExpectedToWrite: model.sizeBytes,
+      });
+      return { status: 200 };
+    });
+    await downloadVoiceModel(id, vi.fn());
+  }
+
+  it("resolves a transcription model from the active engine or downloads", async () => {
+    // Nothing downloaded yet: speech sync cannot run.
+    expect(await resolveTranscriptionModel()).toBeNull();
+
+    // A downloaded model is picked even while the engine is still System.
+    await install("tiny");
+    expect(await resolveTranscriptionModel()).toBe("tiny");
+
+    // The active engine wins when it is itself a downloaded model.
+    await install("small");
+    await saveVoiceEngine("small");
+    expect(await resolveTranscriptionModel()).toBe("small");
+
+    // Deleting the active model resets to System and falls back to the rest.
+    await deleteVoiceModel("small");
+    expect(await resolveTranscriptionModel()).toBe("tiny");
   });
 });

@@ -624,6 +624,26 @@ describe("buildAudioAnalysisDocument", () => {
     expect(html).toContain('"curvePoints":24');
   });
 
+  it("omits PCM unless a pcmSampleRate is requested", () => {
+    const off = buildAudioAnalysisDocument({ src: "data:audio/mpeg;base64,QQ==" });
+    expect(off).toContain('"pcmSampleRate":0');
+
+    const on = buildAudioAnalysisDocument({
+      src: "data:audio/mpeg;base64,QQ==",
+      pcmSampleRate: 16000,
+    });
+    expect(on).toContain('"pcmSampleRate":16000');
+  });
+
+  it("ships the PCM16 encoder only in the decode bootstrap", () => {
+    const html = buildAudioAnalysisDocument({ src: "data:audio/mpeg;base64,QQ==" });
+    expect(html).toContain("encodePcm16Base64");
+    expect(html).toContain("pcmBase64");
+    expect(html).toContain("pcmSampleRate");
+    // The encoder must live in the document bootstrap, not the reusable engine.
+    expect(VIDEO_AUDIO_ANALYSIS_SCRIPT).not.toContain("encodePcm16Base64");
+  });
+
   it("only runs once even if the start hook is called twice", () => {
     const html = buildAudioAnalysisDocument({ src: "data:audio/mpeg;base64,QQ==" });
     expect(html).toContain("__mobileAgentAudioAnalysisStarted");

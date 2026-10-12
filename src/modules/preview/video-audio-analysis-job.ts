@@ -4,9 +4,11 @@
  * The `analyzeAudio` tool hands a workspace audio file (as a data URI) to
  * {@link requestAudioAnalysis}. The promise stays pending until the app-level
  * {@link AudioAnalysisHost} (mounted in the root layout) decodes and analyzes it
- * in a hidden WebView and resolves it with a compact JSON summary. The audio is
- * decoded in the WebView, not natively, so it reuses the exact same feature
- * extractor the recorder uses at render time (video-audio-analysis.ts).
+ * in a hidden WebView and resolves it with a compact JSON summary. When the
+ * request sets `pcmSampleRate`, the result also carries the decoded mono 16-bit
+ * PCM (`pcm`), which the `transcribeAudio` tool feeds to on-device Whisper. The
+ * audio is decoded in the WebView, not natively, so it reuses the exact same
+ * feature extractor the recorder uses at render time (video-audio-analysis.ts).
  *
  * Like the video-render queue this module is pure (no react-native imports) so
  * it can be unit-tested in Node.
@@ -14,8 +16,17 @@
 
 import type { AudioAnalysisSummary } from "@/modules/preview/video-audio-analysis";
 
+export type AudioAnalysisPcm = {
+  /** Base64 of mono little-endian signed 16-bit PCM. */
+  base64: string;
+  /** Sample rate of the PCM (16 kHz for speech recognition). */
+  sampleRate: number;
+};
+
 export type AudioAnalysisJobResult = {
   summary: AudioAnalysisSummary;
+  /** Present only when the request asked for `pcmSampleRate`. */
+  pcm?: AudioAnalysisPcm;
 };
 
 export type AudioAnalysisJob = {
@@ -26,6 +37,8 @@ export type AudioAnalysisJob = {
   sampleRate: number;
   maxBeats: number;
   curvePoints: number;
+  /** When > 0, the host also returns mono 16-bit PCM at this rate. */
+  pcmSampleRate?: number;
   signal?: AbortSignal;
   resolve: (result: AudioAnalysisJobResult) => void;
   reject: (error: Error) => void;
@@ -61,6 +74,11 @@ export type RequestAudioAnalysisParams = {
   sampleRate?: number;
   maxBeats?: number;
   curvePoints?: number;
+  /**
+   * When set (> 0), the host also returns the decoded audio as mono 16-bit PCM
+   * at this rate, for on-device speech recognition.
+   */
+  pcmSampleRate?: number;
   signal?: AbortSignal;
 };
 
@@ -98,6 +116,7 @@ export function requestAudioAnalysis(
       sampleRate: params.sampleRate ?? 22050,
       maxBeats: params.maxBeats ?? 300,
       curvePoints: params.curvePoints ?? 24,
+      pcmSampleRate: params.pcmSampleRate,
       signal: params.signal,
       resolve,
       reject,

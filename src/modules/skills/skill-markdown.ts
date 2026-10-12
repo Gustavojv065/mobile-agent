@@ -59,6 +59,7 @@ export const TOOL_ALIAS_TO_BUILT_IN_KEY: Record<string, BuiltInToolKey> = {
   skill: "skill",
   todos: "todos",
   todowrite: "todos",
+  transcribeaudio: "workspaceRenderVideo",
   updatetodos: "todos",
   workspacecreatefile: "workspaceCreateFile",
   workspaceedit: "workspaceEdit",

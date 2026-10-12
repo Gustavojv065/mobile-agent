@@ -111,6 +111,22 @@ export function isModelDownloaded(id: WhisperModelId) {
   return file.exists && file.size === model.sizeBytes;
 }
 
+/**
+ * The Whisper model to use for on-device transcription: the active voice engine
+ * when it is a downloaded local model, otherwise the first downloaded model in
+ * the catalog, otherwise null. Speech recognition needs a real model file, so
+ * the "system" engine (which has no local file) is skipped.
+ */
+export async function resolveTranscriptionModel(): Promise<WhisperModelId | null> {
+  if (Platform.OS === "web") return null;
+  const engine = await loadVoiceEngine();
+  if (engine !== "system" && isModelDownloaded(engine)) return engine;
+  for (const model of getCachedVoiceModelCatalog()) {
+    if (isModelDownloaded(model.id)) return model.id;
+  }
+  return null;
+}
+
 async function loadSettings(): Promise<VoiceSettings> {
   if (Platform.OS === "web") return DEFAULT_SETTINGS;
   const file = new File(directory(), "settings.json");
