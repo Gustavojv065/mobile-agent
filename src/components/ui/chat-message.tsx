@@ -100,6 +100,7 @@ import {
   getFilePreviewKind,
 } from "@/components/ui/file-preview-dialog";
 import { Loading } from "@/components/ui/loading";
+import { MathBlock } from "@/components/ui/math-block";
 import { Message, MessageFooter } from "@/components/ui/message";
 import {
   VideoPlayerDialog,
@@ -176,6 +177,7 @@ const MARKDOWN_RULES = {
       language={getCodeLanguage(node)}
     />
   ),
+  math_block: (node) => <MathBlock key={node.key} tex={node.content} />,
   image: (node) => (
     <MarkdownImage
       alt={String(node.attributes.alt ?? "")}

@@ -5,6 +5,7 @@ import { registerChatMarkdownRules } from "@/modules/chat/markdown-rules";
 
 type AppToken = {
   attrs: [string, string][] | null;
+  block?: boolean;
   children: AppToken[] | null;
   content: string;
   type: string;
@@ -93,5 +94,58 @@ describe("task list markdown rule", () => {
     const item = tokens.find((token) => token.type === "list_item_open");
 
     expect(attr(item, "task")).toBeUndefined();
+  });
+});
+
+describe("math block markdown rule", () => {
+  function mathToken(tokens: AppToken[]): AppToken | undefined {
+    return tokens.find((token) => token.type === "math_block");
+  }
+
+  it("captures a fenced $$ block on its own lines", () => {
+    const token = mathToken(parse("$$\nE = mc^2\n$$"));
+
+    expect(token?.content).toBe("E = mc^2");
+  });
+
+  it("captures a single-line $$ block", () => {
+    const token = mathToken(parse("$$x^2 + y^2$$"));
+
+    expect(token?.content).toBe("x^2 + y^2");
+  });
+
+  it("captures a \\[ \\] block", () => {
+    const token = mathToken(parse("\\[\n\\int_0^1 x\\,dx\n\\]"));
+
+    expect(token?.content).toBe("\\int_0^1 x\\,dx");
+  });
+
+  it("preserves multi-line TeX", () => {
+    const token = mathToken(parse("$$\na = b \\\\\nc = d\n$$"));
+
+    expect(token?.content).toBe("a = b \\\\\nc = d");
+  });
+
+  it("emits a leaf block token", () => {
+    const tokens = parse("$$\nx\n$$");
+    const token = mathToken(tokens);
+
+    expect(token?.block).toBe(true);
+    expect(token?.children ?? null).toBeNull();
+  });
+
+  it("does not tokenize an unclosed block", () => {
+    const tokens = parse("$$\nnever closed");
+
+    expect(mathToken(tokens)).toBeUndefined();
+  });
+
+  it("leaves inline $math$ as ordinary text", () => {
+    const tokens = parse("value $x^2$ here");
+
+    expect(mathToken(tokens)).toBeUndefined();
+    expect(tokens.find((token) => token.type === "inline")?.children?.[0]?.content).toBe(
+      "value $x^2$ here",
+    );
   });
 });

@@ -21,6 +21,28 @@ declare module "#app-markdown-it" {
   };
 
   type AppParser = {
+    block: {
+      ruler: {
+        before: (
+          beforeName: string,
+          ruleName: string,
+          rule: (
+            state: {
+              bMarks: number[];
+              eMarks: number[];
+              line: number;
+              push: (type: string, tag: string, nesting: number) => AppToken;
+              src: string;
+              tShift: number[];
+            },
+            startLine: number,
+            endLine: number,
+            silent: boolean,
+          ) => boolean,
+          options?: { alt?: string[] },
+        ) => void;
+      };
+    };
     core: {
       ruler: {
         after: (

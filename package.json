@@ -64,6 +64,7 @@
     "fflate": "^0.8.3",
     "jose": "^6.2.12",
     "lucide-react-native": "^1.22.0",
+    "mathjax-full": "3.2.2",
     "nativewind": "^4.2.6",
     "ollama-ai-provider-v2": "^4.0.1",
     "pdf-lib": "^1.17.1",
