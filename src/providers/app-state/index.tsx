@@ -4168,38 +4168,10 @@ Your output must be:
             lastError: null,
             status: "canceled",
         });
-        await repositoriesRef.current.messageRepository.updateContent({
-            id: targetRun.assistantMessageId,
-            content: "Stopped.",
-            error: null,
-            metadata: {
-                runId: targetRun.id,
-            },
-            status: "failed",
-        });
-
-        setSnapshot((current) => ({
-            ...current,
-            messages:
-                current.currentConversation?.id === targetRun.conversationId
-                    ? upsertMessages(current.messages, [
-                        {
-                            content: "Stopped.",
-                            conversationId: targetRun.conversationId,
-                            createdAt: targetRun.startedAt,
-                            error: null,
-                            id: targetRun.assistantMessageId,
-                            metadata: {
-                                runId: targetRun.id,
-                            },
-                            role: "assistant",
-                            sequence: Number.MAX_SAFE_INTEGER,
-                            status: "failed",
-                            updatedAt: new Date().toISOString(),
-                        },
-                    ])
-                    : current.messages,
-        }));
+        // Don't overwrite the assistant message here. The running agent loop
+        // owns message persistence and will keep any streamed partial text
+        // when it observes the abort. Overwriting with "Stopped." here races
+        // with that flush and discards the partial response.
     }, [updateRunRecord]);
 
     const stopSending = useCallback(async () => {

@@ -6,6 +6,14 @@
  *
  * PDF.js (via unpdf) already polyfills DOMMatrix, Promise.withResolvers and
  * FinalizationRegistry itself.
+ *
+ * The structuredClone wrapper is installed unconditionally (not just when the
+ * global is missing): unpdf's LoopbackPort calls
+ * `structuredClone(data, transfer ? { transfer } : null)`, and the
+ * `@ungap/structured-clone` polyfill used on Hermes destructures its options
+ * as `{ json, lossy } = {}`, which throws `Cannot read property 'json' of
+ * null` when it receives `null`. Native implementations tolerate `null`, so
+ * normalizing `null` to `undefined` restores parity.
  */
 
 type WeakRefShimTarget = object;
@@ -91,8 +99,26 @@ function cloneStructured(value: unknown): unknown {
 }
 
 /**
+ * Normalize the `null` options argument unpdf's LoopbackPort passes when
+ * there is no transfer list. Native `structuredClone` tolerates `null`, but
+ * the `@ungap/structured-clone` polyfill destructures options with a
+ * `= {}` default that only applies to `undefined`, throwing on `null`.
+ */
+function wrapStructuredClone(
+  impl: (value: unknown, options?: StructuredSerializeOptions) => unknown,
+): typeof structuredClone {
+  const wrapped = ((value: unknown, options?: StructuredSerializeOptions | null) =>
+    impl(value, options ?? undefined)) as typeof structuredClone & {
+    __pdfNullTolerant?: boolean;
+  };
+  wrapped.__pdfNullTolerant = true;
+  return wrapped;
+}
+
+/**
  * Install any missing globals PDF.js expects. Only called lazily before the
- * first PDF extraction.
+ * first PDF extraction. Idempotent: repeated calls never double-wrap
+ * `structuredClone`.
  */
 export function ensurePdfGlobals(): void {
   if (typeof globalThis.navigator === "undefined") {
@@ -110,8 +136,21 @@ export function ensurePdfGlobals(): void {
   };
 
   if (typeof globals.structuredClone !== "function") {
-    globals.structuredClone = ((value: unknown) =>
-      cloneStructured(value)) as typeof structuredClone;
+    globals.structuredClone = wrapStructuredClone((value: unknown) =>
+      cloneStructured(value),
+    );
+  } else if (
+    !(globals.structuredClone as { __pdfNullTolerant?: boolean })
+      .__pdfNullTolerant
+  ) {
+    const original = globals.structuredClone as (
+      value: unknown,
+      options?: StructuredSerializeOptions,
+    ) => unknown;
+    const bound = original.bind(globalThis);
+    globals.structuredClone = wrapStructuredClone((value, options) =>
+      bound(value, options),
+    );
   }
 
   if (typeof globals.WeakRef !== "function") {

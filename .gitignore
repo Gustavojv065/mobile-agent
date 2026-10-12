@@ -51,3 +51,7 @@ example
 
 # Fetched agent skills (reproducible from skills-lock.json)
 .agents/skills/
+
+# EAS local builds (kept on /home disk, not /tmp tmpfs)
+.eas-local/
+dist-eas/

@@ -1053,7 +1053,7 @@ export async function executeClaimedAgentRun(
       conversationId: run.conversationId,
       record,
       runId: run.id,
-    });
+    })?.catch(() => {});
     pushTimelineEvent(
       createExecutionTimelineEvent({
         detail:
@@ -1829,7 +1829,7 @@ export async function executeClaimedAgentRun(
           conversationId: run.conversationId,
           delta,
           runId: run.id,
-        });
+        })?.catch(() => {});
         schedulePersist("streaming");
         scheduleSnapshot("streaming");
       },
@@ -1891,6 +1891,9 @@ export async function executeClaimedAgentRun(
       system: runtimeSystem,
       tools: runtimeTools,
     });
+    // Attach an early handler so React Native doesn't report the abort
+    // rejection as unhandled in the window before we await it below.
+    void runtimeResultPromise.catch(() => {});
 
     const persistArtifacts = (async () => {
       try {
@@ -1964,6 +1967,7 @@ export async function executeClaimedAgentRun(
         }
       }
     })();
+    void persistArtifacts.catch(() => {});
 
     const runtimeResult = await runtimeResultPromise;
     await persistArtifacts;
@@ -2112,21 +2116,25 @@ export async function executeClaimedAgentRun(
       title: conversation.title,
     }).catch(() => {});
   } catch (sendError) {
-    const serializedError =
-      sendError instanceof Error
-        ? {
-            message: sendError.message,
-            name: sendError.name,
-            stack: sendError.stack,
-          }
-        : { raw: sendError };
-    console.error("[agent-run] executeClaimedAgentRun caught", {
-      runId: run.id,
-      providerId: run.providerId,
-      modelId: run.modelId,
-      requestAborted: abortController.signal.aborted,
-      error: serializedError,
-    });
+    const requestAbortedEarly = abortController.signal.aborted;
+    const isUserCancel = requestAbortedEarly && !requestTimedOut;
+    if (!isUserCancel) {
+      const serializedError =
+        sendError instanceof Error
+          ? {
+              message: sendError.message,
+              name: sendError.name,
+              stack: sendError.stack,
+            }
+          : { raw: sendError };
+      console.error("[agent-run] executeClaimedAgentRun caught", {
+        runId: run.id,
+        providerId: run.providerId,
+        modelId: run.modelId,
+        requestAborted: requestAbortedEarly,
+        error: serializedError,
+      });
+    }
     await Promise.allSettled(pendingArtifactWrites);
     const requestAborted = abortController.signal.aborted;
     const errorMessage = requestAborted

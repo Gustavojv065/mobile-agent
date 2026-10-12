@@ -32,6 +32,34 @@ function mergeTools(
   } as Parameters<ModelRuntime["generateTextStream"]>[0]["tools"];
 }
 
+function isAbortLikeError(error: unknown, seen = new Set<unknown>()): boolean {
+  if (!error || typeof error !== "object") {
+    return typeof error === "string" && /abort/i.test(error);
+  }
+  if (seen.has(error)) {
+    return false;
+  }
+  seen.add(error);
+  const details = error as {
+    name?: unknown;
+    message?: unknown;
+    cause?: unknown;
+  };
+  if (typeof details.name === "string" && /abort/i.test(details.name)) {
+    return true;
+  }
+  if (
+    typeof details.message === "string" &&
+    /abort|aborted|aborterror/i.test(details.message)
+  ) {
+    return true;
+  }
+  if (details.cause !== undefined) {
+    return isAbortLikeError(details.cause, seen);
+  }
+  return false;
+}
+
 function extractOAuthErrorMessage(error: unknown) {
   const details =
     error && typeof error === "object"
@@ -54,6 +82,10 @@ function extractOAuthErrorMessage(error: unknown) {
 }
 
 function normalizeCodexOAuthError(error: unknown) {
+  if (isAbortLikeError(error)) {
+    return error instanceof Error ? error : new Error("Aborted", { cause: error });
+  }
+
   const message = extractOAuthErrorMessage(error);
 
   if (/\b401\b|unauthorized/i.test(message)) {
@@ -68,6 +100,10 @@ function normalizeCodexOAuthError(error: unknown) {
 }
 
 function normalizeChatGptOAuthError(error: unknown) {
+  if (isAbortLikeError(error)) {
+    return error instanceof Error ? error : new Error("Aborted", { cause: error });
+  }
+
   const message = extractOAuthErrorMessage(error);
   const isSharingRestriction = NON_RETRYABLE_CHATGPT_SHARING_CODES.some(
     (code) => message.includes(code),
