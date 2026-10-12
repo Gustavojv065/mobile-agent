@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   bytes: new Uint8Array([0x49, 0x44, 0x33, 0x03, 0x00]),
   getById: vi.fn(),
   transcribePcm16: vi.fn(),
+  transcribePcm16WithSystem: vi.fn(),
 }));
 
 vi.mock("@/core/services/workspace-file-service", () => ({
@@ -21,6 +22,12 @@ vi.mock("@/core/services/workspace-file-service", () => ({
 
 vi.mock("@/modules/voice/transcribe", () => ({
   transcribePcm16: mocks.transcribePcm16,
+}));
+
+// The real system engine reaches for `react-native` (platform detection) and
+// `expo-file-system`, neither of which is loadable here; it has its own tests.
+vi.mock("@/modules/voice/system-transcribe", () => ({
+  transcribePcm16WithSystem: mocks.transcribePcm16WithSystem,
 }));
 
 const { createTranscribeAudioTool } = await import(
@@ -53,6 +60,15 @@ const TRANSCRIPT = {
   segments: [{ start: 0, end: 1.5, text: "hello world" }],
 };
 
+const SYSTEM_TRANSCRIPT = {
+  text: "hello world",
+  language: "en",
+  duration: 1.5,
+  segments: [{ start: 0, end: 1.5, text: "hello world" }],
+  hasWordTimings: true,
+  onDevice: true,
+};
+
 function repository(record: unknown) {
   mocks.getById.mockResolvedValue(record);
   return { getById: mocks.getById } as never;
@@ -74,6 +90,7 @@ describe("transcribeAudio tool", () => {
     mocks.exists = true;
     mocks.getById.mockReset();
     mocks.transcribePcm16.mockReset();
+    mocks.transcribePcm16WithSystem.mockReset();
   });
 
   it("rejects an unknown file id", async () => {
@@ -128,6 +145,7 @@ describe("transcribeAudio tool", () => {
     const out = (await tool.execute!({ fileId: "file-1" }, {} as never)) as {
       fileId: string;
       displayName: string;
+      engine: string;
       language: string;
       duration: number;
       text: string;
@@ -141,15 +159,18 @@ describe("transcribeAudio tool", () => {
       16000,
       expect.objectContaining({ language: "auto" }),
     );
+    expect(mocks.transcribePcm16WithSystem).not.toHaveBeenCalled();
     expect(out).toMatchObject({
       fileId: "file-1",
       displayName: "speech.mp3",
+      engine: "whisper",
       language: "en",
       duration: 1.5,
       text: "hello world",
       segmentCount: 1,
       segments: [{ start: 0, end: 1.5, text: "hello world" }],
     });
+    expect(out).not.toHaveProperty("warning");
     expect(records.at(-1)).toMatchObject({
       toolName: "transcribeAudio",
       status: "completed",
@@ -211,6 +232,82 @@ describe("transcribeAudio tool", () => {
     await expect(tool.execute!({ fileId: "file-1" }, {} as never)).rejects.toThrow(
       /No Whisper model/,
     );
+    expect(records.at(-1)).toMatchObject({
+      toolName: "transcribeAudio",
+      status: "failed",
+    });
+  });
+
+  it("routes to the system engine when asked", async () => {
+    unsubscribe = subscribeAudioAnalysis((job) => {
+      job.resolve({ summary: SUMMARY, pcm: { base64: "AAAA", sampleRate: 16000 } });
+    });
+    mocks.transcribePcm16WithSystem.mockResolvedValue(SYSTEM_TRANSCRIPT);
+
+    const tool = createTranscribeAudioTool({
+      repository: repository(mp3Record),
+      onRecord: () => {},
+    });
+    const out = (await tool.execute!(
+      { fileId: "file-1", engine: "system", language: "de" },
+      {} as never,
+    )) as Record<string, unknown>;
+
+    expect(mocks.transcribePcm16).not.toHaveBeenCalled();
+    expect(mocks.transcribePcm16WithSystem).toHaveBeenCalledWith(
+      "AAAA",
+      16000,
+      expect.objectContaining({ language: "de" }),
+    );
+    expect(out).toMatchObject({
+      engine: "system",
+      text: "hello world",
+      segmentCount: 1,
+    });
+    expect(out).not.toHaveProperty("warning");
+  });
+
+  it("warns when the system engine returns no timed segments", async () => {
+    unsubscribe = subscribeAudioAnalysis((job) => {
+      job.resolve({ summary: SUMMARY, pcm: { base64: "AAAA", sampleRate: 16000 } });
+    });
+    mocks.transcribePcm16WithSystem.mockResolvedValue({
+      ...SYSTEM_TRANSCRIPT,
+      segments: [],
+      hasWordTimings: false,
+      onDevice: false,
+    });
+
+    const tool = createTranscribeAudioTool({
+      repository: repository(mp3Record),
+      onRecord: () => {},
+    });
+    const out = (await tool.execute!(
+      { fileId: "file-1", engine: "system" },
+      {} as never,
+    )) as Record<string, unknown>;
+
+    expect(out).toMatchObject({ engine: "system", segmentCount: 0 });
+    expect(String(out.warning)).toMatch(/no timed `segments`/);
+  });
+
+  it("records a failure when the system engine throws", async () => {
+    const records: ToolExecutionRecord[] = [];
+    unsubscribe = subscribeAudioAnalysis((job) => {
+      job.resolve({ summary: SUMMARY, pcm: { base64: "AAAA", sampleRate: 16000 } });
+    });
+    mocks.transcribePcm16WithSystem.mockRejectedValue(
+      new Error("System transcription needs Android 13"),
+    );
+
+    const tool = createTranscribeAudioTool({
+      repository: repository(mp3Record),
+      onRecord: (record) => records.push(record),
+    });
+
+    await expect(
+      tool.execute!({ fileId: "file-1", engine: "system" }, {} as never),
+    ).rejects.toThrow(/Android 13/);
     expect(records.at(-1)).toMatchObject({
       toolName: "transcribeAudio",
       status: "failed",

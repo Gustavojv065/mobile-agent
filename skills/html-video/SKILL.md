@@ -220,8 +220,8 @@ Rules:
 
 When the recording has **speech** and the user wants the visuals (or captions)
 to follow the **words**, transcribe it first with the **`transcribeAudio`
-tool** on the `workspace://` file id. It runs on device with the Whisper model
-downloaded in Settings → Voice input and returns:
+tool** on the `workspace://` file id. By default it runs on device with the
+Whisper model downloaded in Settings → Voice input and returns:
 
 ```json
 {
@@ -280,6 +280,13 @@ Rules:
   deterministic) — the `speech` object is a convenience, not a requirement.
 - **Only for speech.** `transcribeAudio` ignores music; use `analyzeAudio` for
   rhythm and `transcribeAudio` for words. You can run both on the same file.
+- **Engine choice.** `transcribeAudio` uses Whisper by default. Pass
+  `engine: "system"` to try the device's own recognizer instead (Android 13+),
+  which is a different model and sometimes more accurate on names or accents —
+  but it only reports timed `segments` on Android 14+ with the on-device speech
+  model. When it has no timings the result comes back with `segments: []` and a
+  `warning`; captions are impossible from that result, so re-run on `whisper`.
+  Do not ask for `"system"` unless the user wants it or Whisper struggled.
 - Keep transcribed text **verbatim** in the caption; do not "fix" the wording
   silently. If a word is clearly wrong you may correct an obvious
   transcription slip, but never invent lines the speaker did not say.
