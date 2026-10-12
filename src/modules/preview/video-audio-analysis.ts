@@ -15,6 +15,21 @@
  * Every value is a pure function of the precomputed feature track, so the
  * render stays deterministic: no live AnalyserNode sampling is involved.
  *
+ * The same injected engine also normalizes the optional **speech** track the
+ * page supplies on the contract (`speech.segments`, typically the `segments`
+ * returned by the `transcribeAudio` tool). The recorder passes it to `render` as
+ * the fifth argument, so word/phrase captions follow the transcript
+ * deterministically without reading audio at render time:
+ *
+ *   speech.ready         // false when there is no usable transcript
+ *   speech.segments      // normalized spans { start, end, text } in seconds
+ *   speech.activeText(t) // text of the span containing t, or ""
+ *   speech.activeIndex(t) speech.activeSegment(t) speech.progress(t)
+ *
+ * Like `audio`, `speech` is always an object so a page can call it
+ * unconditionally. Segment times are video time; an optional `speech.offset`
+ * shifts them all (e.g. when the audio track is scheduled with a `start`).
+ *
  * The implementation lives here as a plain-JS string
  * ({@link VIDEO_AUDIO_ANALYSIS_SCRIPT}) that is injected into the render
  * WebView, and the unit tests evaluate that exact string — there is no second
@@ -80,6 +95,63 @@ export type AudioReactiveApi = {
   beatPulse(t: number, decay?: number): number;
 };
 
+/** One timed span of spoken text. Times are seconds on the video timeline. */
+export type SpeechSegment = {
+  start: number;
+  end: number;
+  text: string;
+};
+
+/** The transcript the page supplies on the contract to enable the speech track. */
+export type SpeechContractInput = {
+  /**
+   * Timed spans, usually the `segments` returned by the `transcribeAudio` tool.
+   * Interpreted as video time, shifted uniformly by `offset`.
+   */
+  segments?: { start?: number; end?: number; text?: string }[];
+  /** Full transcript text (optional; `activeText` works without it). */
+  text?: string;
+  /** Detected language code (optional). */
+  language?: string;
+  /** Seconds added to every segment time (default 0). */
+  offset?: number;
+};
+
+/**
+ * The deterministic speech track handed to `render` as its fifth argument (and
+ * mirrored on `window.MOBILE_AGENT_VIDEO_SPEECH`). Like the audio object it is
+ * always present: when there is no usable transcript `ready` is false and every
+ * lookup is empty, so a page can call it unconditionally.
+ */
+export type SpeechApi = {
+  ready: boolean;
+  /** End of the last segment (seconds), or 0 when not ready. */
+  duration: number;
+  language: string | null;
+  /** Full transcript text, or "" when not ready. */
+  text: string;
+  /** Number of normalized segments (capped at 2000). */
+  count: number;
+  /**
+   * Normalized segments, ascending by start time (empty when not ready). Text
+   * is whitespace-collapsed and capped at 400 characters; times are clamped to
+   * the video duration.
+   */
+  segments: SpeechSegment[];
+  /** Index of the segment containing `t`, or -1 in a gap / when not ready. */
+  activeIndex(t: number): number;
+  /** Segment at `index`, or null when out of range. */
+  segmentAt(index: number): SpeechSegment | null;
+  /** Segment containing `t`, or null. */
+  activeSegment(t: number): SpeechSegment | null;
+  /** Text of the segment containing `t`, or "" in a gap / when not ready. */
+  activeText(t: number): string;
+  /** 0..1 position within the active segment, or 0 when none. */
+  progress(t: number): number;
+  /** Start of the next segment strictly after `t`, or null. */
+  nextStart(t: number): number | null;
+};
+
 /** Compact, JSON-safe audio summary returned to the agent by the analyze tool. */
 export type AudioAnalysisSummary = {
   ready: boolean;
@@ -114,6 +186,10 @@ export type AudioAnalysisApi = {
     master?: number,
   ): Float32Array;
   createAudioApi(features: AudioFeatures | null | undefined): AudioReactiveApi;
+  createSpeechApi(
+    speech: SpeechContractInput | null | undefined,
+    duration?: number,
+  ): SpeechApi;
   summarizeFeatures(
     features: AudioFeatures | null | undefined,
     options?: { maxBeats?: number; curvePoints?: number },
@@ -585,17 +661,123 @@ export const VIDEO_AUDIO_ANALYSIS_SCRIPT = `(function () {
     };
   }
 
+  var MAX_SPEECH_SEGMENTS = 2000;
+  var MAX_SPEECH_TEXT = 400;
+
+  function normalizeSpeechSegments(segments, offset, duration) {
+    var out = [];
+    if (!segments || typeof segments.length !== 'number') return out;
+    var limit = segments.length < MAX_SPEECH_SEGMENTS ? segments.length : MAX_SPEECH_SEGMENTS;
+    for (var i = 0; i < limit; i += 1) {
+      var raw = segments[i];
+      if (!raw || typeof raw !== 'object') continue;
+      var start = Number(raw.start);
+      var end = Number(raw.end);
+      if (!isFinite(start) || !isFinite(end)) continue;
+      var text = typeof raw.text === 'string' ? raw.text.replace(/\s+/g, ' ').trim() : '';
+      if (!text) continue;
+      if (text.length > MAX_SPEECH_TEXT) text = text.slice(0, MAX_SPEECH_TEXT);
+      start = start + offset;
+      end = end + offset;
+      if (!isFinite(start) || !isFinite(end)) continue;
+      if (start < 0) start = 0;
+      if (end <= start) continue;
+      if (duration > 0) {
+        if (start >= duration) continue;
+        if (end > duration) end = duration;
+      }
+      out.push({ start: start, end: end, text: text });
+    }
+    out.sort(function (a, b) { return a.start - b.start || a.end - b.end; });
+    return out;
+  }
+
+  function findSpeechIndex(segments, t) {
+    var lo = 0;
+    var hi = segments.length - 1;
+    while (lo <= hi) {
+      var mid = (lo + hi) >> 1;
+      var segment = segments[mid];
+      if (t < segment.start) hi = mid - 1;
+      else if (t >= segment.end) lo = mid + 1;
+      else return mid;
+    }
+    return -1;
+  }
+
+  function createSpeechApi(speech, duration) {
+    var input = (speech && typeof speech === 'object') ? speech : null;
+    var offset = input ? Number(input.offset) : 0;
+    if (!isFinite(offset)) offset = 0;
+    var total = (typeof duration === 'number' && isFinite(duration) && duration > 0) ? duration : 0;
+    var segments = input ? normalizeSpeechSegments(input.segments, offset, total) : [];
+    var ready = segments.length > 0;
+    var language = input && typeof input.language === 'string' && input.language ? input.language : null;
+    var text = ready && typeof input.text === 'string' ? input.text.trim() : '';
+
+    function activeIndex(t) {
+      if (!ready || typeof t !== 'number' || !isFinite(t)) return -1;
+      return findSpeechIndex(segments, t);
+    }
+    function segmentAt(index) {
+      if (!ready || typeof index !== 'number' || !isFinite(index)) return null;
+      if (index < 0 || index >= segments.length) return null;
+      return segments[index];
+    }
+    function activeSegment(t) {
+      return segmentAt(activeIndex(t));
+    }
+    function activeText(t) {
+      var segment = activeSegment(t);
+      return segment ? segment.text : '';
+    }
+    function progress(t) {
+      var segment = activeSegment(t);
+      if (!segment) return 0;
+      var span = segment.end - segment.start;
+      if (!(span > 0)) return 0;
+      var value = (t - segment.start) / span;
+      if (value < 0) return 0;
+      if (value > 1) return 1;
+      return value;
+    }
+    function nextStart(t) {
+      if (!ready) return null;
+      if (typeof t !== 'number' || !isFinite(t)) t = -Infinity;
+      for (var i = 0; i < segments.length; i += 1) {
+        if (segments[i].start > t) return segments[i].start;
+      }
+      return null;
+    }
+
+    return {
+      ready: ready,
+      duration: ready ? segments[segments.length - 1].end : 0,
+      language: language,
+      text: text,
+      count: segments.length,
+      segments: segments,
+      activeIndex: activeIndex,
+      segmentAt: segmentAt,
+      activeSegment: activeSegment,
+      activeText: activeText,
+      progress: progress,
+      nextStart: nextStart
+    };
+  }
+
   root.__mobileAgentAudioAnalysis = {
     analyzeAudio: analyzeAudio,
     mixClipsToMono: mixClipsToMono,
     createAudioApi: createAudioApi,
+    createSpeechApi: createSpeechApi,
     summarizeFeatures: summarizeFeatures,
     emptyFeatures: emptyFeatures,
     sampleEnvelope: sampleEnvelope,
     FFT_SIZE: FFT_SIZE,
     HOP: HOP,
     MAX_SECONDS: MAX_SECONDS,
-    _internals: { fft: fft, pickPeaks: pickPeaks, estimateTempo: estimateTempo, percentile: percentile, downsample: downsample }
+    _internals: { fft: fft, pickPeaks: pickPeaks, estimateTempo: estimateTempo, percentile: percentile, downsample: downsample, normalizeSpeechSegments: normalizeSpeechSegments }
   };
 })();
 `;

@@ -57,6 +57,7 @@ describe("audio analysis script packaging", () => {
     expect(typeof a.analyzeAudio).toBe("function");
     expect(typeof a.mixClipsToMono).toBe("function");
     expect(typeof a.createAudioApi).toBe("function");
+    expect(typeof a.createSpeechApi).toBe("function");
     expect(a.FFT_SIZE).toBe(2048);
     expect(a.HOP).toBe(1024);
   });
@@ -591,6 +592,126 @@ describe("analyzeAudio edge cases", () => {
     }
     expect(f.bpm).not.toBeNull();
     expect(Math.abs((f.bpm as number) - 120)).toBeLessThan(6);
+  });
+});
+
+describe("createSpeechApi", () => {
+  const SPEECH = {
+    language: "en",
+    text: "hello world",
+    segments: [
+      { start: 2, end: 3.5, text: "world" },
+      { start: 0, end: 2, text: "  hello   " },
+      { start: 9, end: 9, text: "zero length" },
+      { start: 5, end: 6, text: "" },
+      { start: NaN, end: 7, text: "nan" },
+      { start: 4, end: 5, text: "there" },
+    ],
+  };
+
+  it("is always an object, ready or not", () => {
+    const s = api().createSpeechApi(null);
+    expect(s.ready).toBe(false);
+    expect(s.segments).toEqual([]);
+    expect(s.count).toBe(0);
+    expect(s.duration).toBe(0);
+    expect(s.language).toBeNull();
+    expect(s.text).toBe("");
+    expect(s.activeIndex(1)).toBe(-1);
+    expect(s.activeSegment(1)).toBeNull();
+    expect(s.activeText(1)).toBe("");
+    expect(s.progress(1)).toBe(0);
+    expect(s.nextStart(1)).toBeNull();
+    expect(s.segmentAt(0)).toBeNull();
+  });
+
+  it("normalizes, sorts, trims and drops invalid spans", () => {
+    const s = api().createSpeechApi(SPEECH, 10);
+    expect(s.ready).toBe(true);
+    expect(s.language).toBe("en");
+    expect(s.text).toBe("hello world");
+    expect(s.count).toBe(3);
+    expect(s.segments).toEqual([
+      { start: 0, end: 2, text: "hello" },
+      { start: 2, end: 3.5, text: "world" },
+      { start: 4, end: 5, text: "there" },
+    ]);
+    expect(s.duration).toBe(5);
+  });
+
+  it("clamps spans to the video duration", () => {
+    const s = api().createSpeechApi(
+      {
+        segments: [
+          { start: 4, end: 9, text: "clipped" },
+          { start: 8, end: 9, text: "outside" },
+        ],
+      },
+      5,
+    );
+    expect(s.segments).toEqual([{ start: 4, end: 5, text: "clipped" }]);
+  });
+
+  it("shifts every span by offset", () => {
+    const s = api().createSpeechApi(
+      { offset: 3, segments: [{ start: 0, end: 1, text: "a" }] },
+      10,
+    );
+    expect(s.segments).toEqual([{ start: 3, end: 4, text: "a" }]);
+  });
+
+  it("resolves the active span, text, progress and next start", () => {
+    const s = api().createSpeechApi(SPEECH, 10);
+    expect(s.activeIndex(1)).toBe(0);
+    expect(s.activeText(1)).toBe("hello");
+    expect(s.activeText(3)).toBe("world");
+    expect(s.progress(2.75)).toBeCloseTo(0.5, 5);
+    expect(s.activeSegment(4.5)).toEqual({ start: 4, end: 5, text: "there" });
+    expect(s.activeIndex(4)).toBe(2); // start is inclusive
+    expect(s.activeIndex(5)).toBe(-1); // end is exclusive
+    expect(s.activeIndex(3.5)).toBe(-1); // gap between spans
+    expect(s.segmentAt(99)).toBeNull();
+    expect(s.nextStart(0)).toBe(2);
+    expect(s.nextStart(4)).toBeNull();
+    expect(s.nextStart(-5)).toBe(0);
+  });
+
+  it("exposes exactly the SpeechApi surface", () => {
+    const s = api().createSpeechApi(null);
+    expect(Object.keys(s).sort()).toEqual(
+      [
+        "activeIndex",
+        "activeSegment",
+        "activeText",
+        "count",
+        "duration",
+        "language",
+        "nextStart",
+        "progress",
+        "ready",
+        "segmentAt",
+        "segments",
+        "text",
+      ].sort(),
+    );
+  });
+
+  it("caps individual span text length", () => {
+    const long = "y".repeat(500);
+    const s = api().createSpeechApi(
+      { segments: [{ start: 0, end: 1, text: long }] },
+      5,
+    );
+    expect(s.segments[0].text).toBe("y".repeat(400));
+  });
+
+  it("caps the number of spans it will track", () => {
+    const many: { start: number; end: number; text: string }[] = [];
+    for (let i = 0; i < 2500; i += 1) {
+      many.push({ start: i, end: i + 0.5, text: "x" });
+    }
+    const s = api().createSpeechApi({ segments: many }, 0);
+    expect(s.count).toBe(2000);
   });
 });
 

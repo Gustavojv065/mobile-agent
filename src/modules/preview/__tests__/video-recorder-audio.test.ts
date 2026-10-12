@@ -463,4 +463,100 @@ describe("VIDEO_EXPORT_SCRIPT audio engine", () => {
     expect(audio.ready).toBe(false);
     expect(audio.level(1)).toBe(0);
   }, 15000);
+
+  it("hands render a deterministic speech track when the contract supplies one", async () => {
+    const { messages } = installBrowserStubs();
+    const seen: unknown[] = [];
+    let globalDuringRender: unknown = null;
+    setContract({
+      duration: 2,
+      fps: 5,
+      render: (
+        _t: number,
+        _canvas: unknown,
+        _ctx: unknown,
+        _audio: unknown,
+        speech: unknown,
+      ) => {
+        seen.push(speech);
+        const win = (globalThis as Record<string, unknown>).window as Record<
+          string,
+          unknown
+        >;
+        globalDuringRender = win.MOBILE_AGENT_VIDEO_SPEECH;
+      },
+      speech: {
+        language: "en",
+        text: "hello world",
+        segments: [
+          { start: 1, end: 2, text: "world" },
+          { start: 0, end: 1, text: "hello" },
+        ],
+      },
+    });
+    const w = runScript();
+    (w.__startMobileAgentVideoExport as () => void)();
+
+    await vi.waitFor(
+      () => {
+        expect(
+          messages.some((m) => m.type === "mobileAgentVideoDone"),
+        ).toBe(true);
+      },
+      { timeout: 8000 },
+    );
+
+    expect(messages.some((m) => m.type === "mobileAgentVideoError")).toBe(false);
+    const speech = seen[seen.length - 1] as {
+      ready: boolean;
+      language: string | null;
+      segments: unknown[];
+      activeText: (t: number) => string;
+      progress: (t: number) => number;
+    };
+    expect(speech.ready).toBe(true);
+    expect(speech.language).toBe("en");
+    expect(speech.segments).toEqual([
+      { start: 0, end: 1, text: "hello" },
+      { start: 1, end: 2, text: "world" },
+    ]);
+    expect(speech.activeText(0.5)).toBe("hello");
+    expect(speech.activeText(1.5)).toBe("world");
+    expect(speech.progress(1.5)).toBeCloseTo(0.5, 5);
+    // The same object is mirrored for the page at large while rendering.
+    expect(globalDuringRender).toBe(speech);
+  }, 15000);
+
+  it("still hands render a stable speech object when the contract has no speech", async () => {
+    installBrowserStubs();
+    const seen: unknown[] = [];
+    setContract({
+      duration: 1,
+      fps: 5,
+      render: (
+        _t: number,
+        _canvas: unknown,
+        _ctx: unknown,
+        _audio: unknown,
+        speech: unknown,
+      ) => {
+        seen.push(speech);
+      },
+    });
+    const w = runScript();
+    (w.__startMobileAgentVideoExport as () => void)();
+
+    await vi.waitFor(() => expect(seen.length).toBeGreaterThan(0), {
+      timeout: 8000,
+    });
+    const speech = seen[0] as {
+      ready: boolean;
+      activeIndex: (t: number) => number;
+      activeText: (t: number) => string;
+    };
+    expect(speech).toBeTruthy();
+    expect(speech.ready).toBe(false);
+    expect(speech.activeIndex(0.5)).toBe(-1);
+    expect(speech.activeText(0.5)).toBe("");
+  }, 15000);
 });

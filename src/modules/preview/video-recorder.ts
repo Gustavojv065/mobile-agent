@@ -4,12 +4,14 @@ import { VIDEO_AUDIO_ANALYSIS_SCRIPT } from "@/modules/preview/video-audio-analy
  * Recorder injected into the HTML preview document.
  *
  * The page declares `window.MOBILE_AGENT_VIDEO = { duration, fps, width,
- * height, canvasId?, render(t, canvas, ctx, audio), audio? }`. The recorder
- * drives `render` once per frame at the requested FPS. When file audio is
- * present it is analyzed up front (see video-audio-analysis.ts) and the
+ * height, canvasId?, render(t, canvas, ctx, audio, speech), audio?, speech? }`.
+ * The recorder drives `render` once per frame at the requested FPS. When file
+ * audio is present it is analyzed up front (see video-audio-analysis.ts) and the
  * resulting `audio` object is passed as the fourth argument and mirrored on
  * `window.MOBILE_AGENT_VIDEO_AUDIO`, so the visuals can react to the actual
- * soundtrack deterministically:
+ * soundtrack deterministically. A `speech` transcript (usually the `segments`
+ * from the `transcribeAudio` tool) is normalized the same way and passed as the
+ * fifth argument, mirrored on `window.MOBILE_AGENT_VIDEO_SPEECH`:
  *
  *  - GPU path: `new VideoFrame(canvas)` is fed to WebCodecs `VideoEncoder`
  *    (hardware H.264), whose Annex-B chunks are posted to the native
@@ -24,7 +26,9 @@ import { VIDEO_AUDIO_ANALYSIS_SCRIPT } from "@/modules/preview/video-audio-analy
  *
  * `audio` is always an object (never undefined): when there is no analyzable
  * file audio, `audio.ready` is false and every lookup returns 0, so a page can
- * safely call `audio.level(t)` unconditionally.
+ * safely call `audio.level(t)` unconditionally. `speech` is likewise always an
+ * object: without a usable transcript `speech.ready` is false, `speech.activeText(t)`
+ * is "", and `speech.activeIndex(t)` is -1.
  *
  * Determinism rules for the page's `render`: everything must be a pure
  * function of `t` (seconds) — no `Math.random`, `Date.now`, or
@@ -48,6 +52,7 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
   var activeAudio = null;
   var activeAudioSchedule = null;
   var activeAudioApi = null;
+  var activeSpeechApi = null;
   var analysis = (typeof window !== 'undefined' && window.__mobileAgentAudioAnalysis) || null;
 
   function post(payload) {
@@ -274,7 +279,7 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
 
   function renderFrame(contract, canvas, ctx, t) {
     try {
-      contract.render(t, canvas, ctx || null, activeAudioApi || null);
+      contract.render(t, canvas, ctx || null, activeAudioApi || null, activeSpeechApi || null);
       return true;
     } catch (error) {
       fail(String((error && error.message) || error));
@@ -291,7 +296,9 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
     activeAudio = null;
     activeAudioSchedule = null;
     activeAudioApi = null;
+    activeSpeechApi = null;
     try { window.MOBILE_AGENT_VIDEO_AUDIO = null; } catch (_) {}
+    try { window.MOBILE_AGENT_VIDEO_SPEECH = null; } catch (_) {}
     if (audio) teardownAudioCapture(audio);
     timers.forEach(function (timer) { clearTimeout(timer); });
     timers = [];
@@ -982,6 +989,10 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
       activeAudio = results[0];
       activeAudioApi = analysis ? analysis.createAudioApi(activeAudio ? activeAudio.features : null) : null;
       try { window.MOBILE_AGENT_VIDEO_AUDIO = activeAudioApi; } catch (_) {}
+      activeSpeechApi = (analysis && analysis.createSpeechApi)
+        ? analysis.createSpeechApi(contract.speech, duration)
+        : null;
+      try { window.MOBILE_AGENT_VIDEO_SPEECH = activeSpeechApi; } catch (_) {}
       if (results[1]) runH264(contract, canvas, ctx, width, height, fps, frameCount);
       else runJpeg(contract, canvas, ctx, width, height, fps, frameCount);
     });

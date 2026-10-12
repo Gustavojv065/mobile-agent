@@ -32,7 +32,8 @@ save, or share it. No preview taps, no manual export.
 Under the hood the recorder:
 
 1. Finds the page's canvas and resizes it to the export resolution.
-2. Calls `render(t, canvas, ctx, audio)` once per frame at the requested FPS.
+2. Calls `render(t, canvas, ctx, audio, speech)` once per frame at the requested
+   FPS.
 3. Captures the canvas with the GPU (`VideoFrame` + the hardware WebCodecs
    `VideoEncoder`) and streams the H.264 chunks to a native MP4 muxer. On
    WebViews without WebCodecs it falls back to JPEG frames re-encoded on the
@@ -50,15 +51,19 @@ Define this before the body finishes loading:
     width: 1280,       // export width, even number, ≤ 1920, default 1280
     height: 720,       // export height, even number, ≤ 1920, default 720
     canvasId: "scene", // optional: id of the canvas to record
-    render: function (t, canvas, ctx, audio) {
+    render: function (t, canvas, ctx, audio, speech) {
       // Draw the frame at time t (seconds). Must be deterministic and
       // synchronous — the recorder captures immediately after it returns.
       // audio carries precomputed soundtrack features (see Audio-reactive
-      // visuals). It is always an object; check audio.ready first.
+      // visuals) and speech carries the transcript (see Speech sync and
+      // captions). Both are always objects; check .ready first.
     },
     audio: {           // optional: omit for a silent video (see Audio below)
       master: 0.9,
       tracks: []
+    },
+    speech: {          // optional: transcript for captions (see Speech below)
+      segments: []     // the `segments` returned by the transcribeAudio tool
     }
   };
 </script>
@@ -230,26 +235,56 @@ downloaded in Settings → Voice input and returns:
 }
 ```
 
-`segments` are sentence/phrase spans in **seconds** (ascending). Bake those
-times into your HTML as constants — the transcript is deterministic, so a
-segment list is enough to drive captions, word pops, scene changes, or
-emphasis without any render-time audio access:
+`segments` are sentence/phrase spans in **seconds** (ascending). Put them on the
+contract as `speech` and the recorder hands them back to `render` as the fifth
+argument `speech` (also mirrored at `window.MOBILE_AGENT_VIDEO_SPEECH`), already
+normalized — so captions need no manual lookup and no render-time audio access:
 
 ```js
-var CUES = [
-  { t: 0.0, text: "first phrase" },
-  { t: 2.3, text: "second phrase" }
-];
-// in render: find the cue whose start is the latest <= t and draw it
+window.MOBILE_AGENT_VIDEO = {
+  /* ...duration, fps, canvas, audio... */
+  speech: { segments: [ /* paste the tool's segments here */ ] },
+  render: function (t, canvas, ctx, audio, speech) {
+    var line    = speech.ready ? speech.activeText(t) : "";  // text at time t
+    var karaoke = speech.ready ? speech.progress(t)   : 0;   // 0..1 through the line
+    // ...draw the caption; size it to the line, wipe it with karaoke...
+  }
+};
 ```
+
+Surface (node-safe to ignore — it is always an object):
+
+- `speech.ready` — `false` when there are no usable segments. `activeText(t)`
+  then returns `""` and `activeIndex(t)` returns `-1`.
+- `speech.segments` — normalized spans `{ start, end, text }`, ascending;
+  whitespace collapsed, empty/zero-length spans dropped, times clamped to the
+  video `duration`.
+- `speech.activeText(t)` — text of the span containing `t` (start inclusive, end
+  exclusive), or `""` in a gap.
+- `speech.activeIndex(t)` / `speech.activeSegment(t)` / `speech.segmentAt(i)` —
+  the span or its index, or `-1` / `null`.
+- `speech.progress(t)` — `0..1` position within the active span (for karaoke
+  wipes and word pops); `0` when none.
+- `speech.nextStart(t)` — start of the next span after `t`, or `null` (handy to
+  cut a scene on the next phrase).
+- `speech.count`, `speech.duration`, `speech.language`, `speech.text` — the
+  number of spans, the span extent, the detected language, and the full
+  transcript.
 
 Rules:
 
+- Segment times are **video time**. If you schedule the audio track with a
+  `start`/`offset`, set `speech.offset` to the same shift (or shift the times
+  yourself) so words stay glued to the sound.
+- Baking the times into your own constant array also works (the transcript is
+  deterministic) — the `speech` object is a convenience, not a requirement.
 - **Only for speech.** `transcribeAudio` ignores music; use `analyzeAudio` for
   rhythm and `transcribeAudio` for words. You can run both on the same file.
 - Keep transcribed text **verbatim** in the caption; do not "fix" the wording
   silently. If a word is clearly wrong you may correct an obvious
   transcription slip, but never invent lines the speaker did not say.
+- Inline the text as a JS string literal, escaping quotes so it cannot end the
+  `<script>` tag (`text: "it's fine"`).
 - Do not read audio at render time for speech — pass **times**, not samples.
 - The tool needs a Whisper model downloaded in Settings → Voice input; if it
   fails with that message, tell the user and offer to proceed without captions.
@@ -365,6 +400,7 @@ inside one canvas scene.
       property from `level`/`lowAt`/`beatPulse`/`beats` instead of ignoring the
       soundtrack
 - [ ] if the user asked for captions or word-synced visuals: ran
-      `transcribeAudio` on the file and timed the text from `segments`
-      (verbatim wording, no invented lines)
+      `transcribeAudio` on the file and put the returned `segments` on the
+      contract's `speech` (or baked the times in) and drove the captions from
+      `speech.activeText(t)`/`progress(t)` (verbatim wording, no invented lines)
 - [ ] complete scene: start state at t=0, motion clearly readable in 10 s
