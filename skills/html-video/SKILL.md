@@ -11,6 +11,7 @@ keywords:
   - make a video
 allowed-tools:
   - RenderVideo
+  - AnalyzeAudio
   - Read
   - Create
 ---
@@ -30,7 +31,7 @@ save, or share it. No preview taps, no manual export.
 Under the hood the recorder:
 
 1. Finds the page's canvas and resizes it to the export resolution.
-2. Calls `render(t, canvas, ctx)` once per frame at the requested FPS.
+2. Calls `render(t, canvas, ctx, audio)` once per frame at the requested FPS.
 3. Captures the canvas with the GPU (`VideoFrame` + the hardware WebCodecs
    `VideoEncoder`) and streams the H.264 chunks to a native MP4 muxer. On
    WebViews without WebCodecs it falls back to JPEG frames re-encoded on the
@@ -48,9 +49,11 @@ Define this before the body finishes loading:
     width: 1280,       // export width, even number, ≤ 1920, default 1280
     height: 720,       // export height, even number, ≤ 1920, default 720
     canvasId: "scene", // optional: id of the canvas to record
-    render: function (t, canvas, ctx) {
+    render: function (t, canvas, ctx, audio) {
       // Draw the frame at time t (seconds). Must be deterministic and
       // synchronous — the recorder captures immediately after it returns.
+      // audio carries precomputed soundtrack features (see Audio-reactive
+      // visuals). It is always an object; check audio.ready first.
     },
     audio: {           // optional: omit for a silent video (see Audio below)
       master: 0.9,
@@ -155,6 +158,57 @@ Mixing rules:
 - The tool result reports `hasAudio` and `audioWarnings` (e.g. a cue that had
   to be skipped). If `hasAudio` is false after you asked for sound, tell the
   user the video came out silent and why.
+
+## Audio-reactive visuals ("visuals as per the audio")
+
+When the user gives you an audio track and asks for visuals that follow it,
+**react to it instead of guessing**. The recorder precomputes a deterministic
+feature track from the file audio and hands it to `render` as the fourth
+argument `audio` (also mirrored at `window.MOBILE_AGENT_VIDEO_AUDIO`):
+
+```js
+render: function (t, canvas, ctx, audio) {
+  var pulse = audio.ready ? audio.beatPulse(t) : 0;   // 0..1, decays after each beat
+  var bass  = audio.ready ? audio.lowAt(t)   : 0;     // 0..1 kick/bass energy
+  var level = audio.ready ? audio.level(t)   : 0;     // 0..1 overall loudness
+  // ...drive scale, glow, camera shake, colour with these...
+}
+```
+
+Surface (node-safe to ignore — it is always an object):
+
+- `audio.ready` — `false` when there was no analyzable **file** audio. Every
+  lookup then returns `0`, so you can call them unconditionally.
+- `audio.duration` — seconds analyzed (capped at the video `duration`).
+- `audio.bpm` — estimated tempo (50–220) or `null`.
+- `audio.beats` — array of onset times in seconds, ascending.
+- `audio.level(t)`, `audio.lowAt(t)`, `audio.midAt(t)`, `audio.highAt(t)`,
+  `audio.onsetAt(t)` — normalized (0..1) envelopes at time `t`, linearly
+  interpolated and clamped. `low` = bass/kick, `high` = hats/air.
+- `audio.beatPulse(t, decay?)` — `1` on a beat decaying exponentially back to
+  `0` (default decay 0.18 s). Falls back to the `bpm` grid when no onsets were
+  detected.
+- `audio.energy/low/mid/high/onset` — the raw per-frame arrays if you want to
+  sample or average them yourself.
+
+Rules:
+
+- The features are **precomputed before the first frame**, so sampling them
+  inside `render` stays deterministic — this is the one place reading "audio
+  state" is allowed. Never create an `AudioContext` or `AnalyserNode` inside
+  `render`.
+- Only **`file`** tracks are analyzed (the audio the user attached). Synth cues
+  are not — trigger those from `t` as usual.
+- Analysis reflects the file as scheduled: `start`, `offset`, `duration`,
+  `loop`, `volume`, `fadeIn`/`fadeOut` and `master` are all applied first.
+- Combine with the beat grid for scene cuts:
+  `if (audio.ready && t >= nextBeat) { nextBeat = ... }` using `audio.beats`,
+  or drive per-frame motion directly with `beatPulse`/`lowAt` (preferred — it
+  needs no state).
+- If you want to know the tempo or beat times **before** authoring (e.g. to
+  place cuts at the right moments), use the **`analyzeAudio` tool** on the same
+  `workspace://` file id; then hard-code those times or rely on the live
+  `audio` object at render time.
 
 ## Hard rules
 
@@ -262,4 +316,8 @@ inside one canvas scene.
       (MP3/WAV/M4A/AAC/OGG/WebM, ≤ 15 MB), cues fit inside `duration`, volumes
       sum near 1, and `hasAudio` came back true (otherwise told the user why
       the video is silent)
+- [ ] if the user asked for visuals "to the audio": ran `analyzeAudio` on the
+      file (or used the live `audio` argument) and drove at least one visual
+      property from `level`/`lowAt`/`beatPulse`/`beats` instead of ignoring the
+      soundtrack
 - [ ] complete scene: start state at t=0, motion clearly readable in 10 s

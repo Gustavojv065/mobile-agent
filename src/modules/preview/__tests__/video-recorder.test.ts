@@ -4,6 +4,7 @@ import {
   buildVideoExportDocument,
   VIDEO_EXPORT_SCRIPT,
 } from "@/modules/preview/video-recorder";
+import { VIDEO_AUDIO_ANALYSIS_SCRIPT } from "@/modules/preview/video-audio-analysis";
 import {
   bytesToBase64,
   bytesToHex,
@@ -25,12 +26,15 @@ function concat(parts: Uint8Array[]): Uint8Array {
 }
 
 describe("buildVideoExportDocument", () => {
-  it("injects the recorder script before a lowercase closing body tag", () => {
+  it("injects the analysis and recorder scripts before a lowercase closing body tag", () => {
     const document = buildVideoExportDocument("<html><body><p>x</p></body></html>");
 
-    expect(document.match(/<script>/g)).toHaveLength(1);
-    expect(document.match(/<\/script>/g)).toHaveLength(1);
-    expect(document.indexOf(VIDEO_EXPORT_SCRIPT)).toBeGreaterThan(0);
+    expect(document.match(/<script>/g)).toHaveLength(2);
+    expect(document.match(/<\/script>/g)).toHaveLength(2);
+    expect(document.indexOf(VIDEO_AUDIO_ANALYSIS_SCRIPT)).toBeGreaterThan(0);
+    expect(document.indexOf(VIDEO_EXPORT_SCRIPT)).toBeGreaterThan(
+      document.indexOf(VIDEO_AUDIO_ANALYSIS_SCRIPT),
+    );
     expect(document).toContain("<p>x</p>");
     expect(document.endsWith("</script>\n</body></html>")).toBe(true);
   });

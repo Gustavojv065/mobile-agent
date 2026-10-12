@@ -1,3 +1,4 @@
+import { createAnalyzeAudioTool } from "@/modules/tools/built-in/analyze-audio";
 import { createCreateFileTool } from "@/modules/tools/built-in/create-file";
 import { createDownloadFileTool } from "@/modules/tools/built-in/download-file";
 import { createEditTool } from "@/modules/tools/built-in/edit";
@@ -28,6 +29,7 @@ export function createWorkspaceTools(
 ) {
   return {
     tools: {
+      analyzeAudio: createAnalyzeAudioTool(params),
       createFile: createCreateFileTool(params),
       downloadFile: createDownloadFileTool({ ...params, session: params.session }),
       edit: createEditTool(params),

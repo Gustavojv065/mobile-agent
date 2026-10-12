@@ -2,6 +2,7 @@ import { useAppState } from "@/hooks/use-app-state";
 import { useChat } from "@/hooks/use-chat";
 import { useColorScheme } from "@/hooks/use-color-scheme";
 import { useTheme } from "@/hooks/use-theme";
+import { AudioAnalysisHost } from "@/components/ui/audio-analysis-host";
 import { DismissibleBanner } from "@/components/ui/dismissible-banner";
 import { VideoRenderHost } from "@/components/ui/video-render-host";
 import { migrateAppDatabase } from "@/core/db/database";
@@ -299,6 +300,7 @@ export default function MainLayout() {
                   <InAppNotificationBanner />
                   <ReleaseUpdateBanner />
                   <VideoRenderHost />
+                  <AudioAnalysisHost />
                   <Slot />
                 </UpdateProvider>
               </AppStateProvider>

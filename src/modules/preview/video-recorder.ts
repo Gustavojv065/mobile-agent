@@ -1,9 +1,15 @@
+import { VIDEO_AUDIO_ANALYSIS_SCRIPT } from "@/modules/preview/video-audio-analysis";
+
 /**
  * Recorder injected into the HTML preview document.
  *
  * The page declares `window.MOBILE_AGENT_VIDEO = { duration, fps, width,
- * height, canvasId?, render(t, canvas, ctx), audio? }`. The recorder drives `render`
- * once per frame at the requested FPS:
+ * height, canvasId?, render(t, canvas, ctx, audio), audio? }`. The recorder
+ * drives `render` once per frame at the requested FPS. When file audio is
+ * present it is analyzed up front (see video-audio-analysis.ts) and the
+ * resulting `audio` object is passed as the fourth argument and mirrored on
+ * `window.MOBILE_AGENT_VIDEO_AUDIO`, so the visuals can react to the actual
+ * soundtrack deterministically:
  *
  *  - GPU path: `new VideoFrame(canvas)` is fed to WebCodecs `VideoEncoder`
  *    (hardware H.264), whose Annex-B chunks are posted to the native
@@ -15,6 +21,10 @@
  *    graph, captured, AAC-encoded (WebCodecs or native PCM fallback), and muxed
  *    as a second track. Missing audio
  *    APIs degrade to a silent video with a warning, never a failure.
+ *
+ * `audio` is always an object (never undefined): when there is no analyzable
+ * file audio, `audio.ready` is false and every lookup returns 0, so a page can
+ * safely call `audio.level(t)` unconditionally.
  *
  * Determinism rules for the page's `render`: everything must be a pure
  * function of `t` (seconds) — no `Math.random`, `Date.now`, or
@@ -37,6 +47,8 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
   var saved = null;
   var activeAudio = null;
   var activeAudioSchedule = null;
+  var activeAudioApi = null;
+  var analysis = (typeof window !== 'undefined' && window.__mobileAgentAudioAnalysis) || null;
 
   function post(payload) {
     try {
@@ -262,7 +274,7 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
 
   function renderFrame(contract, canvas, ctx, t) {
     try {
-      contract.render(t, canvas, ctx || null);
+      contract.render(t, canvas, ctx || null, activeAudioApi || null);
       return true;
     } catch (error) {
       fail(String((error && error.message) || error));
@@ -278,6 +290,8 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
     var audio = activeAudio;
     activeAudio = null;
     activeAudioSchedule = null;
+    activeAudioApi = null;
+    try { window.MOBILE_AGENT_VIDEO_AUDIO = null; } catch (_) {}
     if (audio) teardownAudioCapture(audio);
     timers.forEach(function (timer) { clearTimeout(timer); });
     timers = [];
@@ -757,6 +771,43 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
     });
   }
 
+  // Mixes the schedule's file cues into a mono buffer (honoring start/offset/
+  // duration/loop/volume/fades and master gain) and extracts the feature track
+  // the page reacts to. Returns null when there is nothing analyzable; callers
+  // still receive a stable "not ready" audio object.
+  function analyzeScheduleAudio(schedule, decoded, duration, sampleRate) {
+    if (!analysis || !schedule || !(sampleRate > 0)) return null;
+    try {
+      var clips = [];
+      for (var i = 0; i < decoded.length; i += 1) {
+        var entry = decoded[i];
+        var cue = entry && entry.cue;
+        var buffer = entry && entry.buffer;
+        if (!cue || cue.kind !== 'file' || !buffer) continue;
+        var channels = [];
+        var count = Math.min(buffer.numberOfChannels, 2);
+        for (var c = 0; c < count; c += 1) channels.push(buffer.getChannelData(c));
+        if (channels.length === 0) continue;
+        clips.push({
+          channels: channels,
+          sampleRate: buffer.sampleRate,
+          start: cue.start,
+          offset: cue.offset,
+          duration: cue.duration,
+          loop: cue.loop,
+          volume: cue.volume,
+          fadeIn: cue.fadeIn,
+          fadeOut: cue.fadeOut
+        });
+      }
+      if (clips.length === 0) return null;
+      var samples = analysis.mixClipsToMono(clips, duration, sampleRate, schedule.master);
+      return analysis.analyzeAudio(samples, sampleRate, duration);
+    } catch (_) {
+      return null;
+    }
+  }
+
   function prepareAudioCapture(schedule, duration) {
     var AC = window.AudioContext || window.webkitAudioContext;
     if (!AC) {
@@ -806,6 +857,7 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
       });
       return chain;
     }).then(function () {
+      var features = analyzeScheduleAudio(schedule, decoded, duration, context.sampleRate);
       var master = context.createGain();
       master.gain.value = schedule.master;
       var dest = context.createMediaStreamDestination();
@@ -841,7 +893,8 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
           decoded: decoded, started: false, firstTs: -1, pendingPts: [],
           reader: null, autoplayTimer: null, leadUs: 30000,
           pcmMode: !ok, pcmChannels: pcmChannels,
-          pcmParts: [], pcmByteLength: 0, pcmFirstPts: null
+          pcmParts: [], pcmByteLength: 0, pcmFirstPts: null,
+          features: features
         };
         if (ok) {
           try {
@@ -927,6 +980,8 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
         return;
       }
       activeAudio = results[0];
+      activeAudioApi = analysis ? analysis.createAudioApi(activeAudio ? activeAudio.features : null) : null;
+      try { window.MOBILE_AGENT_VIDEO_AUDIO = activeAudioApi; } catch (_) {}
       if (results[1]) runH264(contract, canvas, ctx, width, height, fps, frameCount);
       else runJpeg(contract, canvas, ctx, width, height, fps, frameCount);
     });
@@ -1207,7 +1262,7 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
  * on load and `window.__startMobileAgentVideoExport` can be called later.
  */
 export function buildVideoExportDocument(html: string): string {
-  const script = `\n<script>${VIDEO_EXPORT_SCRIPT}</script>\n`;
+  const script = `\n<script>${VIDEO_AUDIO_ANALYSIS_SCRIPT}</script>\n<script>${VIDEO_EXPORT_SCRIPT}</script>\n`;
   const lower = html.toLowerCase();
   const index = lower.lastIndexOf("</body>");
   if (index === -1) return `${html}${script}`;

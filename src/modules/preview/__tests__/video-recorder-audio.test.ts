@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { VIDEO_EXPORT_SCRIPT } from "@/modules/preview/video-recorder";
+import { VIDEO_AUDIO_ANALYSIS_SCRIPT } from "@/modules/preview/video-audio-analysis";
 
 type Posted = { type: string; [key: string]: unknown };
 
@@ -124,7 +125,17 @@ function installBrowserStubs(options: {
         };
       }
       decodeAudioData() {
-        return Promise.resolve({ duration: 1 });
+        const length = 48000;
+        const data = new Float32Array(length);
+        for (let i = 0; i < length; i += 1) {
+          data[i] = 0.6 * Math.sin((2 * Math.PI * 440 * i) / 48000);
+        }
+        return Promise.resolve({
+          numberOfChannels: 1,
+          sampleRate: 48000,
+          duration: 1,
+          getChannelData: () => data,
+        });
       }
     }
     class FakeAudioEncoder {
@@ -175,6 +186,10 @@ function installBrowserStubs(options: {
   if (options.fetchImpl) {
     g.fetch = options.fetchImpl;
   }
+
+  // Production injects the analysis script into the same document before the
+  // recorder; mirror that here so the audio-reactive path is exercised.
+  new Function(VIDEO_AUDIO_ANALYSIS_SCRIPT)();
 
   return { messages, canvas, oscillators };
 }
@@ -366,5 +381,86 @@ describe("VIDEO_EXPORT_SCRIPT audio engine", () => {
     expect(types).toContain("mobileAgentVideoAudioWarning");
     expect(types).toContain("mobileAgentVideoAudioConfig");
     expect(types).not.toContain("mobileAgentVideoError");
+  }, 15000);
+
+  it("hands render an audio-reactive object for decoded file audio", async () => {
+    const { messages } = installBrowserStubs({
+      audio: "full",
+      fetchImpl: (() =>
+        Promise.resolve({
+          ok: true,
+          arrayBuffer: () => Promise.resolve(new ArrayBuffer(8)),
+        })) as unknown as typeof fetch,
+    });
+    const seen: unknown[] = [];
+    let globalDuringRender: unknown = null;
+    setContract({
+      duration: 1,
+      fps: 5,
+      render: (_t: number, _canvas: unknown, _ctx: unknown, audio: unknown) => {
+        seen.push(audio);
+        const win = (globalThis as Record<string, unknown>).window as Record<
+          string,
+          unknown
+        >;
+        globalDuringRender = win.MOBILE_AGENT_VIDEO_AUDIO;
+      },
+      audio: {
+        master: 1,
+        tracks: [
+          { file: "data:audio/mpeg;base64,QUJD", start: 0, duration: 1 },
+        ],
+      },
+    });
+    const w = runScript();
+    (w.__startMobileAgentVideoExport as () => void)();
+
+    await vi.waitFor(
+      () => {
+        expect(
+          messages.some((m) => m.type === "mobileAgentVideoDone"),
+        ).toBe(true);
+      },
+      { timeout: 8000 },
+    );
+
+    expect(messages.some((m) => m.type === "mobileAgentVideoError")).toBe(false);
+    expect(seen.length).toBeGreaterThan(0);
+    const audio = seen[seen.length - 1] as {
+      ready: boolean;
+      level: (t: number) => number;
+      beats: number[];
+      bpm: number | null;
+    };
+    expect(audio).toBeTruthy();
+    expect(audio.ready).toBe(true);
+    expect(typeof audio.level(0.5)).toBe("number");
+    expect(Number.isFinite(audio.level(0.5))).toBe(true);
+    expect(Array.isArray(audio.beats)).toBe(true);
+    // The same object is mirrored for the page at large while rendering.
+    expect(globalDuringRender).toBeTruthy();
+    expect(globalDuringRender).toBe(audio);
+  }, 15000);
+
+  it("still hands render a stable object when no audio schedule exists", async () => {
+    installBrowserStubs();
+    const seen: unknown[] = [];
+    setContract({
+      duration: 1,
+      fps: 5,
+      render: (_t: number, _canvas: unknown, _ctx: unknown, audio: unknown) => {
+        seen.push(audio);
+      },
+    });
+    const w = runScript();
+    (w.__startMobileAgentVideoExport as () => void)();
+
+    await vi.waitFor(() => expect(seen.length).toBeGreaterThan(0), {
+      timeout: 8000,
+    });
+    const audio = seen[0] as { ready: boolean; level: (t: number) => number };
+    expect(audio).toBeTruthy();
+    expect(audio.ready).toBe(false);
+    expect(audio.level(1)).toBe(0);
   }, 15000);
 });

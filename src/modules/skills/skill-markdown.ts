@@ -20,6 +20,7 @@ const NAME_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 const MAX_DESCRIPTION_LENGTH = 1024;
 
 export const TOOL_ALIAS_TO_BUILT_IN_KEY: Record<string, BuiltInToolKey> = {
+  analyzeaudio: "workspaceRenderVideo",
   askquestion: "question",
   askuserquestion: "question",
   create: "workspaceCreateFile",

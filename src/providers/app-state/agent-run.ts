@@ -137,6 +137,7 @@ const FOLDER_BOUND_TOOL_NAMES = new Set([
 ]);
 
 const WORKSPACE_AUTO_APPROVED_BUILT_IN_TOOL_NAMES = new Set([
+  "analyzeAudio",
   "createFile",
   "edit",
   "glob",
@@ -1278,6 +1279,7 @@ export async function executeClaimedAgentRun(
             Object.assign(
               tools,
               pickEnabledTools(workspaceTools, [
+                ["analyzeAudio", enabledFor("workspaceRenderVideo")],
                 ["createFile", enabledFor("workspaceCreateFile")],
                 ["downloadFile", enabledFor("downloadFile")],
                 ["edit", enabledFor("workspaceEdit")],
