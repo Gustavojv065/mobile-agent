@@ -196,7 +196,8 @@ Voiceover / narration (never tell the user voiceover is impossible):
   with back-to-back `start` offsets. Pass the narration language as a BCP-47
   code (`en`, `es`, `de`, `hi`, `ta`, …; omit for the device default).
   Schedule every returned part as a `file:` track at its `start` so the full
-  narration plays in order.
+  narration plays in order. Use the `listVoices` tool first to see installed
+  voices and locales when the user wants a specific language.
 - If `textToSpeech` fails with a missing-voice error, either install the
   voice in the system text-to-speech settings or re-run in an installed
   language — or fall back to the network endpoint below.
@@ -290,6 +291,15 @@ Ducking music under voice (no auto-duck — declare it):
 - Overlapping ranges merge; ranges outside the track are clipped to it.
 - Ducking scales the whole track, sends included — the voice stays dry
   unless you send it too.
+
+Check the mix before rendering (numbers, not taste):
+
+- After authoring the `audio` schedule, run **`previewMix`** on the scene:
+  it renders the mix offline and reports peak/RMS, clipping spots with
+  timestamps, near-silent ranges, and applied ducking, plus one actionable
+  warning (null when healthy). Fix volumes/duck ranges and re-check —
+  seconds per iteration instead of a full render each time.
+- It cannot judge taste: a weak kick or an ugly reverb still needs ears.
 
 Mixing rules:
 
@@ -569,6 +579,8 @@ inside one canvas scene.
       files are within type/size limits, `<video>` is muted, draws are
       guarded (`img.complete`, `readyState`), and the result reports them
       in `imageFiles`/`videoFiles`
+- [ ] if the scene has sound: ran `previewMix` and cleared its warning
+      (volumes near 1, no clipping, ducking lands on the voice)
 - [ ] if the scene is new or complex: reviewed a `previewScene` storyboard
       before spending render time (composition, framing, captions placed)
 - [ ] if revising a previous render: read its `sourceFileId` (`.source.html`)

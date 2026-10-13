@@ -1,0 +1,188 @@
+/**
+ * In-page mix checker for the `previewMix` tool.
+ *
+ * The host loads the agent's scene (all assets inlined) wrapped with the
+ * recorder script — evaluated but never started — plus this script. It reads
+ * the scene's audio schedule through the recorder's own validation
+ * (`window.__mobileAgentAudioEngine`, so preflight and export can never
+ * disagree), decodes file cues, renders the full mix offline, and posts back
+ * level numbers only (peak/RMS/clip and quiet ranges, ducked ranges). The
+ * tool turns those numbers into an actionable warning.
+ *
+ * Plain ES5 string (no backticks, template markers, or backslashes) like the
+ * recorder string, and Node-testable with DOM/audio stubs.
+ */
+export const VIDEO_MIX_SCRIPT = `(function () {
+  function post(payload) {
+    try {
+      window.ReactNativeWebView.postMessage(JSON.stringify(payload));
+    } catch (_) {}
+  }
+
+  function round1(value) {
+    return Math.round(value * 10) / 10;
+  }
+
+  function computeStats(rendered, schedule, duration) {
+    var channels = [];
+    var count = Math.min(rendered.numberOfChannels, 2);
+    var c;
+    for (c = 0; c < count; c += 1) channels.push(rendered.getChannelData(c));
+    var total = channels.length > 0 ? channels[0].length : 0;
+    var rate = rendered.sampleRate > 0 ? rendered.sampleRate : 48000;
+    var peak = 0;
+    var sumSq = 0;
+    var rawClips = [];
+    var clipStart = -1;
+    var i, ch;
+    for (i = 0; i < total; i += 1) {
+      var s = 0;
+      for (ch = 0; ch < channels.length; ch += 1) s += channels[ch][i];
+      s /= channels.length;
+      var a = s < 0 ? -s : s;
+      if (a > peak) peak = a;
+      sumSq += s * s;
+      if (a >= 1) {
+        if (clipStart < 0) clipStart = i;
+      } else if (clipStart >= 0) {
+        rawClips.push({ start: clipStart / rate, end: i / rate });
+        clipStart = -1;
+      }
+    }
+    if (clipStart >= 0) rawClips.push({ start: clipStart / rate, end: total / rate });
+    var clipped = [];
+    for (i = 0; i < rawClips.length; i += 1) {
+      var r = rawClips[i];
+      if (clipped.length > 0 && r.start - clipped[clipped.length - 1].end < 0.1) {
+        clipped[clipped.length - 1].end = round1(r.end);
+      } else {
+        clipped.push({ start: round1(r.start), end: round1(r.end) });
+      }
+    }
+    var quiet = [];
+    var win = Math.max(1, Math.floor(rate));
+    var w;
+    for (w = 0; w < total; w += win) {
+      var wpeak = 0;
+      var wend = Math.min(total, w + win);
+      for (i = w; i < wend; i += 1) {
+        var t = 0;
+        for (ch = 0; ch < channels.length; ch += 1) t += channels[ch][i];
+        t /= channels.length;
+        var ta = t < 0 ? -t : t;
+        if (ta > wpeak) wpeak = ta;
+      }
+      if (wpeak < 0.02) quiet.push({ start: round1(w / rate), end: round1(wend / rate) });
+    }
+    var ducked = [];
+    for (i = 0; i < schedule.cues.length; i += 1) {
+      var cue = schedule.cues[i];
+      if (!cue.duckRanges || cue.duckRanges.length === 0 || !(cue.duckAmount < 1)) continue;
+      for (var d = 0; d < cue.duckRanges.length; d += 1) {
+        ducked.push({
+          start: cue.duckRanges[d].start,
+          end: cue.duckRanges[d].end,
+          level: cue.duckAmount
+        });
+      }
+    }
+    return {
+      peak: peak,
+      rms: total > 0 ? Math.sqrt(sumSq / total) : 0,
+      clipped: clipped.length > 0,
+      clippedRanges: clipped,
+      quietRanges: quiet,
+      duckedRanges: ducked,
+      duration: duration
+    };
+  }
+
+  var cancelled = false;
+
+  window.__cancelMobileAgentMixCheck = function () {
+    cancelled = true;
+  };
+
+  window.__startMobileAgentMixCheck = function (duration) {
+    cancelled = false;
+    var engine = window.__mobileAgentAudioEngine;
+    if (!engine) {
+      post({ type: 'mobileAgentMixError', message: 'The audio engine is unavailable in this preview.' });
+      return;
+    }
+    var contract = window.MOBILE_AGENT_VIDEO;
+    if (!contract) {
+      post({ type: 'mobileAgentMixError', message: 'No scene contract was found in this preview.' });
+      return;
+    }
+    var schedule = null;
+    try {
+      schedule = engine.readAudioSchedule(contract, duration);
+    } catch (error) {
+      post({ type: 'mobileAgentMixError', message: 'The audio schedule is invalid: ' + String((error && error.message) || error) });
+      return;
+    }
+    if (!schedule || schedule.cues.length === 0) {
+      post({ type: 'mobileAgentMixDone', stats: null, warnings: ['The scene has no audio schedule to check.'] });
+      return;
+    }
+    if (typeof OfflineAudioContext === 'undefined') {
+      post({ type: 'mobileAgentMixDone', stats: null, warnings: ['The mix cannot be checked on this device.'] });
+      return;
+    }
+    var sampleRate = 48000;
+    var offline = null;
+    try {
+      offline = new OfflineAudioContext(2, Math.max(1, Math.ceil(sampleRate * duration)), sampleRate);
+    } catch (error) {
+      post({ type: 'mobileAgentMixDone', stats: null, warnings: ['The mix cannot be checked on this device.'] });
+      return;
+    }
+    var warnings = [];
+    var decoded = [];
+    var chain = Promise.resolve();
+    schedule.cues.forEach(function (cue) {
+      if (cue.kind !== 'file') return;
+      chain = chain.then(function () {
+        if (cancelled) return null;
+        return fetch(cue.src).then(function (res) {
+          if (!res.ok) throw new Error('fetch failed');
+          return res.arrayBuffer();
+        }).then(function (buf) {
+          return offline.decodeAudioData(buf);
+        }).then(function (audioBuf) {
+          decoded.push({ cue: cue, buffer: audioBuf });
+          return null;
+        }).catch(function () {
+          warnings.push('An audio file could not be decoded and was skipped from the check.');
+          return null;
+        });
+      });
+    });
+    chain.then(function () {
+      if (cancelled) return null;
+      var master = offline.createGain();
+      master.gain.value = 1;
+      master.connect(offline.destination);
+      var buses = engine.buildFxBuses(offline, master, schedule.fx);
+      var handle = {
+        context: offline, master: master, decoded: decoded,
+        voices: 0, voiceOverflow: false,
+        fxReverb: buses.fxReverb, fxDelay: buses.fxDelay
+      };
+      for (var i = 0; i < schedule.cues.length; i += 1) {
+        engine.scheduleAudioCue(handle, schedule.cues[i], 0);
+      }
+      return offline.startRendering();
+    }).then(function (rendered) {
+      if (cancelled || !rendered) return null;
+      var stats = computeStats(rendered, schedule, duration);
+      post({ type: 'mobileAgentMixDone', stats: stats, warnings: warnings });
+      return null;
+    }).catch(function (error) {
+      if (cancelled) return null;
+      post({ type: 'mobileAgentMixError', message: 'Mix check failed: ' + String((error && error.message) || error) });
+      return null;
+    });
+  };
+})();`;

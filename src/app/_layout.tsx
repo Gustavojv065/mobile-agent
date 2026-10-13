@@ -5,6 +5,7 @@ import { useTheme } from "@/hooks/use-theme";
 import { AudioAnalysisHost } from "@/components/ui/audio-analysis-host";
 import { DismissibleBanner } from "@/components/ui/dismissible-banner";
 import { ScenePreviewHost } from "@/components/ui/video-preview-host";
+import { MixCheckHost } from "@/components/ui/video-mix-host";
 import { VideoRenderHost } from "@/components/ui/video-render-host";
 import { migrateAppDatabase } from "@/core/db/database";
 import { AppStateProvider } from "@/providers/app-state";
@@ -302,6 +303,7 @@ export default function MainLayout() {
                   <ReleaseUpdateBanner />
                   <VideoRenderHost />
                   <ScenePreviewHost />
+                  <MixCheckHost />
                   <AudioAnalysisHost />
                   <Slot />
                 </UpdateProvider>

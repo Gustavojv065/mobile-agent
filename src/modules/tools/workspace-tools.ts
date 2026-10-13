@@ -6,9 +6,11 @@ import { createVideoFrameTool } from "@/modules/tools/built-in/video-frame";
 import { createGlobTool } from "@/modules/tools/built-in/glob";
 import { createGrepTool } from "@/modules/tools/built-in/grep";
 import { createListFilesTool } from "@/modules/tools/built-in/list-files";
+import { createListVoicesTool } from "@/modules/tools/built-in/list-voices";
 import { createMergeDocumentsTool } from "@/modules/tools/built-in/merge-documents";
 import { createMergePdfsTool } from "@/modules/tools/built-in/merge-pdfs";
 import { createOcrTool } from "@/modules/tools/built-in/ocr";
+import { createPreviewMixTool } from "@/modules/tools/built-in/preview-mix";
 import { createPreviewSceneTool } from "@/modules/tools/built-in/preview-scene";
 import {
   buildSelectedFilesInlineContext,
@@ -41,10 +43,12 @@ export function createWorkspaceTools(
       glob: createGlobTool(params),
       grep: createGrepTool(params),
       listFiles: createListFilesTool(params),
+      listVoices: createListVoicesTool(params),
       mergeDocuments: createMergeDocumentsTool(params),
       mergePdfs: createMergePdfsTool(params),
       ocr: createOcrTool(params),
       previewScene: createPreviewSceneTool(params),
+      previewMix: createPreviewMixTool(params),
       read: createReadTool(params),
       renderVideo: createRenderVideoTool(params),
       splitDocument: createSplitDocumentTool(params),

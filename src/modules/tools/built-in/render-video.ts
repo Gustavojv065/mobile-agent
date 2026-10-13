@@ -234,7 +234,7 @@ function sourceName(outputName: string) {
  * data URI the hidden render WebView can fetch. The recorder script only ever
  * sees data URIs or synth cues; the workspace itself stays unreadable to it.
  */
-async function inlineAudioAssets(
+export async function inlineAudioAssets(
   html: string,
   repository: WorkspaceRepository,
 ): Promise<{ html: string; audioFiles: string[] }> {

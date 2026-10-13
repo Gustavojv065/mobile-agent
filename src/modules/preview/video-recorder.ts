@@ -1741,6 +1741,13 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
 
   window.__startMobileAgentVideoExport = start;
   window.__cancelMobileAgentVideoExport = cancel;
+  // Reused by same-page tools (mix check): schedule validation, cue
+  // scheduling, and FX buses without starting a recording.
+  window.__mobileAgentAudioEngine = {
+    readAudioSchedule: readAudioSchedule,
+    scheduleAudioCue: scheduleAudioCue,
+    buildFxBuses: buildFxBuses
+  };
 })();
 `;
 
