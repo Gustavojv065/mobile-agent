@@ -154,6 +154,7 @@
           "termux-stream",
           "html-video-export",
           "quote-selection",
+          "local-tts",
           "expo-ai-kit",
           "whisper.rn",
           "react-native-tcp-socket"

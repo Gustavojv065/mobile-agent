@@ -167,22 +167,35 @@ File tracks:
 - The tool inlines the file automatically. A missing, unreadable, or
   oversized file fails the render with a clear error before recording starts.
 
-Voiceover / narration (no built-in TTS tool exists — use this workaround,
-never tell the user voiceover is impossible):
+Voiceover / narration (never tell the user voiceover is impossible):
 
-- When the user asks for voiceover/narration and no suitable audio file is in
-  the workspace, fetch the narration yourself with the `downloadFile` tool
-  (target `workspace`) from the Google Translate TTS endpoint:
-  `https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=<lang>&q=<url-encoded-text>`
-  (`tl=en` for English; use the narration language). Save it as an `.mp3`
-  workspace file, then reference it as a `file:` track like any other audio.
-- Keep each request under ~200 characters of text; split longer scripts into
-  multiple sequential requests, save each part (e.g. `narration-1.mp3`,
-  `narration-2.mp3`), and schedule them back-to-back with matching `start`
-  times so the full narration plays in order.
-- Prefer `transcribeAudio` on the fetched narration to get word timings, then
-  drive captions from the `speech` contract — but the MP3 itself is the
-  voiceover track.
+- Preferred: the **`textToSpeech` tool**. It speaks the script with the
+  device's on-device voices — fully offline — and saves numbered WAV parts
+  with back-to-back `start` offsets. Pass the narration language as a BCP-47
+  code (`en`, `es`, `de`, `hi`, `ta`, …; omit for the device default).
+  Schedule every returned part as a `file:` track at its `start` so the full
+  narration plays in order.
+- If `textToSpeech` fails with a missing-voice error, either install the
+  voice in the system text-to-speech settings or re-run in an installed
+  language — or fall back to the network endpoint below.
+- Fallback (no local voice / non-Android): fetch the narration yourself with
+  the `downloadFile` tool (target `workspace`) from the Google Translate TTS
+  endpoint:
+  `https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=<lang>&q=<url-encoded-text>`.
+  `tl` is the narration language as an ISO-639-1 code (`en` English, `es`
+  Spanish, `de` German, `fr` French, `hi` Hindi, `ta` Tamil, … — use the
+  narration language, not always English). Each language gets its own fixed
+  voice; there is no voice choice.
+- Endpoint limits: keep each request under ~200 characters of text; split
+  longer scripts into multiple sequential requests at sentence boundaries,
+  save each part (e.g. `narration-1.mp3`, `narration-2.mp3`), and schedule
+  them back-to-back with matching `start` times. Keep every part in the same
+  `tl` language or the voice changes mid-narration. The endpoint is
+  unofficial and needs network — if a fetch fails, retry once, then ask the
+  user for an audio file instead of claiming the voiceover is done.
+- Either way, prefer `transcribeAudio` on the narration audio to get word
+  timings, then drive captions from the `speech` contract — but the audio
+  itself is the voiceover track.
 
 Synth cues (`synth.kind`):
 
@@ -452,6 +465,9 @@ inside one canvas scene.
       `transcribeAudio` on the file and put the returned `segments` on the
       contract's `speech` (or baked the times in) and drove the captions from
       `speech.activeText(t)`/`progress(t)` (verbatim wording, no invented lines)
+- [ ] if the user asked for voiceover/narration: generated it with
+      `textToSpeech` (or the endpoint fallback), scheduled every part as a
+      `file:` track at its `start`, and captioned it via `transcribeAudio`
 - [ ] if revising a previous render: read its `sourceFileId` (`.source.html`)
       and edited that file instead of writing a new scene from scratch
 - [ ] if the user pointed at a timestamp: inspected it with `getVideoFrame`
