@@ -32,7 +32,6 @@ import {
   RefreshCw,
   Share2,
   Square,
-  TextSelect,
   Trash2,
 } from "lucide-react-native";
 import {
@@ -165,8 +164,6 @@ type ChatMessageProps = {
   onEditMessage?: (content: string) => void;
   onRegenerate?: (instruction: string) => void;
   onSavePrompt?: (content: string) => void;
-  onToggleSelectText?: () => void;
-  textSelectable?: boolean;
   workspaceFiles: WorkspaceFile[];
 };
 
@@ -1411,14 +1408,14 @@ export const ChatMessage = memo(function ChatMessage({
   onEditMessage,
   onRegenerate,
   onSavePrompt,
-  onToggleSelectText,
-  textSelectable = false,
   workspaceFiles,
 }: ChatMessageProps) {
   const theme = useTheme();
-  // Never selectable while streaming: content rewrites every token would
-  // thrash native selection handles and re-layout the list.
-  const selectEnabled = textSelectable && message.status !== "streaming";
+  // Assistant body text is always selectable (except while streaming, when
+  // content rewrites every token would thrash native selection handles).
+  // No select mode, no toggle — long-press goes straight to the system
+  // selection menu (Copy + Ask agent on Android).
+  const selectEnabled = message.status !== "streaming";
   const [speaking, setSpeaking] = useRecyclingState(false, [message.id]);
   const [regenerateOpen, setRegenerateOpen] = useState(false);
   const [customPresets, setCustomPresets] = useState<RegeneratePreset[]>([]);
@@ -2403,23 +2400,6 @@ export const ChatMessage = memo(function ChatMessage({
                 accessibilityLabel="Save prompt"
                 leftIcon={<Bookmark color={theme.textSecondary} size={18} />}
                 onPress={() => onSavePrompt(message.content)}
-                size="icon-xs"
-                className="h-9 w-9 px-0"
-                variant="ghost"
-              />
-            ) : null}
-            {message.content.trim() && onToggleSelectText ? (
-              <Button
-                accessibilityLabel={
-                  selectEnabled ? "Done selecting text" : "Select text"
-                }
-                leftIcon={
-                  <TextSelect
-                    color={selectEnabled ? theme.text : theme.textSecondary}
-                    size={18}
-                  />
-                }
-                onPress={onToggleSelectText}
                 size="icon-xs"
                 className="h-9 w-9 px-0"
                 variant="ghost"

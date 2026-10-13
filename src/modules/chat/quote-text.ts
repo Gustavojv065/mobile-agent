@@ -1,7 +1,7 @@
 /**
- * Helpers for the "Quote (Ask)" flow: text highlighted in an AI reply via the
- * native selection menu is turned into a markdown blockquote and dropped into
- * the composer.
+ * Helpers for the "Ask agent" flow: text highlighted in an AI reply via the
+ * native selection menu is turned into a markdown blockquote and attached to
+ * the composer as a pending quote card.
  */
 
 /**

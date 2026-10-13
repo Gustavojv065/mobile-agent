@@ -53,6 +53,10 @@ import Animated, {
   LinearTransition,
 } from "react-native-reanimated";
 import Svg, { Defs, LinearGradient, Rect, Stop } from "react-native-svg";
+import {
+  enableQuoteSelection,
+  subscribeToQuoteSelection,
+} from "quote-selection";
 
 import { ComposerTip } from "@/components/chat/composer-tip";
 import { Container } from "@/components/shared/container";
@@ -120,6 +124,7 @@ import { useTheme } from "@/hooks/use-theme";
 import { useVoiceInput } from "@/hooks/use-voice-input";
 import { listPrimaryAgents, resolveAgent } from "@/modules/agents/registry";
 import { detectFolderIntent } from "@/modules/chat/folder-intent";
+import { appendQuote, formatQuotedText } from "@/modules/chat/quote-text";
 import {
   formatUsagePlanLabel,
   formatUsageWindowLabel,
@@ -301,20 +306,11 @@ export default function Screen() {
   latestUserMessageIdRef.current = latestUserMessageId;
   const messagesRef = useRef(messages);
   messagesRef.current = messages;
-  // Single-selection text mode: at most one message renders native-selectable
-  // Text at a time, so long chats never pay the always-on selection cost that
-  // caused lag + blank recycled rows.
-  const [selectedMessageId, setSelectedMessageId] = useState<string | null>(
-    null,
-  );
-  const handleToggleSelectMessage = useCallback((id: string) => {
-    setSelectedMessageId((current) => (current === id ? null : id));
-  }, []);
   // FlashList is a PureComponent: re-render row chrome (edit/regenerate
   // affordances) when these change even if `data` identity does not.
   const listExtraData = useMemo(
-    () => `${latestUserMessageId ?? "none"}:${currentConversationBusy ? "busy" : "idle"}:${selectedMessageId ?? "none"}`,
-    [latestUserMessageId, currentConversationBusy, selectedMessageId],
+    () => `${latestUserMessageId ?? "none"}:${currentConversationBusy ? "busy" : "idle"}`,
+    [latestUserMessageId, currentConversationBusy],
   );
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState<string | null>(null);
@@ -328,7 +324,6 @@ export default function Screen() {
   useEffect(() => {
     setEditDraft(null);
     setEditingMessageId(null);
-    setSelectedMessageId(null);
   }, [currentConversation?.id]);
 
   const handleEditMessage = useCallback((content: string) => {
@@ -451,10 +446,6 @@ export default function Screen() {
         onEditMessage={handleEditMessage}
         onRegenerate={handleRegenerate}
         onSavePrompt={handleSavePrompt}
-        onToggleSelectText={() => {
-          handleToggleSelectMessage(message.id);
-        }}
-        textSelectable={message.id === selectedMessageId}
         workspaceFiles={workspaceFiles}
       />
     ),
@@ -463,9 +454,7 @@ export default function Screen() {
       handleEditMessage,
       handleRegenerate,
       handleSavePrompt,
-      handleToggleSelectMessage,
       latestUserMessageId,
-      selectedMessageId,
       workspaceFiles,
     ],
   );
@@ -1263,6 +1252,13 @@ const ChatInput = memo(function ChatInput({
   const sendingRef = useRef(false);
   const composerRef = useRef<TextInput>(null);
   const [prompt, setPrompt] = useState("");
+  // Pending "Ask agent" quote: highlighted reply text waiting to be sent with
+  // the next message. Shown as a preview card above the composer instead of
+  // raw markdown in the input.
+  const [pendingQuote, setPendingQuote] = useState<{
+    preview: string;
+    quoted: string;
+  } | null>(null);
   const [composerContentHeight, setComposerContentHeight] = useState(0);
   const [filesDrawerOpen, setFilesDrawerOpen] = useState(false);
   const [attachmentPreview, setAttachmentPreview] =
@@ -1316,6 +1312,36 @@ const ChatInput = memo(function ChatInput({
 
     setPrompt("");
   }, [editDraft, editNonce]);
+
+  // Native Android text selection offers an "Ask agent" item (see the
+  // `quote-selection` Expo module). The highlighted text becomes a pending
+  // quote card above the composer and is prepended to the next sent message
+  // as a markdown blockquote. While editing a message there is no pending
+  // slot, so it appends straight into the draft like before.
+  useEffect(() => {
+    enableQuoteSelection();
+
+    return subscribeToQuoteSelection((text) => {
+      const quoted = formatQuotedText(text);
+      if (!quoted) {
+        return;
+      }
+
+      if (editDraft !== null) {
+        setPrompt((current) => appendQuote(current, quoted));
+      } else {
+        setPendingQuote({ preview: text.trim(), quoted });
+      }
+
+      requestAnimationFrame(() => {
+        composerRef.current?.focus();
+      });
+    });
+  }, [editDraft]);
+
+  useEffect(() => {
+    setPendingQuote(null);
+  }, [currentConversationId]);
 
   const maxComposerInputHeight = Math.min(320, screenHeight * 0.35);
   // The native content size can go stale when the field is cleared while
@@ -1523,7 +1549,9 @@ const ChatInput = memo(function ChatInput({
       return;
     }
 
-    const cleanPrompt = prompt.trim();
+    const cleanPrompt = (
+      pendingQuote ? appendQuote(prompt, pendingQuote.quoted) : prompt
+    ).trim();
     const folderIntent = detectFolderIntent(cleanPrompt);
     const nextFileContextSource =
       selectedFileIds.length > 0
@@ -1537,7 +1565,7 @@ const ChatInput = memo(function ChatInput({
     if (
       loading ||
       !canSend ||
-      (!cleanPrompt && selectedFileIds.length === 0) ||
+      (!cleanPrompt && !pendingQuote && selectedFileIds.length === 0) ||
       !canAttachSelectedFiles
     ) {
       const reason = loading
@@ -1597,6 +1625,7 @@ const ChatInput = memo(function ChatInput({
 
     sendingRef.current = true;
     setPrompt("");
+    setPendingQuote(null);
     KeyboardController.dismiss();
     composerRef.current?.blur();
 
@@ -1643,6 +1672,7 @@ const ChatInput = memo(function ChatInput({
       setPendingFolderSend(null);
       setFolderNotice(`Using ${session.displayName} for this chat.`);
       setPrompt("");
+      setPendingQuote(null);
       KeyboardController.dismiss();
       composerRef.current?.blur();
       await setSelectedFileIds([]);
@@ -1819,7 +1849,7 @@ const ChatInput = memo(function ChatInput({
 
   const sendDisabled =
     !loading &&
-    ((!prompt.trim() && selectedFileIds.length === 0) ||
+    ((!prompt.trim() && !pendingQuote && selectedFileIds.length === 0) ||
       !canSend ||
       !canAttachSelectedFiles);
   const clearTriggerText = () => {
@@ -2202,6 +2232,29 @@ const ChatInput = memo(function ChatInput({
               />
             ) : (
               <>
+                {pendingQuote ? (
+                  <View className="mx-3 mt-3 flex-row items-start gap-2 rounded-2xl border border-border bg-secondary px-3 py-2 dark:border-border-dark dark:bg-secondary-dark">
+                    <Text
+                      className="min-w-0 flex-1 font-sans text-sm text-muted-foreground dark:text-muted-foreground-dark"
+                      numberOfLines={3}
+                    >
+                      {pendingQuote.preview}
+                    </Text>
+                    <Pressable
+                      accessibilityHint="Removes the quoted text"
+                      accessibilityLabel="Remove quote"
+                      accessibilityRole="button"
+                      onPress={() => {
+                        setPendingQuote(null);
+                      }}
+                      style={({ pressed }) =>
+                        pressed ? { opacity: 0.6 } : null
+                      }
+                    >
+                      <X color={theme.textSecondary} size={16} />
+                    </Pressable>
+                  </View>
+                ) : null}
                 <TextInputWrapper
                   style={{ height: composerInputHeight, width: "100%" }}
                   onPaste={(payload) => {

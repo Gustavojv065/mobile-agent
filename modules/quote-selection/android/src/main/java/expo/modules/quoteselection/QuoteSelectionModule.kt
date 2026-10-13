@@ -18,13 +18,14 @@ import java.util.Collections
 import java.util.WeakHashMap
 
 /**
- * Adds a "Quote (Ask)" item to the native text-selection menu on Android.
+ * Adds an "Ask agent" item to the native text-selection menu on Android.
  *
  * React Native's `<Text selectable>` renders an Android `ReactTextView`, which
  * exposes no selection range to JS. This module watches the activity view tree,
  * attaches a `customSelectionActionModeCallback` to every selectable `TextView`
  * (skipping `EditText` inputs), and emits `onQuoteSelected` with the highlighted
- * text when the user taps the injected item.
+ * text when the user taps the injected item. The JS side drops it into the
+ * composer as a quoted block so the user can ask the agent about it.
  *
  * The platform adds Cut/Copy/Paste/Select-all *before* invoking the custom
  * callback (`Editor.SelectionActionModeCallback#onCreateActionMode` calls
@@ -144,7 +145,7 @@ class QuoteSelectionModule : Module() {
   }
 
   private companion object {
-    private const val QUOTE_MENU_TITLE = "Quote (Ask)"
+    private const val QUOTE_MENU_TITLE = "Ask agent"
 
     // Chosen to avoid clashing with the platform's android.R.id.* menu item ids.
     // (Menu item ids accept arbitrary ints — unlike View.setTag keys.)

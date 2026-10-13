@@ -17,7 +17,7 @@ const QuoteSelection =
     : null;
 
 /**
- * Installs the "Quote (Ask)" item into the Android text-selection menu.
+ * Installs the "Ask agent" item into the Android text-selection menu.
  * Safe to call repeatedly — the native side only registers its listener once.
  */
 export function enableQuoteSelection(): void {
