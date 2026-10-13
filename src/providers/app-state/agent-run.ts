@@ -140,6 +140,7 @@ const WORKSPACE_AUTO_APPROVED_BUILT_IN_TOOL_NAMES = new Set([
   "analyzeAudio",
   "createFile",
   "edit",
+  "getVideoFrame",
   "glob",
   "grep",
   "listFiles",
@@ -1261,6 +1262,7 @@ export async function executeClaimedAgentRun(
             const workspaceDiscoveryTools = createWorkspaceTools({
               repository: repositories.workspaceRepository,
               onRecord: handleToolExecutionRecord,
+              supportsImageInput: resolvedModel.supportsImageInput,
             }).tools;
 
             Object.assign(
@@ -1275,6 +1277,7 @@ export async function executeClaimedAgentRun(
               session: activeFolderSession,
               onRecord: handleToolExecutionRecord,
               onProgress: () => markActivity(),
+              supportsImageInput: resolvedModel.supportsImageInput,
             }).tools;
 
             Object.assign(
@@ -1284,6 +1287,7 @@ export async function executeClaimedAgentRun(
                 ["createFile", enabledFor("workspaceCreateFile")],
                 ["downloadFile", enabledFor("downloadFile")],
                 ["edit", enabledFor("workspaceEdit")],
+                ["getVideoFrame", enabledFor("workspaceRenderVideo")],
                 ["glob", enabledFor("workspaceGlob")],
                 ["grep", enabledFor("workspaceGrep")],
                 ["listFiles", enabledFor("workspaceListFiles")],

@@ -91,6 +91,31 @@ The tool waits for the recording to finish and returns the saved MP4
 user interaction. Rendering is real time: a 10-second video takes ~10 seconds,
 so call it once with a finished scene and do not retry needlessly.
 
+The result also returns `sourceFileId` / `sourceLink`: the exact HTML you
+rendered, saved as `<name>.source.html` in the workspace. You do not need to
+keep the HTML yourself.
+
+## Revising a video (read the source, don't regenerate blind)
+
+When the user asks for changes to a video you already rendered:
+
+1. `Read` the render's `sourceFileId` (the `.source.html` file) — this is the
+   exact scene, and editing it preserves everything the user didn't complain
+   about.
+2. Apply targeted edits to that HTML (timings, colors, copy, motion), keeping
+   `duration` and the contract shape intact.
+3. Re-render with `renderVideo`, passing the same `duration` you promised.
+4. Never claim a change is applied without re-rendering — the MP4 is baked.
+
+## Looking at a timestamp ("at 0:12 the logo clips")
+
+You cannot scrub the video yourself. Use the `getVideoFrame` tool with the
+video `fileId` and `time` in seconds: it saves a still frame to the workspace
+and, on vision-capable models, shows it to you inline so you can describe
+what's actually on screen. On models without image input you only get the
+file link — use the `ocr` tool to read on-screen text, or ask the user what
+they see. After inspecting, revise via the source-HTML workflow above.
+
 After the tool returns, embed the video **inline** in your response exactly
 where you talk about it, the same way you would embed an image:
 
@@ -427,4 +452,8 @@ inside one canvas scene.
       `transcribeAudio` on the file and put the returned `segments` on the
       contract's `speech` (or baked the times in) and drove the captions from
       `speech.activeText(t)`/`progress(t)` (verbatim wording, no invented lines)
+- [ ] if revising a previous render: read its `sourceFileId` (`.source.html`)
+      and edited that file instead of writing a new scene from scratch
+- [ ] if the user pointed at a timestamp: inspected it with `getVideoFrame`
+      (or `ocr` on models without image input) before claiming what's there
 - [ ] complete scene: start state at t=0, motion clearly readable in 10 s

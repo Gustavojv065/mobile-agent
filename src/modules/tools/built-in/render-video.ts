@@ -90,13 +90,26 @@ export function createRenderVideoTool({
         }
 
         const contractDuration = readContractDuration(rawHtml);
+
+        // Persist the source HTML alongside the render so later revision
+        // requests can Read + edit this file instead of regenerating blind.
+        // Only the fileId travels in chat context; the full source is loaded
+        // on demand. Saved even when the duration check below fails, so the
+        // retry has something to fix.
+        const outputName = normalizeName(name);
+        const sourceFile = await workspaceService.createTextFile({
+          content: rawHtml,
+          mimeType: "text/html",
+          name: sourceName(outputName),
+        });
+
         if (
           duration != null &&
           contractDuration != null &&
           Math.abs(contractDuration - duration) > 0.5
         ) {
           throw new Error(
-            `The HTML contract duration (${contractDuration} s) does not match the requested duration (${duration} s). Fix the contract's duration field (and scale audio cue timings to it) and retry — rendering now would produce a wrong-length video.`,
+            `The HTML contract duration (${contractDuration} s) does not match the requested duration (${duration} s). Read workspace://${sourceFile.id}, fix the contract's duration field (and scale audio cue timings to it), then retry — rendering now would produce a wrong-length video.`,
           );
         }
 
@@ -131,6 +144,8 @@ export function createRenderVideoTool({
           mimeType: "video/mp4",
           size: file.size,
           duration: contractDuration,
+          sourceFileId: sourceFile.id,
+          sourceLink: `workspace://${sourceFile.id}`,
           audioFiles,
           hasAudio: result.hasAudio,
           audioWarnings: result.audioWarnings,
@@ -193,6 +208,11 @@ async function resolveHtml({
 function normalizeName(name: string | undefined) {
   const base = (name ?? `video-${Date.now()}`).trim() || `video-${Date.now()}`;
   return /\.mp4$/i.test(base) ? base : `${base}.mp4`;
+}
+
+/** `clip.mp4` -> `clip.source.html`: the revisable render source. */
+function sourceName(outputName: string) {
+  return `${outputName.replace(/\.mp4$/i, "")}.source.html`;
 }
 
 /**
