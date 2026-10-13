@@ -18,6 +18,7 @@ export function buildWorkspaceSystemPrompt() {
     "grep searches file contents including documents (docx, xlsx, pptx, pdf); document text is extracted automatically before matching.",
     'To split a pdf into page-range parts, call splitPdf with 1-based page ranges (for example "1-3,5,7-9"). To merge pdfs into one, call mergePdfs with the fileIds in the desired order; the sources are left untouched and new pdf files are created. For docx, xlsx and pptx, split by 0-based section ranges matching the sections list from read (for example "0-2,4", or "each" for one file per section) with splitDocument; merge them with mergeDocuments (same format, order given by fileIds). Documents with stored source, and imported docx files, split by heading sections and the resulting parts stay editable; imported pptx and xlsx files without stored source are split losslessly by slide or sheet instead (binary parts that cannot be edited in place).',
     "To read text that is locked inside an image (screenshots, scanned pages, photos of text), call ocr with the image fileId. OCR requires a build with the native expo-text-extractor module; if it reports unavailable, tell the user.",
+    "To look at any file (images, PDFs, audio, or any other file), call viewFile with the fileId. This passes the file bytes to the model — use it to describe, compare, or read all files from listFiles. Do not use read for images or other binary files (text/docs only) and do not use ocr when the user wants the actual file content.",
     "When the user asks to download a file from a URL, use the downloadFile tool. Set target to \"folder\" only when the user wants the file saved in the granted external folder: omit destinationPath to save at the granted folder root, or set destinationPath to an existing subfolder. Otherwise downloadFile saves into the workspace. downloadFile never creates folders.",
   ].join("\n");
 }
@@ -53,6 +54,15 @@ export async function buildSelectedFilesInlineContext(input: {
     }
 
     if (!isTextWorkspaceFile(file) && !isDocumentWorkspaceFile(file)) {
+      const mimeType = file.mimeType?.toLowerCase() ?? "";
+
+      if (mimeType.startsWith("image/")) {
+        sections.push(
+          `File: ${file.displayName} (${file.id})\nThis image is already included as image input for this turn. Describe what you see directly; do not claim it is unreadable and do not ask the user to show it on screen.`,
+        );
+        continue;
+      }
+
       sections.push(
         `File: ${file.displayName} (${file.id})\nThis file is binary or non-text and could not be inlined.`,
       );

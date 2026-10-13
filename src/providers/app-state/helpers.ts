@@ -230,6 +230,10 @@ export function buildExternalToolApprovalSummary(
     return `Read ${target}`;
   }
 
+  if (toolName === "viewFile") {
+    return `View file ${target}`;
+  }
+
   if (toolName === "write") {
     return `Write to ${target}`;
   }

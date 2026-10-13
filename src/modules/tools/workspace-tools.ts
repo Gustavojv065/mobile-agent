@@ -24,6 +24,7 @@ import { createTextToSpeechTool } from "@/modules/tools/built-in/text-to-speech"
 import { createTranscribeAudioTool } from "@/modules/tools/built-in/transcribe-audio";
 import type { WorkspaceToolFactoryParams } from "@/modules/tools/built-in/types";
 import { createUpdateDocumentTool } from "@/modules/tools/built-in/update-document";
+import { createViewFileTool } from "@/modules/tools/built-in/view-file";
 import { createWriteTool } from "@/modules/tools/built-in/write";
 import type { ExternalFolderSession } from "@/core/types/app-state";
 import { createWorkspaceFileService } from "@/core/services/workspace-file-service";
@@ -56,6 +57,7 @@ export function createWorkspaceTools(
       textToSpeech: createTextToSpeechTool(params),
       transcribeAudio: createTranscribeAudioTool(params),
       updateDocument: createUpdateDocumentTool(params),
+      viewFile: createViewFileTool(params),
       write: createWriteTool(params),
     },
     workspaceService: createWorkspaceFileService(params.repository),

@@ -1225,6 +1225,7 @@ export async function executeClaimedAgentRun(
             const folderTools = createExternalFolderTools({
               session: externalFolderSession as ExternalFolderSession,
               onRecord: handleToolExecutionRecord,
+              supportsImageInput: resolvedModel.supportsImageInput,
             }).tools;
 
             Object.assign(
@@ -1240,6 +1241,7 @@ export async function executeClaimedAgentRun(
                 ["moveEntry", enabledFor("folderMoveEntry")],
                 ["read", enabledFor("folderRead")],
                 ["renameEntry", enabledFor("folderRenameEntry")],
+                ["viewFile", enabledFor("folderRead")],
                 ["write", enabledFor("folderWrite")],
               ]),
             );
@@ -1300,6 +1302,7 @@ export async function executeClaimedAgentRun(
                 ["splitPdf", enabledFor("workspaceCreateFile")],
                 ["transcribeAudio", enabledFor("workspaceRenderVideo")],
                 ["updateDocument", enabledFor("workspaceEdit")],
+                ["viewFile", enabledFor("workspaceRead")],
                 ["write", enabledFor("workspaceWrite")],
               ]),
             );
@@ -1308,12 +1311,14 @@ export async function executeClaimedAgentRun(
               const folderDiscoveryTools = createExternalFolderTools({
                 session: activeFolderSession,
                 onRecord: handleToolExecutionRecord,
+                supportsImageInput: resolvedModel.supportsImageInput,
               }).tools;
 
               Object.assign(
                 tools,
                 pickEnabledTools(folderDiscoveryTools, [
                   ["listDirectory", enabledFor("folderListDirectory")],
+                  ["viewFile", enabledFor("folderRead")],
                 ]),
               );
             }

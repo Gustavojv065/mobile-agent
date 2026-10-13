@@ -12,6 +12,8 @@ import { createRenameEntryTool } from "@/modules/tools/built-in/external-folder/
 import type { ExternalFolderToolFactoryParams } from "@/modules/tools/built-in/external-folder/types";
 import { createExternalWriteTool } from "@/modules/tools/built-in/external-folder/write";
 
+import { createExternalViewFileTool } from "@/modules/tools/built-in/external-folder/view-file";
+
 export function createExternalFolderTools(params: ExternalFolderToolFactoryParams) {
   return {
     tools: {
@@ -25,6 +27,7 @@ export function createExternalFolderTools(params: ExternalFolderToolFactoryParam
       moveEntry: createMoveEntryTool(params),
       read: createExternalReadTool(params),
       renameEntry: createRenameEntryTool(params),
+      viewFile: createExternalViewFileTool(params),
       write: createExternalWriteTool(params),
     },
   };
