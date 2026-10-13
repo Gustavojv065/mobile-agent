@@ -111,3 +111,19 @@ function formatBytes(bytes: number): string {
   }
   return `${Math.max(1, Math.round(bytes / 1024))} KB`;
 }
+
+/**
+ * Best-effort read of the contract-level `duration` (seconds) from the HTML.
+ * Takes the first `duration:` after the `MOBILE_AGENT_VIDEO` marker, which by
+ * contract convention is the top-level field (audio cue timings come later).
+ * Returns null when it cannot be determined — callers must treat that as
+ * "unknown", never as a mismatch.
+ */
+export function readContractDuration(html: string): number | null {
+  const marker = html.indexOf("MOBILE_AGENT_VIDEO");
+  if (marker === -1) return null;
+  const match = /duration\s*:\s*(\d+(?:\.\d+)?)/.exec(html.slice(marker));
+  if (!match) return null;
+  const value = Number(match[1]);
+  return Number.isFinite(value) ? value : null;
+}

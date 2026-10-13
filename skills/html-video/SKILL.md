@@ -142,6 +142,23 @@ File tracks:
 - The tool inlines the file automatically. A missing, unreadable, or
   oversized file fails the render with a clear error before recording starts.
 
+Voiceover / narration (no built-in TTS tool exists — use this workaround,
+never tell the user voiceover is impossible):
+
+- When the user asks for voiceover/narration and no suitable audio file is in
+  the workspace, fetch the narration yourself with the `downloadFile` tool
+  (target `workspace`) from the Google Translate TTS endpoint:
+  `https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=<lang>&q=<url-encoded-text>`
+  (`tl=en` for English; use the narration language). Save it as an `.mp3`
+  workspace file, then reference it as a `file:` track like any other audio.
+- Keep each request under ~200 characters of text; split longer scripts into
+  multiple sequential requests, save each part (e.g. `narration-1.mp3`,
+  `narration-2.mp3`), and schedule them back-to-back with matching `start`
+  times so the full narration plays in order.
+- Prefer `transcribeAudio` on the fetched narration to get word timings, then
+  drive captions from the `speech` contract — but the MP3 itself is the
+  voiceover track.
+
 Synth cues (`synth.kind`):
 
 - `tone`: `freq` (Hz) or `notes` played in sequence — MIDI numbers like 60 or

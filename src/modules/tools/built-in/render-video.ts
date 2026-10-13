@@ -8,6 +8,7 @@ import {
   assertAudioFileUsable,
   buildAudioDataUri,
   extractWorkspaceAudioIds,
+  readContractDuration,
 } from "@/modules/preview/video-audio";
 import { requestVideoRender } from "@/modules/preview/video-render";
 import {
@@ -34,7 +35,7 @@ export function createRenderVideoTool({
   const workspaceService = createWorkspaceFileService(repository);
   return tool({
     description:
-      "Render a self-contained HTML document into an MP4 video and deliver the finished file to the user. The document must define window.MOBILE_AGENT_VIDEO = { duration, fps, width, height, canvasId?, render(t, canvas, ctx, audio, speech) } and draw its animation on a single <canvas>; see the html-video skill for the full contract. Pass the complete HTML either inline as `html` or point at an existing HTML workspace file with `fileId`. Rendering is real time: a 10 second video takes about 10 seconds, so do not call this repeatedly. Returns the saved MP4 as a workspace file for the user. After the tool returns, embed the video inline in your response exactly where you discuss it with ![displayName](workspace://fileId) using the returned fileId, so it renders as a playable in-chat video — do not paste a bare workspace:// link and do not rely on an end-of-message card. Optional sound: add an `audio` schedule to the contract — { master?, tracks: [...] } — where each track is either { file: 'workspace://<audio-file-id>', start?, offset?, duration?, loop?, volume?, fadeIn?, fadeOut? } using an MP3, WAV, M4A, AAC, OGG, or WebM file already in the workspace (max 15 MB, inlined automatically) or { synth: {...}, start?, duration?, volume?, fadeIn?, fadeOut? } with synth tones (freq or notes as MIDI numbers/note names like 'C4', wave, noteDur, attack, release), pads (chord notes), or filtered noise sweeps (filter, filterFreq, filterEnd, q). Keep per-track volumes modest so the mix stays near 1. Omit `audio` for a silent video. When file audio is present it is analyzed before recording and the 4th `render` argument `audio` exposes deterministic reactive features — audio.ready, audio.bpm, audio.beats, audio.level(t)/lowAt(t)/midAt(t)/highAt(t)/onsetAt(t), audio.beatPulse(t) — so visuals can sync to the actual soundtrack (see the skill). Use the analyzeAudio tool first if you want the tempo/onsets before authoring. For spoken audio, use the transcribeAudio tool to get word/phrase timings and drive captions or speech-synced visuals: put those segments on the contract as `speech` = { segments, offset?, language?, text? } and the recorder passes them to render as the 5th argument `speech` (also mirrored at window.MOBILE_AGENT_VIDEO_SPEECH) with ready, segments, activeText(t), activeSegment(t), activeIndex(t), progress(t) and nextStart(t). Segment times are video time; add `offset` when you shift the audio track's start so words stay glued to the sound. The result reports hasAudio and any audioWarnings.",
+      "Render a self-contained HTML document into an MP4 video and deliver the finished file to the user. The document must define window.MOBILE_AGENT_VIDEO = { duration, fps, width, height, canvasId?, render(t, canvas, ctx, audio, speech) } and draw its animation on a single <canvas>; see the html-video skill for the full contract. Always pass `duration` with the length you promised the user (1–45 s): it must match the contract's `duration` field or the render fails fast. The result reports the actual `duration` — quote that number to the user, never the requested one. Pass the complete HTML either inline as `html` or point at an existing HTML workspace file with `fileId`. Rendering is real time: a 10 second video takes about 10 seconds, so do not call this repeatedly. Returns the saved MP4 as a workspace file for the user. After the tool returns, embed the video inline in your response exactly where you discuss it with ![displayName](workspace://fileId) using the returned fileId, so it renders as a playable in-chat video — do not paste a bare workspace:// link and do not rely on an end-of-message card. Optional sound: add an `audio` schedule to the contract — { master?, tracks: [...] } — where each track is either { file: 'workspace://<audio-file-id>', start?, offset?, duration?, loop?, volume?, fadeIn?, fadeOut? } using an MP3, WAV, M4A, AAC, OGG, or WebM file already in the workspace (max 15 MB, inlined automatically) or { synth: {...}, start?, duration?, volume?, fadeIn?, fadeOut? } with synth tones (freq or notes as MIDI numbers/note names like 'C4', wave, noteDur, attack, release), pads (chord notes), or filtered noise sweeps (filter, filterFreq, filterEnd, q). Keep per-track volumes modest so the mix stays near 1. Omit `audio` for a silent video. When file audio is present it is analyzed before recording and the 4th `render` argument `audio` exposes deterministic reactive features — audio.ready, audio.bpm, audio.beats, audio.level(t)/lowAt(t)/midAt(t)/highAt(t)/onsetAt(t), audio.beatPulse(t) — so visuals can sync to the actual soundtrack (see the skill). Use the analyzeAudio tool first if you want the tempo/onsets before authoring. For spoken audio, use the transcribeAudio tool to get word/phrase timings and drive captions or speech-synced visuals: put those segments on the contract as `speech` = { segments, offset?, language?, text? } and the recorder passes them to render as the 5th argument `speech` (also mirrored at window.MOBILE_AGENT_VIDEO_SPEECH) with ready, segments, activeText(t), activeSegment(t), activeIndex(t), progress(t) and nextStart(t). Segment times are video time; add `offset` when you shift the audio track's start so words stay glued to the sound. The result reports hasAudio and any audioWarnings.",
     inputSchema: z.object({
       html: z
         .string()
@@ -57,12 +58,21 @@ export function createRenderVideoTool({
         .max(120)
         .optional()
         .describe("Output file name (a .mp4 extension is added if missing)."),
+      duration: z
+        .number()
+        .min(1)
+        .max(45)
+        .optional()
+        .describe(
+          "Expected video length in seconds. Must match the `duration` field in the HTML contract — the render fails fast on a mismatch instead of producing a wrong-length video.",
+        ),
     }),
-    execute: async ({ html, fileId, name }, { abortSignal }) => {
+    execute: async ({ html, fileId, name, duration }, { abortSignal }) => {
       const inputSummary = summarizeValue({
         hasHtml: Boolean(html),
         fileId: fileId ?? null,
         name: name ?? null,
+        duration: duration ?? null,
       });
 
       try {
@@ -76,6 +86,17 @@ export function createRenderVideoTool({
         if (!rawHtml.includes("MOBILE_AGENT_VIDEO")) {
           throw new Error(
             "The HTML is missing the window.MOBILE_AGENT_VIDEO contract, so there is nothing to record.",
+          );
+        }
+
+        const contractDuration = readContractDuration(rawHtml);
+        if (
+          duration != null &&
+          contractDuration != null &&
+          Math.abs(contractDuration - duration) > 0.5
+        ) {
+          throw new Error(
+            `The HTML contract duration (${contractDuration} s) does not match the requested duration (${duration} s). Fix the contract's duration field (and scale audio cue timings to it) and retry — rendering now would produce a wrong-length video.`,
           );
         }
 
@@ -114,6 +135,7 @@ export function createRenderVideoTool({
           link: `workspace://${file.id}`,
           mimeType: "video/mp4",
           size: file.size,
+          duration: contractDuration,
           audioFiles,
           hasAudio: result.hasAudio,
           audioWarnings: result.audioWarnings,

@@ -6,6 +6,7 @@ import type { ToolSet } from "ai";
 import { Platform } from "react-native";
 import "react-native-get-random-values";
 import { createMcpTransportOAuthProvider } from "@/modules/mcp/oauth";
+import { getActionableMcpErrorMessage } from "@/modules/mcp/mcp-errors";
 import { secureSecretStore } from "@/core/services/secrets";
 import { createRecord, summarizeValue } from "@/modules/tools/built-in/shared";
 import type { McpServerConfig, ToolExecutionRecord } from "@/core/types/app-state";
@@ -85,62 +86,7 @@ function getErrorMessage(error: unknown) {
     : "Failed to connect MCP server.";
 }
 
-function parseOAuthErrorMessage(message: string) {
-  const descriptionMatch = message.match(
-    /["']error_description["']\s*:\s*["']([^"']+)["']/i,
-  );
-  if (descriptionMatch?.[1]) {
-    return descriptionMatch[1];
-  }
-
-  return null;
-}
-
-function getActionableMcpErrorMessages(error: unknown, depth = 0): string[] {
-  if (depth > 4) return [];
-
-  if (error instanceof Error) {
-    const nested = getActionableMcpErrorMessages(
-      (error as Error & { cause?: unknown }).cause,
-      depth + 1,
-    );
-    const parsedOAuthError = parseOAuthErrorMessage(error.message);
-    return [parsedOAuthError ?? error.message, ...nested].filter(Boolean);
-  }
-
-  if (error && typeof error === "object") {
-    const record = error as Record<string, unknown>;
-    const description =
-      typeof record.error_description === "string"
-        ? record.error_description
-        : null;
-    const ownMessage = description
-      ? description
-      : typeof record.message === "string"
-        ? record.message
-        : null;
-    return [
-      ...(ownMessage ? [ownMessage] : []),
-      ...getActionableMcpErrorMessages(record.cause, depth + 1),
-    ];
-  }
-
-  return typeof error === "string" && error.trim() ? [error] : [];
-}
-
-function getActionableMcpErrorMessage(errors: unknown[]) {
-  const messages = errors
-    .flatMap((error) => getActionableMcpErrorMessages(error))
-    .map((message) => message.trim())
-    .filter(Boolean);
-  const specific = messages.find((message) =>
-    /error_description|oauth|unauthori[sz]ed|forbidden|invalid_|\b(?:400|401|403|404|409|422|429)\b/i.test(
-      message,
-    ),
-  );
-
-  return specific ?? messages[0] ?? "Failed to connect MCP server.";
-}
+export { getActionableMcpErrorMessage };
 
 async function buildMcpHeaders(server: McpServerConfig) {
   const headers =

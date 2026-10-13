@@ -5,6 +5,7 @@ import {
   assertAudioFileUsable,
   buildAudioDataUri,
   extractWorkspaceAudioIds,
+  readContractDuration,
   resolveAudioMimeType,
 } from "@/modules/preview/video-audio";
 
@@ -82,5 +83,32 @@ describe("buildAudioDataUri", () => {
     expect(Buffer.from(uri.split(",")[1], "base64")).toEqual(
       Buffer.from([1, 2, 3, 250]),
     );
+  });
+});
+
+describe("readContractDuration", () => {
+  it("reads the contract-level duration", () => {
+    expect(
+      readContractDuration(
+        '<script>window.MOBILE_AGENT_VIDEO = { duration: 18, fps: 30, render: function () {} };</script>',
+      ),
+    ).toBe(18);
+  });
+
+  it("reads fractional durations and ignores later cue timings", () => {
+    expect(
+      readContractDuration(
+        'MOBILE_AGENT_VIDEO = { duration: 6.5, audio: { tracks: [{ start: 0, duration: 6 }] } }',
+      ),
+    ).toBe(6.5);
+  });
+
+  it("returns null when the contract or duration is absent", () => {
+    expect(readContractDuration("<html></html>")).toBeNull();
+    expect(
+      readContractDuration(
+        '<script>window.MOBILE_AGENT_VIDEO = { fps: 30 };</script>',
+      ),
+    ).toBeNull();
   });
 });
