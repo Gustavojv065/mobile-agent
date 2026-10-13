@@ -97,6 +97,49 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
     return fallback;
   }
 
+  function kitNum(raw, key, fallback, min, max) {
+    var v = raw && typeof raw === 'object' ? raw[key] : null;
+    if (v == null) return fallback;
+    v = Number(v);
+    if (isNaN(v)) return fallback;
+    return clamp(v, min, max);
+  }
+
+  function normalizeKitPiece(raw) {
+    return {
+      level: kitNum(raw, 'level', 1, 0, 2),
+      decay: kitNum(raw, 'decay', 1, 0.25, 4),
+      tone: kitNum(raw, 'tone', 1, 0.5, 2)
+    };
+  }
+
+  function normalizeKit(raw) {
+    return {
+      kick: normalizeKitPiece(raw && raw.kick),
+      snare: normalizeKitPiece(raw && raw.snare),
+      hat: normalizeKitPiece(raw && raw.hat),
+      openhat: normalizeKitPiece(raw && raw.openhat),
+      clap: normalizeKitPiece(raw && raw.clap)
+    };
+  }
+
+  function normalizeDuckRanges(raw, duration) {
+    var ranges = [];
+    if (!Array.isArray(raw)) return ranges;
+    for (var i = 0; i < raw.length; i += 1) {
+      var r = raw[i];
+      if (!r || typeof r !== 'object') continue;
+      var start = Number(r.start);
+      var end = Number(r.end);
+      if (isNaN(start) || isNaN(end) || !(end > start)) continue;
+      start = clamp(start, 0, duration);
+      end = clamp(end, 0, duration);
+      if (end > start) ranges.push({ start: start, end: end });
+    }
+    ranges.sort(function (a, b) { return a.start - b.start; });
+    return ranges;
+  }
+
   function normalizeSynth(raw) {
     if (!raw || typeof raw !== 'object') return null;
     var kind = String(raw.kind || raw.type || 'tone').toLowerCase();
@@ -104,7 +147,7 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
     if (kind === 'tone' || kind === 'pluck' || kind === 'lead' || kind === 'bass') {
       freqs = [];
       if (Array.isArray(raw.notes)) {
-        for (i = 0; i < raw.notes.length && freqs.length < 32; i += 1) {
+        for (i = 0; i < raw.notes.length && freqs.length < 128; i += 1) {
           f = noteToFreq(raw.notes[i]);
           if (f) freqs.push(f);
         }
@@ -125,7 +168,7 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
     if (kind === 'pad' || kind === 'chord' || kind === 'strings') {
       freqs = [];
       if (Array.isArray(raw.notes)) {
-        for (i = 0; i < raw.notes.length && freqs.length < 8; i += 1) {
+        for (i = 0; i < raw.notes.length && freqs.length < 16; i += 1) {
           f = noteToFreq(raw.notes[i]);
           if (f) freqs.push(f);
         }
@@ -148,6 +191,27 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
         attack: clamp(Number(raw.attack) || 0.3, 0.001, 4),
         release: clamp(Number(raw.release) || 0.5, 0.001, 4)
       };
+    }
+    if (kind === 'drums' || kind === 'kit' || kind === 'beat') {
+      var stepDur = Number(raw.stepDur) || 0.25;
+      if (isNaN(stepDur)) stepDur = 0.25;
+      stepDur = clamp(stepDur, 0.05, 2);
+      var hits = [];
+      var capped = false;
+      if (Array.isArray(raw.steps)) {
+        for (i = 0; i < raw.steps.length && !capped; i += 1) {
+          var step = raw.steps[i];
+          var names = Array.isArray(step) ? step : (typeof step === 'string' ? [step] : []);
+          for (var k = 0; k < names.length; k += 1) {
+            var hit = String(names[k] || '').toLowerCase();
+            if (hit !== 'kick' && hit !== 'snare' && hit !== 'hat' && hit !== 'openhat' && hit !== 'clap') continue;
+            if (hits.length >= 512) { capped = true; break; }
+            hits.push({ at: i * stepDur, hit: hit });
+          }
+        }
+      }
+      if (hits.length === 0) return null;
+      return { kind: 'drums', stepDur: stepDur, hits: hits, capped: capped, kit: normalizeKit(raw.kit) };
     }
     return null;
   }
@@ -172,6 +236,17 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
     if (isNaN(cue.volume)) cue.volume = 0.8;
     cue.fadeIn = clamp(Number(raw.fadeIn) || 0, 0, cue.duration);
     cue.fadeOut = clamp(Number(raw.fadeOut) || 0, 0, cue.duration);
+    cue.reverb = raw.reverb == null ? 0 : clamp(Number(raw.reverb), 0, 1);
+    if (isNaN(cue.reverb)) cue.reverb = 0;
+    cue.delay = raw.delay == null ? 0 : clamp(Number(raw.delay), 0, 1);
+    if (isNaN(cue.delay)) cue.delay = 0;
+    cue.duckRanges = normalizeDuckRanges(raw.duckUnder, duration);
+    cue.duckAmount = raw.duckAmount == null ? 0.4 : clamp(Number(raw.duckAmount), 0, 1);
+    if (isNaN(cue.duckAmount)) cue.duckAmount = 0.4;
+    cue.duckAttack = raw.duckAttack == null ? 0.3 : clamp(Number(raw.duckAttack), 0.01, 4);
+    if (isNaN(cue.duckAttack)) cue.duckAttack = 0.3;
+    cue.duckRelease = raw.duckRelease == null ? 0.5 : clamp(Number(raw.duckRelease), 0.01, 4);
+    if (isNaN(cue.duckRelease)) cue.duckRelease = 0.5;
     if (cue.kind === 'file') {
       cue.offset = Math.max(0, Number(raw.offset) || 0);
       cue.loop = raw.loop === true;
@@ -192,7 +267,36 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
       if (cue) cues.push(cue);
     }
     if (cues.length === 0) return null;
-    return { master: master, cues: cues };
+    return { master: master, cues: cues, fx: readFxSchedule(audio) };
+  }
+
+  // Schedule-level effect buses: at most one shared reverb and one shared
+  // echo per record. The value true selects tuned defaults; objects
+  // override them.
+  function readFxSchedule(audio) {
+    var out = { reverb: null, delay: null };
+    if (!audio || typeof audio.fx !== 'object' || !audio.fx) return out;
+    var rev = audio.fx.reverb;
+    if (rev === true) {
+      out.reverb = { decay: 1.8 };
+    } else if (rev && typeof rev === 'object') {
+      var decay = rev.decay == null ? 1.8 : clamp(Number(rev.decay), 0.5, 3);
+      if (isNaN(decay)) decay = 1.8;
+      out.reverb = { decay: decay };
+    }
+    var dly = audio.fx.delay;
+    if (dly === true) {
+      out.delay = { time: 0.375, feedback: 0.35, mix: 0.25 };
+    } else if (dly && typeof dly === 'object') {
+      var time = dly.time == null ? 0.375 : clamp(Number(dly.time), 0.03, 2);
+      if (isNaN(time)) time = 0.375;
+      var feedback = dly.feedback == null ? 0.35 : clamp(Number(dly.feedback), 0, 0.85);
+      if (isNaN(feedback)) feedback = 0.35;
+      var mix = dly.mix == null ? 0.25 : clamp(Number(dly.mix), 0, 1);
+      if (isNaN(mix)) mix = 0.25;
+      out.delay = { time: time, feedback: feedback, mix: mix };
+    }
+    return out;
   }
 
   function mulberry32(seed) {
@@ -375,7 +479,55 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
     return buf;
   }
 
+  // Schedule-wide voice budget: thousands of live nodes can stall low-end
+  // devices, so sound events past the budget are skipped with a warning
+  // instead of failing the render. Counts events (note/hit/voice), not nodes.
+  function claimVoice(handle) {
+    handle.voices = (handle.voices | 0) + 1;
+    if (handle.voices > 2048) {
+      handle.voiceOverflow = true;
+      return false;
+    }
+    return true;
+  }
+
+  // Procedural reverb impulse: stereo decaying noise with a one-pole
+  // darkening pass, peak-normalized to 1. Seeded, so every record renders
+  // the exact same room — deterministic like the noise buffer above.
+  function makeImpulse(ctx, decaySeconds) {
+    var rate = ctx.sampleRate;
+    var len = Math.max(1, Math.floor(rate * decaySeconds));
+    var buf = ctx.createBuffer(2, len, rate);
+    var rand = mulberry32(0x7E57B);
+    var ch, i;
+    for (ch = 0; ch < 2; ch += 1) {
+      var data = buf.getChannelData(ch);
+      var last = 0;
+      for (i = 0; i < len; i += 1) {
+        var t = i / len;
+        var env = Math.pow(1 - t, 2.2);
+        last = last + 0.3 * ((rand() * 2 - 1) - last);
+        data[i] = last * env;
+      }
+    }
+    var peak = 0.0001;
+    for (ch = 0; ch < 2; ch += 1) {
+      var scan = buf.getChannelData(ch);
+      for (i = 0; i < len; i += 1) {
+        var amp = scan[i] < 0 ? -scan[i] : scan[i];
+        if (amp > peak) peak = amp;
+      }
+    }
+    var inv = 1 / peak;
+    for (ch = 0; ch < 2; ch += 1) {
+      var norm = buf.getChannelData(ch);
+      for (i = 0; i < len; i += 1) norm[i] = norm[i] * inv;
+    }
+    return buf;
+  }
+
   function schedulePluck(handle, s, freq, startAt, endAt, out) {
+    if (!claimVoice(handle)) return;
     var ctx = handle.context;
     var osc = ctx.createOscillator();
     osc.type = s.wave;
@@ -393,6 +545,7 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
   }
 
   function schedulePadVoice(handle, s, freq, startAt, endAt, out) {
+    if (!claimVoice(handle)) return;
     var ctx = handle.context;
     var g = ctx.createGain();
     g.gain.setValueAtTime(0.0001, startAt);
@@ -412,6 +565,7 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
   }
 
   function scheduleNoiseWash(handle, s, startAt, endAt, out) {
+    if (!claimVoice(handle)) return;
     var ctx = handle.context;
     var src = ctx.createBufferSource();
     src.buffer = noiseBuffer(ctx);
@@ -436,6 +590,167 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
     try { src.stop(endAt + 0.05); } catch (_) {}
   }
 
+  // Sample-free drum kit. Each hit is a tiny deterministic graph from the
+  // seeded noise buffer and plain oscillators — no samples, no network:
+  // kick is a pitched-down sine plus a click transient, snare a triangle
+  // body plus bandpassed noise, hats highpassed noise, clap a burst train.
+  function scheduleKick(handle, p, startAt, out) {
+    var ctx = handle.context;
+    var osc = ctx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(Math.max(20, 150 * p.tone), startAt);
+    osc.frequency.exponentialRampToValueAtTime(Math.max(20, 40 * p.tone), startAt + 0.12);
+    var g = ctx.createGain();
+    var dur = 0.4 * p.decay;
+    g.gain.setValueAtTime(Math.max(0.0001, p.level), startAt);
+    g.gain.exponentialRampToValueAtTime(0.0001, startAt + dur);
+    osc.connect(g);
+    g.connect(out);
+    osc.start(startAt);
+    try { osc.stop(startAt + dur + 0.05); } catch (_) {}
+    var click = ctx.createOscillator();
+    click.type = 'sine';
+    click.frequency.value = 800 * p.tone;
+    var cg = ctx.createGain();
+    cg.gain.setValueAtTime(Math.max(0.0001, 0.4 * p.level), startAt);
+    cg.gain.exponentialRampToValueAtTime(0.0001, startAt + 0.03);
+    click.connect(cg);
+    cg.connect(out);
+    click.start(startAt);
+    try { click.stop(startAt + 0.08); } catch (_) {}
+  }
+
+  function scheduleSnare(handle, p, startAt, out) {
+    var ctx = handle.context;
+    var osc = ctx.createOscillator();
+    osc.type = 'triangle';
+    osc.frequency.value = 180 * p.tone;
+    var g = ctx.createGain();
+    var bodyDur = 0.12 * p.decay;
+    g.gain.setValueAtTime(Math.max(0.0001, 0.7 * p.level), startAt);
+    g.gain.exponentialRampToValueAtTime(0.0001, startAt + bodyDur);
+    osc.connect(g);
+    g.connect(out);
+    osc.start(startAt);
+    try { osc.stop(startAt + bodyDur + 0.05); } catch (_) {}
+    var src = ctx.createBufferSource();
+    src.buffer = noiseBuffer(ctx);
+    var bp = ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.frequency.value = 1800;
+    bp.Q.value = 0.8;
+    var ng = ctx.createGain();
+    var noiseDur = 0.2 * p.decay;
+    ng.gain.setValueAtTime(Math.max(0.0001, 0.5 * p.level), startAt);
+    ng.gain.exponentialRampToValueAtTime(0.0001, startAt + noiseDur);
+    src.connect(bp);
+    bp.connect(ng);
+    ng.connect(out);
+    src.start(startAt);
+    try { src.stop(startAt + noiseDur + 0.05); } catch (_) {}
+  }
+
+  function scheduleHat(handle, p, startAt, out, open) {
+    var ctx = handle.context;
+    var src = ctx.createBufferSource();
+    src.buffer = noiseBuffer(ctx);
+    var hp = ctx.createBiquadFilter();
+    hp.type = 'highpass';
+    hp.frequency.value = 7000;
+    var g = ctx.createGain();
+    var dur = (open ? 0.3 : 0.05) * p.decay;
+    g.gain.setValueAtTime(Math.max(0.0001, 0.3 * p.level), startAt);
+    g.gain.exponentialRampToValueAtTime(0.0001, startAt + dur);
+    src.connect(hp);
+    hp.connect(g);
+    g.connect(out);
+    src.start(startAt);
+    try { src.stop(startAt + dur + 0.05); } catch (_) {}
+  }
+
+  function scheduleClap(handle, p, startAt, out) {
+    var ctx = handle.context;
+    var b;
+    for (b = 0; b < 3; b += 1) {
+      var at = startAt + b * 0.025;
+      var src = ctx.createBufferSource();
+      src.buffer = noiseBuffer(ctx);
+      var bp = ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.value = 1200 * p.tone;
+      bp.Q.value = 1.5;
+      var g = ctx.createGain();
+      g.gain.setValueAtTime(Math.max(0.0001, 0.5 * p.level), at);
+      g.gain.exponentialRampToValueAtTime(0.0001, at + 0.03);
+      src.connect(bp);
+      bp.connect(g);
+      g.connect(out);
+      src.start(at, (b * 0.13) % 1.5);
+      try { src.stop(at + 0.08); } catch (_) {}
+    }
+    var tail = ctx.createBufferSource();
+    tail.buffer = noiseBuffer(ctx);
+    var tbp = ctx.createBiquadFilter();
+    tbp.type = 'bandpass';
+    tbp.frequency.value = 1200 * p.tone;
+    tbp.Q.value = 1.5;
+    var tg = ctx.createGain();
+    var tailDur = 0.15 * p.decay;
+    tg.gain.setValueAtTime(Math.max(0.0001, 0.4 * p.level), startAt);
+    tg.gain.exponentialRampToValueAtTime(0.0001, startAt + tailDur);
+    tail.connect(tbp);
+    tbp.connect(tg);
+    tg.connect(out);
+    tail.start(startAt);
+    try { tail.stop(startAt + tailDur + 0.05); } catch (_) {}
+  }
+
+  function scheduleDrumHit(handle, s, hitName, startAt, out) {
+    if (!claimVoice(handle)) return;
+    var p = s.kit[hitName] || s.kit.snare;
+    if (hitName === 'kick') scheduleKick(handle, p, startAt, out);
+    else if (hitName === 'snare') scheduleSnare(handle, p, startAt, out);
+    else if (hitName === 'hat') scheduleHat(handle, p, startAt, out, false);
+    else if (hitName === 'openhat') scheduleHat(handle, p, startAt, out, true);
+    else if (hitName === 'clap') scheduleClap(handle, p, startAt, out);
+  }
+
+  // Voice ducking without a sidechain compressor (Web Audio has no sidechain
+  // input): a ducked cue gets a second gain in series whose automation is
+  // computed up front from the declared voice ranges. Only linear ramps and
+  // sets with finite times are used, so a degenerate range degrades to a
+  // slightly-off curve, never to silent audio. Overlapping ranges merge.
+  function scheduleDuckGain(ctx, cue, t0, startAt, endAt) {
+    if (cue.duckRanges.length === 0 || !(cue.duckAmount < 1)) return null;
+    var attack = cue.duckAttack;
+    var release = cue.duckRelease;
+    var amount = cue.duckAmount;
+    var merged = [];
+    var i;
+    for (i = 0; i < cue.duckRanges.length; i += 1) {
+      var rs = Math.max(startAt, Math.min(endAt, t0 + cue.duckRanges[i].start));
+      var re = Math.max(startAt, Math.min(endAt, t0 + cue.duckRanges[i].end));
+      if (!(re > rs)) continue;
+      if (merged.length > 0 && rs - merged[merged.length - 1].end < attack + release) {
+        if (re > merged[merged.length - 1].end) merged[merged.length - 1].end = re;
+      } else {
+        merged.push({ start: rs, end: re });
+      }
+    }
+    if (merged.length === 0) return null;
+    var g = ctx.createGain();
+    g.gain.setValueAtTime(1, startAt);
+    for (i = 0; i < merged.length; i += 1) {
+      var dip = Math.max(startAt, merged[i].start - attack);
+      if (dip > startAt) g.gain.setValueAtTime(1, dip);
+      g.gain.linearRampToValueAtTime(amount, merged[i].start);
+      g.gain.setValueAtTime(amount, merged[i].end);
+      var out = Math.min(endAt, merged[i].end + release);
+      if (out > merged[i].end) g.gain.linearRampToValueAtTime(1, out);
+    }
+    return g;
+  }
+
   function scheduleSynthCue(handle, cue, startAt, endAt, out) {
     var s = cue.synth;
     var i;
@@ -451,6 +766,12 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
       }
     } else if (s.kind === 'noise') {
       scheduleNoiseWash(handle, s, startAt, endAt, out);
+    } else if (s.kind === 'drums') {
+      for (i = 0; i < s.hits.length; i += 1) {
+        var hitAt = startAt + s.hits[i].at;
+        if (hitAt >= endAt) break;
+        scheduleDrumHit(handle, s, s.hits[i].hit, hitAt, out);
+      }
     }
   }
 
@@ -463,7 +784,25 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
     gain.gain.linearRampToValueAtTime(Math.max(0.0001, cue.volume), startAt + Math.min(cue.fadeIn, cue.duration));
     gain.gain.setValueAtTime(Math.max(0.0001, cue.volume), Math.max(startAt, endAt - cue.fadeOut));
     gain.gain.linearRampToValueAtTime(0.0001, endAt);
-    gain.connect(handle.master);
+    var bus = gain;
+    var duckGain = scheduleDuckGain(ctx, cue, t0, startAt, endAt);
+    if (duckGain) {
+      gain.connect(duckGain);
+      bus = duckGain;
+    }
+    bus.connect(handle.master);
+    if (handle.fxReverb && cue.reverb > 0) {
+      var revSend = ctx.createGain();
+      revSend.gain.value = cue.reverb;
+      bus.connect(revSend);
+      revSend.connect(handle.fxReverb);
+    }
+    if (handle.fxDelay && cue.delay > 0) {
+      var dlySend = ctx.createGain();
+      dlySend.gain.value = cue.delay;
+      bus.connect(dlySend);
+      dlySend.connect(handle.fxDelay);
+    }
     if (cue.kind === 'file') {
       var entry = null;
       for (var i = 0; i < handle.decoded.length; i += 1) {
@@ -729,6 +1068,16 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
         for (var i = 0; i < schedule.cues.length; i += 1) {
           scheduleAudioCue(handle, schedule.cues[i], t0);
         }
+        if (handle.voiceOverflow) {
+          postAudioWarning('Too many simultaneous sounds were scheduled; some were skipped to protect playback.');
+        }
+        for (var c = 0; c < schedule.cues.length; c += 1) {
+          var skipCue = schedule.cues[c];
+          if (skipCue.kind === 'synth' && skipCue.synth.kind === 'drums' && skipCue.synth.capped) {
+            postAudioWarning('Drum steps past 512 hits were skipped; shorten the pattern or split it across tracks.');
+            break;
+          }
+        }
       } catch (error) {
         postAudioWarning('Audio scheduling failed; continuing silent.');
         teardownAudioCapture(handle);
@@ -782,37 +1131,158 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
   // duration/loop/volume/fades and master gain) and extracts the feature track
   // the page reacts to. Returns null when there is nothing analyzable; callers
   // still receive a stable "not ready" audio object.
-  function analyzeScheduleAudio(schedule, decoded, duration, sampleRate) {
-    if (!analysis || !schedule || !(sampleRate > 0)) return null;
+  function collectFileClips(schedule, decoded) {
+    var clips = [];
+    for (var i = 0; i < decoded.length; i += 1) {
+      var entry = decoded[i];
+      var cue = entry && entry.cue;
+      var buffer = entry && entry.buffer;
+      if (!cue || cue.kind !== 'file' || !buffer) continue;
+      var channels = [];
+      var count = Math.min(buffer.numberOfChannels, 2);
+      for (var c = 0; c < count; c += 1) channels.push(buffer.getChannelData(c));
+      if (channels.length === 0) continue;
+      clips.push({
+        channels: channels,
+        sampleRate: buffer.sampleRate,
+        start: cue.start,
+        offset: cue.offset,
+        duration: cue.duration,
+        loop: cue.loop,
+        volume: cue.volume,
+        fadeIn: cue.fadeIn,
+        fadeOut: cue.fadeOut
+      });
+    }
+    return clips;
+  }
+
+  function analyzeMixedClips(clips, duration, sampleRate, masterLevel) {
+    if (!analysis || clips.length === 0 || !(sampleRate > 0)) return null;
     try {
-      var clips = [];
-      for (var i = 0; i < decoded.length; i += 1) {
-        var entry = decoded[i];
-        var cue = entry && entry.cue;
-        var buffer = entry && entry.buffer;
-        if (!cue || cue.kind !== 'file' || !buffer) continue;
-        var channels = [];
-        var count = Math.min(buffer.numberOfChannels, 2);
-        for (var c = 0; c < count; c += 1) channels.push(buffer.getChannelData(c));
-        if (channels.length === 0) continue;
-        clips.push({
-          channels: channels,
-          sampleRate: buffer.sampleRate,
-          start: cue.start,
-          offset: cue.offset,
-          duration: cue.duration,
-          loop: cue.loop,
-          volume: cue.volume,
-          fadeIn: cue.fadeIn,
-          fadeOut: cue.fadeOut
-        });
-      }
-      if (clips.length === 0) return null;
-      var samples = analysis.mixClipsToMono(clips, duration, sampleRate, schedule.master);
+      var samples = analysis.mixClipsToMono(clips, duration, sampleRate, masterLevel);
       return analysis.analyzeAudio(samples, sampleRate, duration);
     } catch (_) {
       return null;
     }
+  }
+
+  function buildFxBuses(context, master, fx) {
+    var buses = { fxReverb: null, fxDelay: null };
+    fx = fx || { reverb: null, delay: null };
+    if (fx.reverb) {
+      try {
+        var conv = context.createConvolver();
+        conv.buffer = makeImpulse(context, fx.reverb.decay);
+        var wet = context.createGain();
+        wet.gain.value = 0.5;
+        conv.connect(wet);
+        wet.connect(master);
+        buses.fxReverb = conv;
+      } catch (_) {
+        postAudioWarning('Reverb is not supported here; continuing dry.');
+      }
+    }
+    if (fx.delay) {
+      try {
+        var dly = context.createDelay(2.0);
+        dly.delayTime.value = fx.delay.time;
+        var fb = context.createGain();
+        fb.gain.value = fx.delay.feedback;
+        var damp = context.createBiquadFilter();
+        damp.type = 'lowpass';
+        damp.frequency.value = 2000;
+        var dwet = context.createGain();
+        dwet.gain.value = fx.delay.mix;
+        dly.connect(fb);
+        fb.connect(damp);
+        damp.connect(dly);
+        dly.connect(dwet);
+        dwet.connect(master);
+        buses.fxDelay = dly;
+      } catch (_) {
+        postAudioWarning('Echo is not supported here; continuing dry.');
+      }
+    }
+    return buses;
+  }
+
+  // Renders generated (synth/drums) cues through an offline context so the
+  // visualizer sees them like file audio. Reuses the exact schedule path —
+  // file cues find no decoded entry and skip themselves — with t0 = 0 so the
+  // stem stays glued to video time. Cue volumes, fades, ducking, and wet
+  // sends are baked in; the schedule master is left for the mixer.
+  function renderSynthStems(schedule, duration, sampleRate) {
+    var hasSynth = false;
+    var i;
+    for (i = 0; i < schedule.cues.length; i += 1) {
+      if (schedule.cues[i].kind === 'synth') { hasSynth = true; break; }
+    }
+    if (!hasSynth) return Promise.resolve(null);
+    if (typeof OfflineAudioContext === 'undefined') {
+      postAudioWarning('Generated sounds cannot feed the visualizer on this device.');
+      return Promise.resolve(null);
+    }
+    var offline = null;
+    try {
+      offline = new OfflineAudioContext(2, Math.max(1, Math.ceil(sampleRate * duration)), sampleRate);
+    } catch (_) {
+      return Promise.resolve(null);
+    }
+    try {
+      var master = offline.createGain();
+      master.gain.value = 1;
+      master.connect(offline.destination);
+      var buses = buildFxBuses(offline, master, schedule.fx);
+      var stemHandle = {
+        context: offline, master: master, decoded: [],
+        voices: 0, voiceOverflow: false,
+        fxReverb: buses.fxReverb, fxDelay: buses.fxDelay
+      };
+      for (i = 0; i < schedule.cues.length; i += 1) {
+        var cue = schedule.cues[i];
+        if (cue.kind !== 'synth') continue;
+        scheduleAudioCue(stemHandle, cue, 0);
+      }
+      return offline.startRendering();
+    } catch (_) {
+      return Promise.resolve(null);
+    }
+  }
+
+  function analyzeScheduleAudioAsync(schedule, decoded, duration, sampleRate) {
+    if (!analysis || !schedule || !(sampleRate > 0)) return Promise.resolve(null);
+    var clips = [];
+    try {
+      clips = collectFileClips(schedule, decoded);
+    } catch (_) {
+      clips = [];
+    }
+    return renderSynthStems(schedule, duration, sampleRate).then(function (stem) {
+      if (stem) {
+        try {
+          var channels = [];
+          var count = Math.min(stem.numberOfChannels, 2);
+          for (var c = 0; c < count; c += 1) channels.push(stem.getChannelData(c));
+          if (channels.length > 0) {
+            clips.push({
+              channels: channels,
+              sampleRate: sampleRate,
+              start: 0,
+              offset: 0,
+              duration: duration,
+              loop: false,
+              volume: 1,
+              fadeIn: 0,
+              fadeOut: 0
+            });
+          }
+        } catch (_) {}
+      }
+      return analyzeMixedClips(clips, duration, sampleRate, schedule.master);
+    }, function () {
+      return analyzeMixedClips(clips, duration, sampleRate, schedule.master);
+    });
   }
 
   function prepareAudioCapture(schedule, duration) {
@@ -864,12 +1334,17 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
       });
       return chain;
     }).then(function () {
-      var features = analyzeScheduleAudio(schedule, decoded, duration, context.sampleRate);
+      // The stem render is async; everything below waits on it so generated
+      // beds are part of the features before the first frame records.
+      return analyzeScheduleAudioAsync(schedule, decoded, duration, context.sampleRate).then(function (features) {
       var master = context.createGain();
       master.gain.value = schedule.master;
       var dest = context.createMediaStreamDestination();
       try { dest.channelCount = 2; } catch (_) {}
       master.connect(dest);
+      var buses = buildFxBuses(context, master, schedule.fx);
+      var fxReverb = buses.fxReverb;
+      var fxDelay = buses.fxDelay;
       var pcmChannels = dest.channelCount || 2;
       if (pcmChannels !== 1 && pcmChannels !== 2) pcmChannels = 2;
       var aacConfig = {
@@ -901,7 +1376,8 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
           reader: null, autoplayTimer: null, leadUs: 30000,
           pcmMode: !ok, pcmChannels: pcmChannels,
           pcmParts: [], pcmByteLength: 0, pcmFirstPts: null,
-          features: features
+          features: features, voices: 0, voiceOverflow: false,
+          fxReverb: fxReverb, fxDelay: fxDelay
         };
         if (ok) {
           try {
@@ -931,6 +1407,7 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
           post({ type: 'mobileAgentVideoAudioConfig', sampleRate: context.sampleRate, channels: pcmChannels, encoding: 'pcm16' });
         }
         return handle;
+      });
       });
     }).catch(function (error) {
       try { context.close().catch(function () {}); } catch (_) {}

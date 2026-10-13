@@ -200,22 +200,59 @@ Voiceover / narration (never tell the user voiceover is impossible):
 Synth cues (`synth.kind`):
 
 - `tone`: `freq` (Hz) or `notes` played in sequence — MIDI numbers like 60 or
-  note names like `"C4"`, `"F#3"`, `"Bb2"`; `noteDur` seconds per note;
-  `wave` sine (default) / triangle / square / sawtooth; `attack`, `release`.
-- `pad`: `notes` as a chord (up to 8 notes); slow `attack`/`release` by
-  default (1.5 s each).
+  note names like `"C4"`, `"F#3"`, `"Bb2"` (up to 128 notes); `noteDur`
+  seconds per note; `wave` sine (default) / triangle / square / sawtooth;
+  `attack`, `release`. Melodies, bass lines, arpeggios.
+- `pad`: `notes` as a chord (up to 16 notes); slow `attack`/`release` by
+  default (1.5 s each). Chord beds and progressions (one track per chord).
 - `noise`: filtered-noise bed or sweep; `filter` lowpass (default) / highpass
   / bandpass, `filterFreq` → `filterEnd` sweep in Hz, `q`.
+- `drums`: sample-free kit patterns — `stepDur` seconds per step (default
+  0.25) and `steps`, one entry per step; each step lists its hits (`"kick"`,
+  `"snare"`, `"hat"`, `"openhat"`, `"clap"`), e.g.
+  `steps: [["kick","hat"],[],["snare"],["hat"]]`. Optional `kit` tweaks per
+  piece (`level`, `decay`, `tone`). At most 512 hits per track (extras are
+  skipped with a warning), and steps past the track's `duration` are cut —
+  size the pattern to fit.
+
+Effects (`fx` plus per-track sends):
+
+- Schedule-level buses, at most one of each per video:
+  `fx: { reverb: { decay }, delay: { time, feedback, mix } }` (`true`
+  selects tuned defaults for either block). Reverb is a generated room
+  (`decay` 0.5–3 s); echo is a single delay line, so time one `time` to the
+  beat (e.g. `stepDur * 0.75`), `feedback` below 1, `mix` for the wet level.
+- Per-track sends on any track — synth, drums, file, even narration:
+  `reverb: 0..1`, `delay: 0..1` (default 0). Wet signal adds on top of the
+  dry track: count a send of 0.5 as roughly half the track again when you
+  balance volumes near 1.
+
+Ducking music under voice (no auto-duck — declare it):
+
+- On a music track, add `duckUnder: [{ start, end }]` in video-time seconds
+  (narration part starts from `textToSpeech`, voice segments from
+  `transcribeAudio`), plus `duckAmount` (level while ducked, default 0.4),
+  `duckAttack` (default 0.3 s), `duckRelease` (default 0.5 s).
+- Overlapping ranges merge; ranges outside the track are clipped to it.
+- Ducking scales the whole track, sends included — the voice stays dry
+  unless you send it too.
 
 Mixing rules:
 
 - Encoding is handled by the app: when WebView's audio encoder is unavailable,
   raw audio is encoded to AAC natively on Android. Use the same schedule for
   both paths; do not declare audio unsupported without a tool warning.
-- Simple additive mix with per-track volumes — no auto-ducking. Keep the sum
-  of audible track volumes near 1 (e.g. music 0.5 + pad 0.3) to avoid clipping.
-- Sync is realtime within ~50 ms, not frame-accurate: score beds, swells, and
-  approximate hits — never promise lip-sync or sample-exact SFX.
+- Simple additive mix with per-track volumes. No automatic ducking — music
+  ducks under voice only when you add explicit `duckUnder` ranges (see
+  Ducking). Keep the sum of audible track volumes near 1 (e.g. music 0.5 +
+  pad 0.3) to avoid clipping.
+- Timing between audio events is sample-accurate (everything is scheduled up
+  front on the audio clock), but alignment to picture drifts ~50 ms during
+  realtime capture: score beds, swells, and drum hits freely, but never
+  promise lip-sync.
+- The schedule holds ~2000 simultaneous sound events across all tracks
+  (plenty for a 45 s video); past that, extras are skipped with a warning
+  instead of failing the render.
 - The tool result reports `hasAudio` and `audioWarnings` (e.g. a cue that had
   to be skipped). If `hasAudio` is false after you asked for sound, tell the
   user the video came out silent and why.
@@ -224,8 +261,11 @@ Mixing rules:
 
 When the user gives you an audio track and asks for visuals that follow it,
 **react to it instead of guessing**. The recorder precomputes a deterministic
-feature track from the file audio and hands it to `render` as the fourth
-argument `audio` (also mirrored at `window.MOBILE_AGENT_VIDEO_AUDIO`):
+feature track from the file audio **and any generated synth/drums beds**
+(rendered offline into the same mix) and hands it to `render` as the fourth
+argument `audio` (also mirrored at `window.MOBILE_AGENT_VIDEO_AUDIO`). A drum
+pattern or bass line with no audio file attached still drives `beatPulse` —
+rendering the stems adds a short pre-roll before recording starts:
 
 ```js
 render: function (t, canvas, ctx, audio) {
@@ -238,8 +278,9 @@ render: function (t, canvas, ctx, audio) {
 
 Surface (node-safe to ignore — it is always an object):
 
-- `audio.ready` — `false` when there was no analyzable **file** audio. Every
-  lookup then returns `0`, so you can call them unconditionally.
+- `audio.ready` — `false` when there was no analyzable audio (neither file
+  nor generated). Every lookup then returns `0`, so you can call them
+  unconditionally.
 - `audio.duration` — seconds analyzed (capped at the video `duration`).
 - `audio.bpm` — estimated tempo (50–220) or `null`.
 - `audio.beats` — array of onset times in seconds, ascending.
@@ -258,8 +299,9 @@ Rules:
   inside `render` stays deterministic — this is the one place reading "audio
   state" is allowed. Never create an `AudioContext` or `AnalyserNode` inside
   `render`.
-- Only **`file`** tracks are analyzed (the audio the user attached). Synth cues
-  are not — trigger those from `t` as usual.
+- **`file`** tracks and **generated** tracks are analyzed: file clips with
+  their schedule applied, synth/drums cues via an offline stem render
+  (volumes, fades, ducking, and wet sends baked in).
 - Analysis reflects the file as scheduled: `start`, `offset`, `duration`,
   `loop`, `volume`, `fadeIn`/`fadeOut` and `master` are all applied first.
 - Combine with the beat grid for scene cuts:
@@ -460,7 +502,8 @@ inside one canvas scene.
 - [ ] if the user asked for visuals "to the audio": ran `analyzeAudio` on the
       file (or used the live `audio` argument) and drove at least one visual
       property from `level`/`lowAt`/`beatPulse`/`beats` instead of ignoring the
-      soundtrack
+      soundtrack (for generated synth/drums beds the live `audio` argument
+      already reflects them — no tool call needed)
 - [ ] if the user asked for captions or word-synced visuals: ran
       `transcribeAudio` on the file and put the returned `segments` on the
       contract's `speech` (or baked the times in) and drove the captions from
