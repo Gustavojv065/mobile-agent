@@ -68,6 +68,15 @@ vi.mock("expo-file-system", () => ({
     delete() {
       mocks.files.delete(this.uri);
     }
+    async copy(destination: { uri: string }, _options?: unknown) {
+      const source = mocks.files.get(this.uri);
+      if (source) mocks.files.set(destination.uri, { bytes: source.bytes });
+    }
+    async move(destination: { uri: string }, _options?: unknown) {
+      const source = mocks.files.get(this.uri);
+      if (source) mocks.files.set(destination.uri, { bytes: source.bytes });
+      mocks.files.delete(this.uri);
+    }
     static async downloadFileAsync() {}
   },
 }));
@@ -224,6 +233,29 @@ describe("workspace document create + update", () => {
     expect(file.sourceMarkdown).toBe(SOURCE);
     expect(file.displayName).toBe("report.docx");
     expect(file.size).toBe(2);
+  });
+
+  it("moves a finished file into the workspace without loading its bytes", async () => {
+    const { repository } = makeRepository();
+    const service = createWorkspaceFileService(repository as WorkspaceRepository);
+    const { File } = await import("expo-file-system");
+
+    const sourceUri = "file:///cache/video.mp4";
+    mocks.files.set(sourceUri, { bytes: new Uint8Array([1, 2, 3, 4, 5]) });
+    const source = new File(sourceUri);
+
+    const created = await service.createDocumentFileFromFile({
+      source: source as never,
+      mimeType: "video/mp4",
+      name: "clip.mp4",
+    });
+
+    expect(created.displayName).toBe("clip.mp4");
+    expect(created.mimeType).toBe("video/mp4");
+    expect(created.size).toBe(5);
+    // Moved, not copied: the cache original is gone and the bytes were
+    // never pulled into the JS heap (mock move transfers the entry).
+    expect(mocks.files.has(sourceUri)).toBe(false);
   });
 
   it("regenerates a document in place for every format and keeps its name and path", async () => {

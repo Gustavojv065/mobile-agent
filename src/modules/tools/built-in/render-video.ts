@@ -115,19 +115,14 @@ export function createRenderVideoTool({
         });
 
         const cacheFile = new File(result.uri);
-        const bytes = await cacheFile.bytes();
 
-        const file = await workspaceService.createDocumentFile({
-          bytes,
+        // Move (not bytes() round-trip): loading a 100+ MB MP4 into the JS
+        // heap OOMs the app, while a same-volume move costs ~zero memory.
+        const file = await workspaceService.createDocumentFileFromFile({
+          source: cacheFile,
           mimeType: "video/mp4",
           name: normalizeName(name),
         });
-
-        try {
-          cacheFile.delete();
-        } catch {
-          // The cache copy is best-effort; the OS reclaims cache anyway.
-        }
 
         const output = {
           fileId: file.id,

@@ -520,6 +520,38 @@ export function createWorkspaceFileService(repository: WorkspaceRepository) {
       return created;
     },
     /**
+     * Persist an already-finished file (e.g. a rendered MP4 in cache) as a new
+     * workspace file by *moving* it into place. Unlike `createDocumentFile`,
+     * this never loads the bytes into the JS heap — a 100+ MB video would
+     * otherwise OOM the app (heap growth limit is ~256 MB on-device).
+     * Source and workspace both live in app-private internal storage, so the
+     * move is a same-volume rename.
+     */
+    async createDocumentFileFromFile(input: {
+      source: File;
+      mimeType: string;
+      name: string;
+    }) {
+      const id = Crypto.randomUUID();
+      const displayName = sanitizeFileName(input.name);
+      const relativePath = buildRelativePath(id, displayName);
+
+      await ensureWorkspaceDirectory();
+
+      const file = resolveWorkspaceFile(relativePath);
+      await input.source.move(file, { overwrite: true });
+
+      return repository.create({
+        id,
+        displayName,
+        mimeType: input.mimeType,
+        originalName: displayName,
+        relativePath,
+        size: file.size ?? null,
+        sourceKind: "created",
+      });
+    },
+    /**
      * Build a document from Markdown source and persist it as a new,
      * source-editable workspace file. `sourceSpec`, when provided, carries an
      * imported document's captured styling so split/merged parts keep the look.

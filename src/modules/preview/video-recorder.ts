@@ -207,10 +207,10 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
 
   function bitrateFor(width, height) {
     var pixels = width * height;
-    if (pixels <= 640 * 360) return 2000000;
-    if (pixels <= 1280 * 720) return 6000000;
-    if (pixels <= 1920 * 1080) return 12000000;
-    return 16000000;
+    if (pixels <= 640 * 360) return 3000000;
+    if (pixels <= 1280 * 720) return 10000000;
+    if (pixels <= 1920 * 1080) return 16000000;
+    return 20000000;
   }
 
   function readContract() {
@@ -1136,7 +1136,7 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
       if (!renderFrame(contract, canvas, ctx, t)) return;
       var dataUrl = null;
       try {
-        dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+        dataUrl = canvas.toDataURL('image/jpeg', 0.92);
       } catch (error) {
         fail('Frame capture failed: ' + String((error && error.message) || error));
         return;

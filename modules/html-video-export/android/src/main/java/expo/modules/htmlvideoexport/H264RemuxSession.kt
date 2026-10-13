@@ -125,10 +125,10 @@ internal class H264RemuxSession(
 internal fun bitrateFor(width: Int, height: Int): Int {
   val pixels = width * height
   return when {
-    pixels <= 640 * 360 -> 2_000_000
-    pixels <= 1280 * 720 -> 6_000_000
-    pixels <= 1920 * 1080 -> 12_000_000
-    else -> 16_000_000
+    pixels <= 640 * 360 -> 3_000_000
+    pixels <= 1280 * 720 -> 10_000_000
+    pixels <= 1920 * 1080 -> 16_000_000
+    else -> 20_000_000
   }
 }
 
