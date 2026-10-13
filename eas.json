@@ -27,6 +27,15 @@
                 "buildType": "apk",
                 "gradleCommand": ":app:assembleDebug --max-workers=4 -PreactNativeArchitectures=arm64-v8a -x lint --console=plain"
             }
+        },
+        "production-local": {
+            "extends": "production",
+            "distribution": "internal",
+            "channel": "production",
+            "android": {
+                "buildType": "apk",
+                "gradleCommand": ":app:assembleRelease --max-workers=4 -PreactNativeArchitectures=arm64-v8a -x lint --console=plain"
+            }
         }
     }
 }

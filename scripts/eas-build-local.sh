@@ -4,13 +4,59 @@
 #   "Disk quota exceeded" on :react-native-reanimated:externalNativeBuildRelease).
 # - Caps CPU via systemd scope so the PC stays usable.
 # - Single ABI (arm64-v8a) + --max-workers=4 comes from the
-#   "development-local" profile in eas.json.
+#   "*-local" profiles in eas.json.
+#
+# Usage:
+#   ./scripts/eas-build-local.sh [dev|prod|<profile>] [extra eas args...]
+# Examples:
+#   ./scripts/eas-build-local.sh              # dev (development-local)
+#   ./scripts/eas-build-local.sh dev           # dev (development-local)
+#   ./scripts/eas-build-local.sh prod          # prod (production-local)
+#   ./scripts/eas-build-local.sh --help        # this help + eas build --help
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-PROFILE="${1:-development-local}"
-if [[ "$#" -gt 0 ]]; then shift; fi
 
+usage() {
+  cat <<'EOF'
+Usage: eas-build-local.sh [dev|prod|<profile>] [extra eas args...]
+
+  dev, development, development-local  -> development-local (default, debug APK)
+  prod, production, production-local   -> production-local (release APK)
+
+Any other first arg is treated as an explicit EAS profile name.
+Remaining args are passed through to `eas build`.
+EOF
+}
+
+PROFILE_INPUT="${1:-development-local}"
+case "$PROFILE_INPUT" in
+  -h|--help|help)
+    usage
+    echo
+    exec eas build --help
+    ;;
+  dev|development|development-local)
+    PROFILE="development-local"
+    ;;
+  prod|production|production-local)
+    PROFILE="production-local"
+    ;;
+  -*)
+    # No profile given, extra eas flags only — keep default.
+    PROFILE="development-local"
+    ;;
+  *)
+    PROFILE="$PROFILE_INPUT"
+    ;;
+esac
+
+# Consume the profile arg unless it looks like an eas flag.
+if [[ "$#" -gt 0 && "$PROFILE_INPUT" != -* ]]; then shift; fi
+
+# EAS refuses to start if the workingdir isn't empty (e.g. leftover from a
+# failed build), so reset it on every run. Artifacts dir is kept.
+rm -rf "$ROOT/.eas-local"
 mkdir -p "$ROOT/.eas-local" "$ROOT/dist-eas"
 
 exec systemd-run --user --scope \
