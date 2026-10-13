@@ -62,15 +62,6 @@ import { ComposerTip } from "@/components/chat/composer-tip";
 import { Container } from "@/components/shared/container";
 import { SearchBox } from "@/components/shared/search-box";
 import { SkillImportDrawer } from "@/components/skills/skill-import-drawer";
-import {
-  Attachment,
-  AttachmentAction,
-  AttachmentActions,
-  AttachmentContent,
-  AttachmentDescription,
-  AttachmentMedia,
-  AttachmentTitle,
-} from "@/components/ui/attachment";
 import { Button } from "@/components/ui/button";
 import { ChatErrorBoundary } from "@/components/ui/chat-error-boundary";
 import { ChatMessage } from "@/components/ui/chat-message";
@@ -966,6 +957,27 @@ function formatTokenCount(value: number | null) {
   }
 
   return Math.round(value).toLocaleString();
+}
+
+function formatFileSize(size: number | null | undefined) {
+  if (typeof size !== "number" || !Number.isFinite(size) || size < 0) {
+    return "Unknown size";
+  }
+
+  if (size < 1024) {
+    return `${size} B`;
+  }
+
+  const units = ["KB", "MB", "GB"];
+  let value = size / 1024;
+  let unitIndex = 0;
+
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+
+  return `${value >= 100 ? Math.round(value) : value.toFixed(value >= 10 ? 1 : 0)} ${units[unitIndex]}`;
 }
 
 function formatCurrency(value: number | null) {
@@ -2115,55 +2127,149 @@ const ChatInput = memo(function ChatInput({
         ) : null}
 
         {selectedFiles.length > 0 ? (
-          <View className="gap-sp-2">
-            {selectedFiles.map((file) => (
-              <Attachment key={file.id} size="xs">
-                <Pressable
-                  accessibilityLabel={`Preview ${file.displayName}`}
-                  accessibilityRole="button"
-                  className="min-w-0 flex-1 flex-row items-center gap-sp-3"
-                  disabled={!getFilePreviewKind(file)}
-                  onPress={() => {
-                    KeyboardController.dismiss();
-                    setAttachmentPreview(file);
-                  }}
-                >
-                  <AttachmentMedia className="overflow-hidden bg-secondary dark:bg-secondary-dark">
-                    {file.mimeType?.startsWith("image/") ? (
-                      <Image
-                        contentFit="cover"
-                        source={{
-                          uri: resolveWorkspaceFile(file.relativePath).uri,
+          <View className="gap-sp-1">
+            <View className="flex-row items-center justify-between px-1">
+              <Text className="font-sans text-xs text-muted-foreground dark:text-muted-foreground-dark">
+                {selectedFiles.length} file{selectedFiles.length === 1 ? "" : "s"} selected
+              </Text>
+              <Pressable
+                accessibilityLabel="Clear selected files"
+                accessibilityRole="button"
+                hitSlop={8}
+                onPress={() => {
+                  setSelectedFileIds([]).catch(console.error);
+                }}
+                style={({ pressed }) => (pressed ? { opacity: 0.6 } : null)}
+              >
+                <Text className="font-sans text-xs font-medium text-muted-foreground dark:text-muted-foreground-dark">
+                  Clear
+                </Text>
+              </Pressable>
+            </View>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={{ gap: 8, paddingVertical: 2 }}
+            >
+              {selectedFiles.map((file) => {
+                const isImage = file.mimeType?.startsWith("image/");
+                const canPreview = Boolean(getFilePreviewKind(file));
+
+                if (isImage) {
+                  return (
+                    <View
+                      key={file.id}
+                      className="relative h-16 w-16 shrink-0 overflow-visible"
+                    >
+                      <Pressable
+                        accessibilityLabel={`Preview ${file.displayName}`}
+                        accessibilityRole="button"
+                        className="h-16 w-16 overflow-hidden rounded-2xl border border-border bg-secondary dark:border-border-dark dark:bg-secondary-dark"
+                        disabled={!canPreview}
+                        onPress={() => {
+                          KeyboardController.dismiss();
+                          setAttachmentPreview(file);
                         }}
-                        style={{ height: 48, width: 48 }}
-                      />
-                    ) : (
-                      <Paperclip color={theme.text} size={18} />
-                    )}
-                  </AttachmentMedia>
-                  <AttachmentContent>
-                    <AttachmentTitle>{file.displayName}</AttachmentTitle>
-                    <AttachmentDescription>
-                      {file.mimeType ?? "Unknown type"}
-                      {typeof file.size === "number"
-                        ? ` · ${file.size} bytes`
-                        : ""}
-                    </AttachmentDescription>
-                  </AttachmentContent>
-                </Pressable>
-                <AttachmentActions>
-                  <AttachmentAction
-                    onPress={() => {
-                      setSelectedFileIds(
-                        selectedFileIds.filter((id) => id !== file.id),
-                      ).catch(console.error);
-                    }}
+                        style={({ pressed }) =>
+                          pressed ? { opacity: 0.85 } : null
+                        }
+                      >
+                        <Image
+                          contentFit="cover"
+                          source={{
+                            uri: resolveWorkspaceFile(file.relativePath).uri,
+                          }}
+                          style={{ height: 64, width: 64 }}
+                        />
+                      </Pressable>
+                      <Pressable
+                        accessibilityLabel={`Remove ${file.displayName}`}
+                        accessibilityRole="button"
+                        hitSlop={8}
+                        onPress={() => {
+                          setSelectedFileIds(
+                            selectedFileIds.filter((id) => id !== file.id),
+                          ).catch(console.error);
+                        }}
+                        style={({ pressed }) => [
+                          {
+                            alignItems: "center",
+                            backgroundColor: theme.background,
+                            borderRadius: 999,
+                            height: 22,
+                            justifyContent: "center",
+                            position: "absolute",
+                            right: -6,
+                            top: -6,
+                            width: 22,
+                            borderWidth: 1,
+                            borderColor: theme.border,
+                          },
+                          pressed ? { opacity: 0.7 } : null,
+                        ]}
+                      >
+                        <X color={theme.text} size={12} />
+                      </Pressable>
+                    </View>
+                  );
+                }
+
+                return (
+                  <View
+                    key={file.id}
+                    className="h-16 max-w-48 shrink-0 flex-row items-center gap-sp-2 rounded-2xl border border-border bg-card py-sp-2 pl-sp-3 pr-sp-2 dark:border-border-dark dark:bg-card-dark"
                   >
-                    <X color={theme.text} size={14} />
-                  </AttachmentAction>
-                </AttachmentActions>
-              </Attachment>
-            ))}
+                    <Pressable
+                      accessibilityLabel={`Preview ${file.displayName}`}
+                      accessibilityRole="button"
+                      className="min-w-0 flex-1 flex-row items-center gap-sp-2"
+                      disabled={!canPreview}
+                      onPress={() => {
+                        KeyboardController.dismiss();
+                        setAttachmentPreview(file);
+                      }}
+                      style={({ pressed }) =>
+                        pressed ? { opacity: 0.7 } : null
+                      }
+                    >
+                      <Paperclip
+                        color={theme.textSecondary}
+                        size={16}
+                      />
+                      <View className="min-w-0 flex-1">
+                        <Text
+                          className="font-sans text-xs font-medium text-foreground dark:text-foreground-dark"
+                          numberOfLines={1}
+                        >
+                          {file.displayName}
+                        </Text>
+                        <Text
+                          className="font-sans text-[11px] text-muted-foreground dark:text-muted-foreground-dark"
+                          numberOfLines={1}
+                        >
+                          {formatFileSize(file.size)}
+                        </Text>
+                      </View>
+                    </Pressable>
+                    <Pressable
+                      accessibilityLabel={`Remove ${file.displayName}`}
+                      accessibilityRole="button"
+                      hitSlop={8}
+                      onPress={() => {
+                        setSelectedFileIds(
+                          selectedFileIds.filter((id) => id !== file.id),
+                        ).catch(console.error);
+                      }}
+                      style={({ pressed }) =>
+                        pressed ? { opacity: 0.6 } : null
+                      }
+                    >
+                      <X color={theme.textSecondary} size={14} />
+                    </Pressable>
+                  </View>
+                );
+              })}
+            </ScrollView>
           </View>
         ) : null}
 
