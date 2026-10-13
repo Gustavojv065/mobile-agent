@@ -95,6 +95,28 @@ The result also returns `sourceFileId` / `sourceLink`: the exact HTML you
 rendered, saved as `<name>.source.html` in the workspace. You do not need to
 keep the HTML yourself.
 
+## Previewing a scene before rendering (storyboard first)
+
+Rendering spends real time (a 10-second video takes ~10 seconds). After
+authoring a scene — especially with user images, video clips, or tricky
+layout — check it with the **`previewScene` tool** before calling
+`renderVideo`. Pass the same HTML (or scene `fileId`) and the promised
+`duration`: it runs the scene's `render(t, ...)` at storyboard timestamps
+in a hidden host and returns the stills as workspace images (inline for
+vision-capable models, file links + `ocr` fallback otherwise), so you can
+fix composition, framing, and caption placement while iteration is cheap.
+
+Rules:
+
+- The preview is approximate: async media settles, no audio plays, file
+  tracks stay silent. The render is truth — never describe motion, timing,
+  or sound from the storyboard alone.
+- Preview with the exact document you intend to render (same assets, same
+  `duration`); the tool fails fast on a duration mismatch like render does.
+- For video-heavy scenes the stills show settled frames, not motion — pair
+  with `getVideoFrame` on the source clip (poster workflow) beforehand.
+- Loop: preview → fix → re-preview → render → `getVideoFrame` spot-check.
+
 ## Revising a video (read the source, don't regenerate blind)
 
 When the user asks for changes to a video you already rendered:
@@ -196,6 +218,38 @@ Voiceover / narration (never tell the user voiceover is impossible):
 - Either way, prefer `transcribeAudio` on the narration audio to get word
   timings, then drive captions from the `speech` contract — but the audio
   itself is the voiceover track.
+
+Images and video clips in scenes (user-provided visuals):
+
+- Reference workspace files directly in the scene DOM and the tool inlines
+  them automatically (JPEG/PNG/WebP/GIF images, MP4/WebM clips, max 15 MB
+  each — same cap as audio). Never invent a `workspace://` id: use a file
+  the user attached or one already in the workspace.
+- Images: hide an `<img src="workspace://<id>">` and paint it with
+  `drawImage` in `render`. Guard every draw — `if (img.complete &&
+  img.naturalWidth) { ... }` — so a still-loading image never throws.
+  Cover-fit recipe: `var s = Math.max(canvas.width / img.naturalWidth,
+  canvas.height / img.naturalHeight);` then draw centered at that scale.
+  Transparent PNG/GIF alpha composites in-scene — but the MP4 itself is
+  opaque, so always paint a background first (unpainted regions read as
+  black).
+- Cropping needs no tools: `drawImage(img, sx, sy, sw, sh, dx, dy, dw, dh)`
+  paints only the source rect — center/aspect crops, thirds framing, and
+  pan-and-scan (animate `sx`/`sy` over `t` for Ken Burns). Same overload
+  crops `<video>` frames. Crops apply at draw time; the source file is
+  never modified.
+- Clips: `<video muted playsinline preload="auto"
+  src="workspace://<id>">`, driven entirely by scene JS (`currentTime`,
+  `loop`, `playbackRate`) and painted with `drawImage(video, ...)` once
+  `video.readyState >= 2`. `muted` is mandatory: the recorder captures its
+  own audio graph, never page audio, so an unmuted clip would play sound
+  you hear in preview but lose in the render.
+- Timing tradeoff: `video.play()` is smoothest but drifts against the
+  timeline; seek-chasing (`video.currentTime` retargeted toward the scene
+  time each frame) stays glued at the cost of occasional stepped motion.
+  Pick per scene and never promise both.
+- Before authoring around a clip, look at it first with `getVideoFrame`
+  (poster at a few timestamps) so framing and motion match the footage.
 
 Synth cues (`synth.kind`):
 
@@ -511,6 +565,12 @@ inside one canvas scene.
 - [ ] if the user asked for voiceover/narration: generated it with
       `textToSpeech` (or the endpoint fallback), scheduled every part as a
       `file:` track at its `start`, and captioned it via `transcribeAudio`
+- [ ] if the scene uses user images/clips: every `workspace://` id exists,
+      files are within type/size limits, `<video>` is muted, draws are
+      guarded (`img.complete`, `readyState`), and the result reports them
+      in `imageFiles`/`videoFiles`
+- [ ] if the scene is new or complex: reviewed a `previewScene` storyboard
+      before spending render time (composition, framing, captions placed)
 - [ ] if revising a previous render: read its `sourceFileId` (`.source.html`)
       and edited that file instead of writing a new scene from scratch
 - [ ] if the user pointed at a timestamp: inspected it with `getVideoFrame`

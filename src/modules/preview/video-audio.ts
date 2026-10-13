@@ -36,14 +36,22 @@ const AUDIO_MIME_BY_EXTENSION: Record<string, string> = {
   weba: "audio/webm",
 };
 
-const WORKSPACE_ID_PATTERN = /workspace:\/\/([A-Za-z0-9][A-Za-z0-9_-]*)/g;
+/**
+ * Audio ids are `file:` keys in the schedule (`{ file: "workspace://<id>" }`).
+ * Scoped to the key — not a whole-HTML scan — so `workspace://` references in
+ * `<img>`/`<video>` tags (inlined separately) are never mistaken for audio.
+ */
+const AUDIO_FILE_PATTERN = /file\s*:\s*["']workspace:\/\/([A-Za-z0-9][A-Za-z0-9_-]*)/g;
 
 export function extractWorkspaceAudioIds(html: string): string[] {
   const ids: string[] = [];
   const seen = new Set<string>();
-  WORKSPACE_ID_PATTERN.lastIndex = 0;
+  AUDIO_FILE_PATTERN.lastIndex = 0;
   let match: RegExpExecArray | null;
-  while ((match = WORKSPACE_ID_PATTERN.exec(html)) !== null) {
+  while ((match = AUDIO_FILE_PATTERN.exec(html)) !== null) {
+    // `file` must be a full key: `profile:` and `sourceFile:` do not count.
+    const prev = match.index > 0 ? html[match.index - 1] : "";
+    if (/[A-Za-z0-9_$]/.test(prev)) continue;
     if (!seen.has(match[1])) {
       seen.add(match[1]);
       ids.push(match[1]);

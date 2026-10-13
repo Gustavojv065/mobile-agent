@@ -4,6 +4,7 @@ import { useColorScheme } from "@/hooks/use-color-scheme";
 import { useTheme } from "@/hooks/use-theme";
 import { AudioAnalysisHost } from "@/components/ui/audio-analysis-host";
 import { DismissibleBanner } from "@/components/ui/dismissible-banner";
+import { ScenePreviewHost } from "@/components/ui/video-preview-host";
 import { VideoRenderHost } from "@/components/ui/video-render-host";
 import { migrateAppDatabase } from "@/core/db/database";
 import { AppStateProvider } from "@/providers/app-state";
@@ -300,6 +301,7 @@ export default function MainLayout() {
                   <InAppNotificationBanner />
                   <ReleaseUpdateBanner />
                   <VideoRenderHost />
+                  <ScenePreviewHost />
                   <AudioAnalysisHost />
                   <Slot />
                 </UpdateProvider>

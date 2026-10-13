@@ -20,9 +20,17 @@ describe("extractWorkspaceAudioIds", () => {
   });
 
   it("dedupes repeated references and ignores other schemes", () => {
-    const html = `["workspace://same", "workspace://same", "https://x/y.mp3", "file:///a.mp3"]`;
+    const html = `<script>var x = { file: "workspace://same", other: "workspace://same" };</script>`;
 
     expect(extractWorkspaceAudioIds(html)).toEqual(["same"]);
+  });
+
+  it("ignores workspace ids outside file tracks", () => {
+    const html = `<img src="workspace://pic-1"><video src="workspace://clip-1"></video>
+      <script>var scene = { profile: "workspace://abc", sourceFile: "workspace://def",
+        audio: { tracks: [{ file: "workspace://song-1" }] } };</script>`;
+
+    expect(extractWorkspaceAudioIds(html)).toEqual(["song-1"]);
   });
 
   it("returns an empty list when nothing is referenced", () => {

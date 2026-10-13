@@ -9,6 +9,7 @@ import { createListFilesTool } from "@/modules/tools/built-in/list-files";
 import { createMergeDocumentsTool } from "@/modules/tools/built-in/merge-documents";
 import { createMergePdfsTool } from "@/modules/tools/built-in/merge-pdfs";
 import { createOcrTool } from "@/modules/tools/built-in/ocr";
+import { createPreviewSceneTool } from "@/modules/tools/built-in/preview-scene";
 import {
   buildSelectedFilesInlineContext,
   buildWorkspaceSystemPrompt,
@@ -43,6 +44,7 @@ export function createWorkspaceTools(
       mergeDocuments: createMergeDocumentsTool(params),
       mergePdfs: createMergePdfsTool(params),
       ocr: createOcrTool(params),
+      previewScene: createPreviewSceneTool(params),
       read: createReadTool(params),
       renderVideo: createRenderVideoTool(params),
       splitDocument: createSplitDocumentTool(params),
