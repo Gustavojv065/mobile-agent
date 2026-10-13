@@ -19,6 +19,23 @@ import type { WorkspaceToolFactoryParams } from "@/modules/tools/built-in/types"
  * and are directed to the `ocr` tool for on-screen text. Either way the frame
  * is persisted, so follow-up turns can reference it by fileId.
  */
+
+/**
+ * execute's return value. `image` bytes travel here (in memory only) so
+ * `toModelOutput` can build a real vision content part. They are never sent
+ * to the model as raw JSON — see below.
+ */
+type VideoFrameOutput = {
+  text: string;
+  fileId: string;
+  link: string;
+  time: number;
+  width: number;
+  height: number;
+  inlineImage: boolean;
+  image: Uint8Array | null;
+};
+
 export function createVideoFrameTool({
   onRecord,
   repository,
@@ -41,7 +58,7 @@ export function createVideoFrameTool({
           "Timestamp in seconds into the video (e.g. 12 for 'at 0:12').",
         ),
     }),
-    execute: async ({ fileId, time }) => {
+    execute: async ({ fileId, time }: { fileId: string; time: number }) => {
       const inputSummary = summarizeValue({ fileId, time });
 
       try {
@@ -80,33 +97,25 @@ export function createVideoFrameTool({
           `(${thumb.width}x${thumb.height}), saved as workspace://${saved.id}. ` +
           "Describe what you see at this timestamp when replying.";
 
-        const output = supportsImageInput
-          ? {
-              content: [
-                { type: "text" as const, text },
-                {
-                  type: "file" as const,
-                  data: bytes,
-                  mediaType: "image/jpeg",
-                },
-              ],
-              fileId: saved.id,
-              link: `workspace://${saved.id}`,
-              time,
-              width: thumb.width,
-              height: thumb.height,
-            }
-          : {
-              text:
-                `${text} Your model cannot display images, so inspect the ` +
-                `saved frame with the ocr tool for on-screen text, or ask ` +
-                `the user what they see at this timestamp.`,
-              fileId: saved.id,
-              link: `workspace://${saved.id}`,
-              time,
-              width: thumb.width,
-              height: thumb.height,
-            };
+        // NOTE: execute's return value is only passed to `toModelOutput`
+        // below — it is never sent to the model as-is. Without toModelOutput
+        // the SDK would serialize this object (including `image` bytes) as a
+        // giant JSON blob, which stalls the run. toModelOutput converts it to
+        // a real vision content part instead.
+        const output = {
+          text: supportsImageInput
+            ? text
+            : `${text} Your model cannot display images, so inspect the ` +
+              `saved frame with the ocr tool for on-screen text, or ask ` +
+              `the user what they see at this timestamp.`,
+          fileId: saved.id,
+          link: `workspace://${saved.id}`,
+          time,
+          width: thumb.width,
+          height: thumb.height,
+          inlineImage: supportsImageInput,
+          image: supportsImageInput ? bytes : null,
+        };
 
         onRecord?.(
           createRecord({
@@ -136,6 +145,22 @@ export function createVideoFrameTool({
         );
         throw error;
       }
+    },
+    toModelOutput: ({ output }: { output: VideoFrameOutput }) => {
+      if (output.image) {
+        return {
+          type: "content",
+          value: [
+            { type: "text", text: output.text },
+            {
+              type: "file",
+              data: { type: "data", data: output.image },
+              mediaType: "image/jpeg",
+            },
+          ],
+        };
+      }
+      return { type: "text", value: output.text };
     },
   });
 }

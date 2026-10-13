@@ -80,7 +80,7 @@ describe("getVideoFrame", () => {
     mocks.files.clear();
   });
 
-  it("returns inline image content on vision-capable models", async () => {
+  it("returns frame metadata with bytes for the model-output converter", async () => {
     const output = (await execute(makeTool(true), {
       fileId: "video-1",
       time: 12,
@@ -95,31 +95,68 @@ describe("getVideoFrame", () => {
       mimeType: "image/jpeg",
       name: "clip-frame-12s.jpg",
     });
-    const content = output.content as Record<string, unknown>[];
-    expect(content[0]).toMatchObject({ type: "text" });
-    expect(content[1]).toMatchObject({
+    expect(output).toMatchObject({
+      fileId: "frame-1",
+      link: "workspace://frame-1",
+      time: 12,
+      inlineImage: true,
+    });
+    expect(output.image).toEqual(new Uint8Array([0xff, 0xd8, 0xff, 0x00]));
+  });
+
+  it("converts vision output to a real image content part", async () => {
+    const tool = makeTool(true) as unknown as {
+      execute: (
+        input: object,
+        opts: object,
+      ) => Promise<Record<string, unknown>>;
+      toModelOutput: (args: {
+        toolCallId: string;
+        input: unknown;
+        output: Record<string, unknown>;
+      }) => unknown;
+    };
+    const output = await tool.execute({ fileId: "video-1", time: 12 }, {});
+    const modelOutput = tool.toModelOutput({
+      toolCallId: "call-1",
+      input: { fileId: "video-1", time: 12 },
+      output,
+    }) as {
+      type: string;
+      value: Record<string, unknown>[];
+    };
+
+    expect(modelOutput.type).toBe("content");
+    expect(modelOutput.value[0]).toMatchObject({ type: "text" });
+    expect(modelOutput.value[1]).toMatchObject({
       type: "file",
       mediaType: "image/jpeg",
     });
-    expect(output).toMatchObject({
-      fileId: "frame-1",
-      link: "workspace://frame-1",
-      time: 12,
-    });
   });
 
-  it("falls back to file link + ocr guidance without image input", async () => {
-    const output = (await execute(makeTool(false), {
-      fileId: "video-1",
-      time: 12,
-    })) as Record<string, unknown>;
-
-    expect(output).not.toHaveProperty("content");
+  it("converts non-vision output to plain text with ocr guidance", async () => {
+    const tool = makeTool(false) as unknown as {
+      execute: (
+        input: object,
+        opts: object,
+      ) => Promise<Record<string, unknown>>;
+      toModelOutput: (args: {
+        toolCallId: string;
+        input: unknown;
+        output: Record<string, unknown>;
+      }) => unknown;
+    };
+    const output = await tool.execute({ fileId: "video-1", time: 12 }, {});
+    expect(output.image).toBeNull();
     expect(output.text).toMatch(/ocr/);
-    expect(output).toMatchObject({
-      fileId: "frame-1",
-      link: "workspace://frame-1",
-    });
+    const modelOutput = tool.toModelOutput({
+      toolCallId: "call-1",
+      input: { fileId: "video-1", time: 12 },
+      output,
+    }) as { type: string; value: string };
+
+    expect(modelOutput).toMatchObject({ type: "text" });
+    expect(modelOutput.value).toMatch(/ocr/);
   });
 
   it("fails clearly for unknown videos", async () => {

@@ -138,6 +138,13 @@ what's actually on screen. On models without image input you only get the
 file link — use the `ocr` tool to read on-screen text, or ask the user what
 they see. After inspecting, revise via the source-HTML workflow above.
 
+To assess a whole video at once, call `getVideoFrame` several times **in one
+block** at spread timestamps (e.g. start, middle, end — 2 to 4 frames, not
+more): each call returns its own frame and they all arrive together, so you
+can compare moments in a single step. Every frame is also saved to the
+workspace, so later turns can reference individual frames by fileId without
+re-fetching. Keep it to a few frames — each one costs vision context.
+
 After the tool returns, embed the video **inline** in your response exactly
 where you talk about it, the same way you would embed an image:
 
