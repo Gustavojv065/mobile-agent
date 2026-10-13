@@ -289,6 +289,7 @@ function MessageScrollerListInner<ItemT>(
     className,
     contentContainerClassName,
     ItemSeparatorComponent = MessageScrollerSeparator,
+    drawDistance = 800,
     keyboardShouldPersistTaps = "handled",
     maintainVisibleContentPosition = DEFAULT_MAINTAIN_VISIBLE_CONTENT_POSITION,
     onContentSizeChange,
@@ -352,6 +353,7 @@ function MessageScrollerListInner<ItemT>(
       accessibilityLiveRegion="polite"
       className={cn("flex-1", className)}
       contentContainerClassName={contentContainerClassName}
+      drawDistance={drawDistance}
       ItemSeparatorComponent={ItemSeparatorComponent}
       keyboardShouldPersistTaps={keyboardShouldPersistTaps}
       maintainVisibleContentPosition={maintainVisibleContentPosition}

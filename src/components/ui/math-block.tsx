@@ -1,9 +1,9 @@
-import { Component, type ReactNode, useMemo } from "react";
+import { Component, type ReactNode, useEffect, useState } from "react";
 import { ScrollView, Text, View } from "react-native";
 import { SvgXml } from "react-native-svg";
 
 import { useTheme } from "@/hooks/use-theme";
-import { renderMathToSvg } from "@/modules/math/tex-to-svg";
+import { renderMathToSvg, type MathSvg } from "@/modules/math/tex-to-svg";
 
 /** Guard against pathological fences; longer sources render as raw TeX. */
 const MAX_MATH_TEX_LENGTH = 5000;
@@ -48,15 +48,36 @@ function MathFallback({ tex }: { tex: string }) {
 export function MathBlock({ tex }: { tex: string }) {
   const theme = useTheme();
   const source = tex.trim();
-  const rendered = useMemo(() => {
+  // MathJax conversion is synchronous and can block the JS thread. Compute it
+  // after paint so the list can commit row layouts first — otherwise long
+  // chats blank while a math row measures. First paint shows the raw-TeX
+  // fallback, then upgrades to SVG (cached renders resolve near-instantly).
+  const [rendered, setRendered] = useState<MathSvg | null | undefined>(
+    undefined,
+  );
+
+  useEffect(() => {
     if (!source || source.length > MAX_MATH_TEX_LENGTH) {
-      return null;
+      setRendered(null);
+      return;
     }
 
-    return renderMathToSvg(source, {
-      color: theme.text,
-      fontSize: MATH_FONT_SIZE,
-    });
+    let cancelled = false;
+    const timeout = setTimeout(() => {
+      if (!cancelled) {
+        setRendered(
+          renderMathToSvg(source, {
+            color: theme.text,
+            fontSize: MATH_FONT_SIZE,
+          }),
+        );
+      }
+    }, 0);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timeout);
+    };
   }, [source, theme.text]);
 
   if (!rendered) {

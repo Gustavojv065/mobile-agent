@@ -207,7 +207,10 @@ function messageKeyExtractor(message: StoredMessage) {
 }
 
 function messageItemType(message: StoredMessage) {
-  return message.role;
+  // Streaming rows grow every token; keep them in a separate recycle pool so
+  // a mid-stream cell is never reused for a stable row (and vice versa),
+  // which previously surfaced as blank/incorrect-height rows on long chats.
+  return message.status === "streaming" ? `${message.role}:streaming` : message.role;
 }
 
 function MessageListFooter() {
@@ -298,6 +301,21 @@ export default function Screen() {
   latestUserMessageIdRef.current = latestUserMessageId;
   const messagesRef = useRef(messages);
   messagesRef.current = messages;
+  // Single-selection text mode: at most one message renders native-selectable
+  // Text at a time, so long chats never pay the always-on selection cost that
+  // caused lag + blank recycled rows.
+  const [selectedMessageId, setSelectedMessageId] = useState<string | null>(
+    null,
+  );
+  const handleToggleSelectMessage = useCallback((id: string) => {
+    setSelectedMessageId((current) => (current === id ? null : id));
+  }, []);
+  // FlashList is a PureComponent: re-render row chrome (edit/regenerate
+  // affordances) when these change even if `data` identity does not.
+  const listExtraData = useMemo(
+    () => `${latestUserMessageId ?? "none"}:${currentConversationBusy ? "busy" : "idle"}:${selectedMessageId ?? "none"}`,
+    [latestUserMessageId, currentConversationBusy, selectedMessageId],
+  );
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState<string | null>(null);
   const [editNonce, setEditNonce] = useState(0);
@@ -310,6 +328,7 @@ export default function Screen() {
   useEffect(() => {
     setEditDraft(null);
     setEditingMessageId(null);
+    setSelectedMessageId(null);
   }, [currentConversation?.id]);
 
   const handleEditMessage = useCallback((content: string) => {
@@ -432,6 +451,10 @@ export default function Screen() {
         onEditMessage={handleEditMessage}
         onRegenerate={handleRegenerate}
         onSavePrompt={handleSavePrompt}
+        onToggleSelectText={() => {
+          handleToggleSelectMessage(message.id);
+        }}
+        textSelectable={message.id === selectedMessageId}
         workspaceFiles={workspaceFiles}
       />
     ),
@@ -440,7 +463,9 @@ export default function Screen() {
       handleEditMessage,
       handleRegenerate,
       handleSavePrompt,
+      handleToggleSelectMessage,
       latestUserMessageId,
+      selectedMessageId,
       workspaceFiles,
     ],
   );
@@ -512,6 +537,8 @@ export default function Screen() {
                     <MessageScrollerList
                       contentContainerClassName="pt-6 pb-11"
                       data={messages}
+                      drawDistance={800}
+                      extraData={listExtraData}
                       getItemType={messageItemType}
                       keyExtractor={messageKeyExtractor}
                       renderItem={renderMessage}

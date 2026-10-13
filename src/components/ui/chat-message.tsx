@@ -32,6 +32,7 @@ import {
   RefreshCw,
   Share2,
   Square,
+  TextSelect,
   Trash2,
 } from "lucide-react-native";
 import {
@@ -54,6 +55,7 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
+  type StyleProp,
   Text,
   type TextStyle,
   View,
@@ -163,8 +165,33 @@ type ChatMessageProps = {
   onEditMessage?: (content: string) => void;
   onRegenerate?: (instruction: string) => void;
   onSavePrompt?: (content: string) => void;
+  onToggleSelectText?: () => void;
+  textSelectable?: boolean;
   workspaceFiles: WorkspaceFile[];
 };
+
+/**
+ * Selectable text block for markdown inline content. Matches the library's
+ * default `textgroup` output exactly, plus `selectable` and a themed
+ * `selectionColor` (Android only — iOS ignores it). Only mounted when the
+ * message is in select mode (see `textSelectable`), so at most one message
+ * pays the native selection cost at a time.
+ */
+function SelectableTextGroup({
+  children,
+  style,
+}: {
+  children: ReactNode;
+  style?: StyleProp<TextStyle>;
+}) {
+  const theme = useTheme();
+
+  return (
+    <Text selectable selectionColor={theme.backgroundSelected} style={style}>
+      {children}
+    </Text>
+  );
+}
 
 const MARKDOWN_RULES = {
   code_block: (node) => (
@@ -272,6 +299,20 @@ const MARKDOWN_RULES = {
   ),
   html_inline: (node) => (
     <InlineSvgBlock key={node.key} markup={htmlNodeContent(node)} />
+  ),
+} satisfies RenderRules;
+
+// Select-mode variant: every block's inline content (`textgroup`) becomes a
+// native-selectable Text covering paragraphs, headings, list items, table
+// cells and blockquotes including nested bold/italic/links. Only used for the
+// single selected message; the default path stays non-selectable for list
+// performance.
+const MARKDOWN_RULES_SELECTABLE = {
+  ...MARKDOWN_RULES,
+  textgroup: (node, children, _parent, styles) => (
+    <SelectableTextGroup key={node.key} style={styles.textgroup}>
+      {children}
+    </SelectableTextGroup>
   ),
 } satisfies RenderRules;
 
@@ -1057,15 +1098,17 @@ function CopyableCodeBlock({
 const MarkdownContent = memo(function MarkdownContent({
   content,
   onLinkPress,
+  selectable = false,
   styles,
 }: {
   content: string;
   onLinkPress: (url: string) => boolean;
+  selectable?: boolean;
   styles: ReturnType<typeof createMarkdownStyles>;
 }) {
   if (content.length > MARKDOWN_MAX_RENDER_LENGTH) {
     return (
-      <Text selectable style={styles.body}>
+      <Text selectable={selectable} style={styles.body}>
         {content}
       </Text>
     );
@@ -1076,7 +1119,7 @@ const MarkdownContent = memo(function MarkdownContent({
       markdownit={MARKDOWN_PARSER}
       mergeStyle={false}
       onLinkPress={onLinkPress}
-      rules={MARKDOWN_RULES}
+      rules={selectable ? MARKDOWN_RULES_SELECTABLE : MARKDOWN_RULES}
       style={styles}
     >
       {content}
@@ -1368,9 +1411,14 @@ export const ChatMessage = memo(function ChatMessage({
   onEditMessage,
   onRegenerate,
   onSavePrompt,
+  onToggleSelectText,
+  textSelectable = false,
   workspaceFiles,
 }: ChatMessageProps) {
   const theme = useTheme();
+  // Never selectable while streaming: content rewrites every token would
+  // thrash native selection handles and re-layout the list.
+  const selectEnabled = textSelectable && message.status !== "streaming";
   const [speaking, setSpeaking] = useRecyclingState(false, [message.id]);
   const [regenerateOpen, setRegenerateOpen] = useState(false);
   const [customPresets, setCustomPresets] = useState<RegeneratePreset[]>([]);
@@ -1883,6 +1931,7 @@ export const ChatMessage = memo(function ChatMessage({
           content={text}
           key={`text-${anchor.executionId}`}
           onLinkPress={handleLinkPress}
+          selectable={selectEnabled}
           styles={markdownStyles}
         />,
       );
@@ -1905,6 +1954,7 @@ export const ChatMessage = memo(function ChatMessage({
         content={trailingContent}
         key="text-trailing"
         onLinkPress={handleLinkPress}
+        selectable={selectEnabled}
         styles={markdownStyles}
       />,
     );
@@ -2129,6 +2179,7 @@ export const ChatMessage = memo(function ChatMessage({
                     <MarkdownContent
                       content={message.content}
                       onLinkPress={handleLinkPress}
+                      selectable={selectEnabled}
                       styles={markdownStyles}
                     />
                   ) : null}
@@ -2155,6 +2206,7 @@ export const ChatMessage = memo(function ChatMessage({
                           {entry.output ? <MarkdownContent
                             content={entry.output}
                             onLinkPress={handleLinkPress}
+                            selectable={selectEnabled}
                             styles={markdownStyles}
                           /> : null}
                           {(entry.attachments ?? []).map((attachment, attachmentIndex) => {
@@ -2175,6 +2227,7 @@ export const ChatMessage = memo(function ChatMessage({
                                     <MarkdownContent
                                       content={`[${label}](<${attachment.uri}>)`}
                                       onLinkPress={handleLinkPress}
+                                      selectable={selectEnabled}
                                       styles={markdownStyles}
                                     />
                                   )}
@@ -2350,6 +2403,23 @@ export const ChatMessage = memo(function ChatMessage({
                 accessibilityLabel="Save prompt"
                 leftIcon={<Bookmark color={theme.textSecondary} size={18} />}
                 onPress={() => onSavePrompt(message.content)}
+                size="icon-xs"
+                className="h-9 w-9 px-0"
+                variant="ghost"
+              />
+            ) : null}
+            {message.content.trim() && onToggleSelectText ? (
+              <Button
+                accessibilityLabel={
+                  selectEnabled ? "Done selecting text" : "Select text"
+                }
+                leftIcon={
+                  <TextSelect
+                    color={selectEnabled ? theme.text : theme.textSecondary}
+                    size={18}
+                  />
+                }
+                onPress={onToggleSelectText}
                 size="icon-xs"
                 className="h-9 w-9 px-0"
                 variant="ghost"
