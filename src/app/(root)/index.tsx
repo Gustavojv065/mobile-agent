@@ -1,6 +1,5 @@
 import * as DocumentPicker from "expo-document-picker";
 import { File } from "expo-file-system";
-import { Image } from "expo-image";
 import { TextInputWrapper, type PasteEventPayload } from "expo-paste-input";
 import { useRouter } from "expo-router";
 import {
@@ -35,9 +34,9 @@ import {
 import {
   ActivityIndicator,
   Alert,
+  FlatList,
   Platform,
   Pressable,
-  ScrollView,
   Text,
   TextInput,
   useWindowDimensions,
@@ -63,6 +62,7 @@ import { Container } from "@/components/shared/container";
 import { SearchBox } from "@/components/shared/search-box";
 import { SkillImportDrawer } from "@/components/skills/skill-import-drawer";
 import { Button } from "@/components/ui/button";
+import { WorkspaceThumbnail } from "@/components/ui/workspace-thumbnail";
 import { ChatErrorBoundary } from "@/components/ui/chat-error-boundary";
 import { ChatMessage } from "@/components/ui/chat-message";
 import {
@@ -2171,12 +2171,18 @@ const ChatInput = memo(function ChatInput({
                 </Text>
               </Pressable>
             </View>
-            <ScrollView
+            <FlatList
               horizontal
+              style={{ height: 76 }}
+              data={selectedFiles}
+              keyExtractor={(file) => file.id}
+              initialNumToRender={6}
+              maxToRenderPerBatch={6}
+              windowSize={3}
+              extraData={selectedFileIds}
               showsHorizontalScrollIndicator={false}
               contentContainerStyle={{ gap: 8, paddingVertical: 2 }}
-            >
-              {selectedFiles.map((file) => {
+              renderItem={({ item: file }) => {
                 const isImage = file.mimeType?.startsWith("image/");
                 const canPreview = Boolean(getFilePreviewKind(file));
 
@@ -2199,11 +2205,9 @@ const ChatInput = memo(function ChatInput({
                           pressed ? { opacity: 0.85 } : null
                         }
                       >
-                        <Image
-                          contentFit="cover"
-                          source={{
-                            uri: resolveWorkspaceFile(file.relativePath).uri,
-                          }}
+                        <WorkspaceThumbnail
+                          size={64}
+                          uri={resolveWorkspaceFile(file.relativePath).uri}
                           style={{ height: 64, width: 64 }}
                         />
                       </Pressable>
@@ -2293,8 +2297,8 @@ const ChatInput = memo(function ChatInput({
                     </Pressable>
                   </View>
                 );
-              })}
-            </ScrollView>
+              }}
+            />
           </View>
         ) : null}
 
@@ -2521,7 +2525,7 @@ const ChatInput = memo(function ChatInput({
       />
       <Drawer onOpenChange={setFilesDrawerOpen} open={filesDrawerOpen}>
         <DrawerContent showCloseButton showHandle size={filesDrawerSize}>
-          <DrawerBody contentContainerClassName="gap-sp-2 pb-sp-4">
+          <View className="min-h-0 flex-1 gap-sp-2 pb-sp-4">
             <SearchBox
               onChangeText={setFilesSearch}
               placeholder="Search files"
@@ -2529,7 +2533,15 @@ const ChatInput = memo(function ChatInput({
             />
             {mergedWorkspaceFiles.length > 0 ? (
               filteredWorkspaceFiles.length > 0 ? (
-                filteredWorkspaceFiles.map((file) => {
+                <FlatList
+                  data={filesDrawerOpen ? filteredWorkspaceFiles : []}
+                  keyExtractor={(file) => file.id}
+                  initialNumToRender={10}
+                  maxToRenderPerBatch={8}
+                  windowSize={3}
+                  keyboardShouldPersistTaps="handled"
+                  extraData={{ selectedFileIds, deletingFileId }}
+                  renderItem={({ item: file }) => {
                   const selected = selectedFileIds.includes(file.id);
                   const { binaryFiles, imageFiles } = partitionSelectedFiles([
                     file,
@@ -2561,11 +2573,9 @@ const ChatInput = memo(function ChatInput({
                       key={file.id}
                       leading={
                         file.mimeType?.startsWith("image/") ? (
-                          <Image
-                            contentFit="cover"
-                            source={{
-                              uri: resolveWorkspaceFile(file.relativePath).uri,
-                            }}
+                          <WorkspaceThumbnail
+                            size={48}
+                            uri={resolveWorkspaceFile(file.relativePath).uri}
                             style={{
                               borderRadius: 10,
                               height: 48,
@@ -2595,7 +2605,8 @@ const ChatInput = memo(function ChatInput({
                       title={file.displayName}
                     />
                   );
-                })
+                  }}
+                />
               ) : (
                 <Text className="font-sans text-sm text-muted-foreground dark:text-muted-foreground-dark">
                   No files match “{filesSearch}”.
@@ -2606,7 +2617,7 @@ const ChatInput = memo(function ChatInput({
                 No files in the workspace yet. Upload one below to attach it.
               </Text>
             )}
-          </DrawerBody>
+          </View>
           <DrawerFooter>
             <View className="gap-sp-2">
               <Button

@@ -1,5 +1,5 @@
 import * as LegacyFileSystem from "expo-file-system/legacy";
-import { Image } from "expo-image";
+import { FlashList } from "@shopify/flash-list";
 import * as IntentLauncher from "expo-intent-launcher";
 import { useRouter } from "expo-router";
 import {
@@ -24,7 +24,7 @@ import {
 
 import { Container } from "@/components/shared/container";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
+import { WorkspaceThumbnail } from "@/components/ui/workspace-thumbnail";
 import { LibraryImageGrid } from "@/components/ui/library-image-grid";
 import {
   FilePreviewDialog,
@@ -186,7 +186,7 @@ export default function LibraryScreen() {
 
   return (
     <Container
-      scroll={category !== "images"}
+      scroll={false}
       contentClassName="gap-sp-4 py-sp-4"
       includeBottomTabInset={false}
     >
@@ -248,10 +248,15 @@ export default function LibraryScreen() {
             />
           </View>
         ) : (
-        <Card className="overflow-hidden">
-          {filteredFiles.map((file, index) => (
-            <View key={file.id}>
-              {index > 0 ? <Separator /> : null}
+        <View className="min-h-0 flex-1 overflow-hidden rounded-card border border-border bg-card dark:border-border-dark dark:bg-card-dark">
+          <FlashList
+            key={category}
+            data={filteredFiles}
+            keyExtractor={(file) => file.id}
+            drawDistance={200}
+            extraData={{ openingFileId, downloadingFileId, deletingFileId }}
+            ItemSeparatorComponent={Separator}
+            renderItem={({ item: file }) => (
               <LibraryFileRow
                 file={file}
                 opening={openingFileId === file.id}
@@ -267,9 +272,9 @@ export default function LibraryScreen() {
                   handleDeleteFile(file);
                 }}
               />
-            </View>
-          ))}
-        </Card>
+            )}
+          />
+        </View>
         )
       ) : (
         <Text className="font-sans text-sm text-muted-foreground dark:text-muted-foreground-dark">
@@ -327,9 +332,9 @@ function LibraryFileRow({
       >
         <View className="h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-card bg-secondary dark:bg-secondary-dark">
           {isImage ? (
-            <Image
-              contentFit="cover"
-              source={{ uri }}
+            <WorkspaceThumbnail
+              size={48}
+              uri={uri}
               style={{ height: 48, width: 48 }}
             />
           ) : isTextWorkspaceFile(file) || isDocumentWorkspaceFile(file) ? (

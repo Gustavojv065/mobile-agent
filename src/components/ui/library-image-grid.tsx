@@ -1,30 +1,15 @@
 import { FlashList, useRecyclingState } from "@shopify/flash-list";
 import { Image } from "expo-image";
 import { ImageOff } from "lucide-react-native";
-import { useEffect } from "react";
 import { Pressable, Text, View } from "react-native";
 import Svg, { Defs, LinearGradient, Rect, Stop } from "react-native-svg";
 
 import { resolveWorkspaceFile } from "@/core/services/workspace-file-service";
 import type { WorkspaceFile } from "@/core/types/app-state";
 import { useTheme } from "@/hooks/use-theme";
+import { useWorkspaceThumbnail } from "@/hooks/use-workspace-thumbnail";
 
 const FALLBACK_BLURHASH = "LEHV6nWB2yk8pyo0adR*.7kCMdnj";
-type Thumbnail = { aspectRatio: number };
-const thumbnails = new Map<string, Promise<Thumbnail>>();
-
-function loadThumbnail(uri: string, cacheKey: string): Promise<Thumbnail> {
-  const cached = thumbnails.get(cacheKey);
-  if (cached) return cached;
-  const pending = Image.loadAsync(uri, { maxWidth: 96, maxHeight: 96 })
-    .then((image) => ({
-      aspectRatio: image.width > 0 && image.height > 0 ? image.width / image.height : 1,
-    }))
-    .catch(() => ({ aspectRatio: 1 }));
-  if (thumbnails.size >= 256) thumbnails.delete(thumbnails.keys().next().value!);
-  thumbnails.set(cacheKey, pending);
-  return pending;
-}
 
 type GalleryProps = {
   files: WorkspaceFile[];
@@ -47,19 +32,17 @@ export function LibraryImageGrid(props: GalleryProps) {
 }
 
 function ImageTile({ file, index, gallery }: { file: WorkspaceFile; index: number; gallery: GalleryProps }) {
+  return <LoadedImageTile key={`${file.id}:${file.updatedAt}`} file={file} index={index} gallery={gallery} />;
+}
+
+function LoadedImageTile({ file, index, gallery }: { file: WorkspaceFile; index: number; gallery: GalleryProps }) {
   const theme = useTheme();
   const uri = resolveWorkspaceFile(file.relativePath).uri;
   const cacheKey = `${file.id}:${file.updatedAt}`;
-  const [thumbnail, setThumbnail] = useRecyclingState<Thumbnail | null>(null, [cacheKey]);
+  // One bounded decode for both aspect ratio and display. The old path
+  // decoded a 96px image for measurement, then loaded the original again.
+  const thumbnail = useWorkspaceThumbnail(uri, 512);
   const [failed, setFailed] = useRecyclingState(false, [cacheKey]);
-
-  useEffect(() => {
-    let cancelled = false;
-    void loadThumbnail(uri, cacheKey).then((result) => {
-      if (!cancelled) setThumbnail(result);
-    });
-    return () => { cancelled = true; };
-  }, [cacheKey, uri, setThumbnail]);
 
   return (
     <View style={{ paddingHorizontal: 5, paddingBottom: 14 }}>
@@ -71,7 +54,8 @@ function ImageTile({ file, index, gallery }: { file: WorkspaceFile; index: numbe
         style={({ pressed }) => ({ opacity: pressed ? 0.8 : 1 })}
       >
         <Image
-          source={{ uri }}
+          source={thumbnail}
+          autoplay={false}
           placeholder={{ blurhash: FALLBACK_BLURHASH }}
           placeholderContentFit="cover"
           contentFit="cover"
@@ -79,7 +63,7 @@ function ImageTile({ file, index, gallery }: { file: WorkspaceFile; index: numbe
           recyclingKey={cacheKey}
           transition={250}
           onError={() => setFailed(true)}
-          style={{ width: "100%", aspectRatio: thumbnail?.aspectRatio ?? (index % 3 === 0 ? 0.75 : index % 3 === 1 ? 1.2 : 1) }}
+          style={{ width: "100%", aspectRatio: thumbnail && thumbnail.height > 0 ? thumbnail.width / thumbnail.height : (index % 3 === 0 ? 0.75 : index % 3 === 1 ? 1.2 : 1) }}
         />
         {failed ? (
           <View className="absolute inset-0 items-center justify-center gap-2 bg-secondary dark:bg-secondary-dark">
