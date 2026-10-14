@@ -72,6 +72,16 @@ Define this before the body finishes loading:
 The recorder picks `document.getElementById(canvasId)`, or the first visible
 `<canvas>` on the page when no id is given.
 
+### In-app playback (no debug UI in the scene)
+
+Tapping a scene HTML file in the app opens it in a built-in player:
+play/pause, a seek timeline with time labels, and a silent preview (sound
+only plays after render). Never author your own preview/scrub/time-slider
+or other debug chrome inside the scene — it duplicates the player and
+ships scaffolding into the file. Keep the page to the canvas plus whatever
+the video itself shows. Your scene only needs to honor `render(t, ...)`
+being called with any `t` in `[0, duration]`; the player drives the rest.
+
 ## Delivering the MP4
 
 When the user wants the finished file — "make a video and give me the MP4" —
@@ -596,6 +606,8 @@ inside one canvas scene.
       tool call (`analyzeAudio`, `renderVideo`, …) is in the SAME response as
       the words — a plan with no tool call delivers nothing and the run ends
 - [ ] `window.MOBILE_AGENT_VIDEO` defined with a `render` function
+- [ ] no homemade preview/scrub/time-slider UI in the scene — the app's
+      built-in player covers playback, and the file stays clean
 - [ ] render is deterministic: only `t` and constants (no `Math.random`,
       `Date.now`, `requestAnimationFrame`)
 - [ ] exactly one recorded canvas, sized to `width × height`

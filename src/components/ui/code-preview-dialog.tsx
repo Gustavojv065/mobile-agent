@@ -1,4 +1,4 @@
-import { Download, Film, Monitor, Smartphone, X, Code, Eye, Square } from "lucide-react-native";
+import { Download, Film, Monitor, Smartphone, X, Code, Eye, Square, Play, Pause } from "lucide-react-native";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -23,6 +23,13 @@ import { useTheme } from "@/hooks/use-theme";
 import { downloadFile, downloadText } from "@/core/services/download-service";
 import { buildCodeDocument } from "@/modules/preview/code-document";
 import { withDesktopPreviewViewport } from "@/modules/preview/html-document";
+import {
+  buildScenePlayerScript,
+  formatPlayerTime,
+  getSceneDuration,
+  SCENE_PLAYER_MESSAGE_TYPE,
+} from "@/modules/preview/scene-player";
+import { Slider } from "@/components/ui/slider";
 import { handlePreviewDownloadMessage, PREVIEW_DOWNLOAD_HOOK } from "@/modules/preview/preview-downloads";
 import { buildVideoExportDocument } from "@/modules/preview/video-recorder";
 import { VideoExportController, type VideoExportResult } from "@/modules/preview/video-export-messages";
@@ -140,10 +147,66 @@ export function CodePreviewContent({
     progress: number;
     status: "recording" | "finishing";
   } | null>(null);
+  // Video-scene player (play/pause/seek without rendering). Only video
+  // scenes — HTML defining window.MOBILE_AGENT_VIDEO — get the transport
+  // bar, the render button, and the silent-preview treatment; plain HTML
+  // keeps today's UI (viewport toggle, download) untouched.
+  const sceneDuration = useMemo(() => getSceneDuration(html), [html]);
+  const isVideoScene = sceneDuration != null;
+  const [playerTime, setPlayerTime] = useState(0);
+  const [playing, setPlaying] = useState(false);
+  const [playerError, setPlayerError] = useState<string | null>(null);
   const webViewRef = useRef<WebView>(null);
   const exportControllerRef = useRef<VideoExportController | null>(null);
   const exportFileRef = useRef<File | null>(null);
   const canExportVideo = Platform.OS === "android" && getHtmlVideoExportModule() !== null;
+
+  const playerCommand = useCallback((command: string) => {
+    webViewRef.current?.injectJavaScript(
+      `window.__mobileAgentPlayer ? (window.__mobileAgentPlayer.${command}, true) : false;`,
+    );
+  }, []);
+
+  const pausePlayer = useCallback(() => {
+    playerCommand("pause()");
+    setPlaying(false);
+  }, [playerCommand]);
+
+  const resetPlayer = useCallback(() => {
+    playerCommand("pause()");
+    setPlayerTime(0);
+    setPlaying(false);
+    setPlayerError(null);
+  }, [playerCommand]);
+
+  const togglePlay = useCallback(() => {
+    if (sceneDuration == null) return;
+    if (playing) {
+      pausePlayer();
+      return;
+    }
+    setPlayerError(null);
+    if (playerTime >= sceneDuration - 0.05) {
+      playerCommand("seek(0)");
+      setPlayerTime(0);
+    }
+    playerCommand("play()");
+    setPlaying(true);
+  }, [pausePlayer, playerCommand, playerTime, playing, sceneDuration]);
+
+  const seekPlayer = useCallback(
+    (value: number) => {
+      if (!Number.isFinite(value)) return;
+      setPlayerTime(value);
+      setPlayerError(null);
+      playerCommand(`seek(${value})`);
+    },
+    [playerCommand],
+  );
+
+  const installPlayer = useCallback(() => {
+    webViewRef.current?.injectJavaScript(`${buildScenePlayerScript()}\ntrue;`);
+  }, []);
   const previousHtml = useRef(html);
 
   const cleanupExportFile = useCallback(() => {
@@ -188,6 +251,9 @@ export function CodePreviewContent({
 
   const handleExportVideo = useCallback(() => {
     if (videoExport || mode !== "preview") return;
+    // The recorder drives its own frames: stop the player first so the two
+    // loops never fight over the canvas.
+    pausePlayer();
     const module = getHtmlVideoExportModule();
     if (!module) return;
 
@@ -246,9 +312,31 @@ export function CodePreviewContent({
       }
     };
     attemptStart(8);
-  }, [cleanupExportFile, mode, shareVideo, videoExport]);
+  }, [cleanupExportFile, mode, pausePlayer, shareVideo, videoExport]);
 
   const handleMessage = useCallback((event: WebViewMessageEvent) => {
+    try {
+      const payload = JSON.parse(event.nativeEvent.data) as {
+        type?: unknown;
+        t?: unknown;
+        playing?: unknown;
+        error?: unknown;
+      } | null;
+      if (payload && typeof payload === "object" && payload.type === SCENE_PLAYER_MESSAGE_TYPE) {
+        if (typeof payload.t === "number" && Number.isFinite(payload.t)) {
+          setPlayerTime(payload.t);
+        }
+        if (typeof payload.playing === "boolean") {
+          setPlaying(payload.playing);
+        }
+        if (typeof payload.error === "string" && payload.error) {
+          setPlayerError(payload.error);
+        }
+        return;
+      }
+    } catch {
+      // Not a player message: fall through to the other handlers.
+    }
     void handlePreviewDownloadMessage(event);
     void exportControllerRef.current?.handleMessage(event);
   }, []);
@@ -257,6 +345,7 @@ export function CodePreviewContent({
   useEffect(() => {
     if (previousHtml.current === html) return;
     previousHtml.current = html;
+    resetPlayer();
     webViewRef.current?.injectJavaScript(
       "window.__cancelMobileAgentVideoExport ? (window.__cancelMobileAgentVideoExport(), true) : false;",
     );
@@ -264,16 +353,23 @@ export function CodePreviewContent({
     exportControllerRef.current = null;
     setVideoExport(null);
     cleanupExportFile();
-  }, [cleanupExportFile, html]);
+  }, [cleanupExportFile, html, resetPlayer]);
+
+  // Leaving preview mode tears down the player page.
+  useEffect(() => {
+    if (mode === "preview") return;
+    resetPlayer();
+  }, [mode, resetPlayer]);
 
   // Tear down the export and its temp file when the preview unmounts.
   useEffect(() => {
     return () => {
+      playerCommand("pause()");
       void exportControllerRef.current?.cancel();
       exportControllerRef.current = null;
       cleanupExportFile();
     };
-  }, [cleanupExportFile]);
+  }, [cleanupExportFile, playerCommand]);
 
   const handleSave = useCallback(async () => {
     if (saving || !frameRef.current) {
@@ -371,18 +467,20 @@ export function CodePreviewContent({
               disabled={saving || videoExport !== null}
             />
           ) : null}
-          {canExportVideo && mode === "preview" ? (
+          {canExportVideo && mode === "preview" && isVideoScene ? (
             <ExportVideoButton
               disabled={videoExport !== null || !frame}
               onPress={handleExportVideo}
             />
           ) : null}
-          <SavePreviewButton
-            mode={mode}
-            disabled={saving || videoExport !== null || !frame}
-            onPress={handleSave}
-            saving={saving}
-          />
+          {isVideoScene && mode === "preview" ? null : (
+            <SavePreviewButton
+              mode={mode}
+              disabled={saving || videoExport !== null || !frame}
+              onPress={handleSave}
+              saving={saving}
+            />
+          )}
           <DrawerClose asChild>
             <Pressable
               accessibilityLabel="Close preview"
@@ -399,7 +497,7 @@ export function CodePreviewContent({
               status={videoExport.status}
               onStop={stopExport}
             />
-          ) : (
+          ) : isVideoScene ? null : (
             <ViewportToggle value={viewport} onChange={setViewport} />
           )
         ) : null}
@@ -436,6 +534,7 @@ export function CodePreviewContent({
                   scrollEnabled
                   setSupportMultipleWindows={false}
                   injectedJavaScript={PREVIEW_DOWNLOAD_HOOK}
+                  onLoadEnd={installPlayer}
                   onMessage={handleMessage}
                   source={{ html: buildVideoExportDocument(previewHtml) }}
                   style={{ backgroundColor: theme.backgroundElement, flex: 1 }}
@@ -444,6 +543,49 @@ export function CodePreviewContent({
             )
           ) : null}
         </View>
+        {mode === "preview" &&
+        isVideoScene &&
+        sceneDuration != null &&
+        !videoExport ? (
+          <View className="gap-1 pt-2">
+            <View className="flex-row items-center gap-3">
+              <Pressable
+                accessibilityLabel={playing ? "Pause scene" : "Play scene"}
+                accessibilityRole="button"
+                className="h-11 w-11 items-center justify-center rounded-full bg-card dark:bg-card-dark"
+                onPress={togglePlay}
+              >
+                {playing ? (
+                  <Pause color={theme.text} size={20} />
+                ) : (
+                  <Play color={theme.text} size={20} />
+                )}
+              </Pressable>
+              <View className="min-w-0 flex-1">
+                <Slider
+                  accessibilityLabel="Scene time"
+                  maximumValue={sceneDuration}
+                  minimumValue={0}
+                  onValueChange={seekPlayer}
+                  step={0.05}
+                  value={Math.min(playerTime, sceneDuration)}
+                />
+              </View>
+              <Text className="font-sans text-xs text-muted-foreground dark:text-muted-foreground-dark">
+                {formatPlayerTime(playerTime)} /{" "}
+                {formatPlayerTime(sceneDuration)}
+              </Text>
+            </View>
+            <Text className="font-sans text-xs text-muted-foreground dark:text-muted-foreground-dark">
+              Silent preview — sound only plays after render.
+            </Text>
+            {playerError ? (
+              <Text className="font-sans text-xs text-red-500">
+                {playerError}
+              </Text>
+            ) : null}
+          </View>
+        ) : null}
     </>
   );
 }
