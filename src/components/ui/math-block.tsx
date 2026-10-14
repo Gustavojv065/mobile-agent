@@ -1,9 +1,10 @@
 import { Component, type ReactNode, useEffect, useState } from "react";
-import { ScrollView, Text, View } from "react-native";
+import { ScrollView, View } from "react-native";
 import { SvgXml } from "react-native-svg";
 
 import { useTheme } from "@/hooks/use-theme";
 import { renderMathToSvg, type MathSvg } from "@/modules/math/tex-to-svg";
+import { MathFallback } from "@/components/ui/math-fallback";
 
 /** Guard against pathological fences; longer sources render as raw TeX. */
 const MAX_MATH_TEX_LENGTH = 5000;
@@ -23,19 +24,6 @@ class MathRenderBoundary extends Component<
   render() {
     return this.state.failed ? this.props.fallback : this.props.children;
   }
-}
-
-function MathFallback({ tex }: { tex: string }) {
-  return (
-    <View className="my-1.5 max-w-full self-start rounded-2xl border border-border bg-secondary px-sp-3 py-sp-2 dark:border-border-dark dark:bg-secondary-dark">
-      <Text
-        selectable
-        className="font-mono text-sm text-foreground dark:text-foreground-dark"
-      >
-        {tex}
-      </Text>
-    </View>
-  );
 }
 
 /**

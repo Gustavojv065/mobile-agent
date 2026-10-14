@@ -303,12 +303,6 @@ export default function Screen() {
   latestUserMessageIdRef.current = latestUserMessageId;
   const messagesRef = useRef(messages);
   messagesRef.current = messages;
-  // FlashList is a PureComponent: re-render row chrome (edit/regenerate
-  // affordances) when these change even if `data` identity does not.
-  const listExtraData = useMemo(
-    () => `${latestUserMessageId ?? "none"}:${currentConversationBusy ? "busy" : "idle"}`,
-    [latestUserMessageId, currentConversationBusy],
-  );
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState<string | null>(null);
   const [editNonce, setEditNonce] = useState(0);
@@ -524,7 +518,6 @@ export default function Screen() {
                       contentContainerClassName="pt-6 pb-11"
                       data={messages}
                       drawDistance={800}
-                      extraData={listExtraData}
                       getItemType={messageItemType}
                       keyExtractor={messageKeyExtractor}
                       renderItem={renderMessage}

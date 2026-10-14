@@ -36,13 +36,17 @@ import {
 } from "lucide-react-native";
 import {
   createContext,
+  lazy,
   memo,
   type ReactNode,
   Component,
+  Suspense,
   useCallback,
   useContext,
+  useDeferredValue,
   useEffect,
   useMemo,
+  useRef,
   useState,
   useSyncExternalStore,
 } from "react";
@@ -101,7 +105,7 @@ import {
   getFilePreviewKind,
 } from "@/components/ui/file-preview-dialog";
 import { Loading } from "@/components/ui/loading";
-import { MathBlock } from "@/components/ui/math-block";
+import { MathFallback } from "@/components/ui/math-fallback";
 import { Message, MessageFooter } from "@/components/ui/message";
 import {
   VideoPlayerDialog,
@@ -144,6 +148,15 @@ import type { VideoThumbnail } from "expo-video";
 
 refractor.register(jsx);
 refractor.register(tsx);
+
+// MathJax (via tex-to-svg) is the heaviest import in the chat path — load it
+// only when a message actually renders a math fence. Until then the raw-TeX
+// fallback paints, identical to the post-load error state.
+const MathBlockLazy = lazy(() =>
+  import("@/components/ui/math-block").then((module) => ({
+    default: module.MathBlock,
+  })),
+);
 
 const MARKDOWN_PARSER = registerChatMarkdownRules(
   MarkdownIt({
@@ -201,7 +214,14 @@ const MARKDOWN_RULES = {
       language={getCodeLanguage(node)}
     />
   ),
-  math_block: (node) => <MathBlock key={node.key} tex={node.content} />,
+  math_block: (node) => (
+    <Suspense
+      key={node.key}
+      fallback={<MathFallback tex={node.content} />}
+    >
+      <MathBlockLazy tex={node.content} />
+    </Suspense>
+  ),
   image: (node) => (
     <MarkdownImage
       alt={String(node.attributes.alt ?? "")}
@@ -334,7 +354,11 @@ const ChatMediaContext = createContext<{
  * render host is recording — subscribed in isolation so progress ticks only
  * re-render this row, not the whole message.
  */
-function StreamingIndicator({ idle }: { idle: ReactNode }) {
+const StreamingIndicator = memo(function StreamingIndicator({
+  idle,
+}: {
+  idle: ReactNode;
+}) {
   const status = useSyncExternalStore(
     subscribeVideoRenderStatus,
     getVideoRenderStatus,
@@ -354,12 +378,16 @@ function StreamingIndicator({ idle }: { idle: ReactNode }) {
       }
     />
   );
-}
+});
+
+// Hoisted so the streaming row doesn't allocate a fresh element per token.
+const STREAMING_IDLE_ELEMENT = <Loading />;
 
 function PreviewUriImage({ uri }: { uri: string }) {
   const [aspectRatio, setAspectRatio] = useState(16 / 9);
   return (
     <Image
+      cachePolicy="memory-disk"
       contentFit="contain"
       onLoad={(event) => {
         const { height, width } = event.source;
@@ -367,6 +395,7 @@ function PreviewUriImage({ uri }: { uri: string }) {
           setAspectRatio(width / height);
         }
       }}
+      recyclingKey={uri}
       source={{ uri }}
       style={{
         aspectRatio,
@@ -428,6 +457,7 @@ function MarkdownImage({ alt, uri }: { alt: string; uri: string }) {
       <Image
         accessibilityLabel={alt || "Image"}
         accessible
+        cachePolicy="memory-disk"
         contentFit="contain"
         onError={() => {
           setFailed(true);
@@ -439,6 +469,7 @@ function MarkdownImage({ alt, uri }: { alt: string; uri: string }) {
             setAspectRatio(width / height);
           }
         }}
+        recyclingKey={resolvedUri}
         source={{ uri: resolvedUri }}
         style={{ aspectRatio, maxWidth: "100%", width: "100%" }}
       />
@@ -1451,7 +1482,13 @@ export const ChatMessage = memo(function ChatMessage({
   ]);
   const isAssistant = message.role === "assistant";
   const isUser = message.role === "user";
-  const align = isUser ? "end" : "start";
+  // While streaming, tokens arrive at 20-60/s and a full MarkdownIt +
+  // refractor re-parse per token janks the JS thread. Deferring lets React
+  // batch tokens and re-parse at a lower priority; stable messages render
+  // the real content with zero behavior change.
+  const deferredContent = useDeferredValue(message.content);
+  const bodyContent =
+    message.status === "streaming" ? deferredContent : message.content;  const align = isUser ? "end" : "start";
   const variant = isUser ? "default" : "ghost";
 
   const markdownStyles = useMemo(
@@ -1582,10 +1619,15 @@ export const ChatMessage = memo(function ChatMessage({
   const openImagePreview = useCallback((target: ChatMediaPreviewTarget) => {
     setImagePreview(target);
   }, [setImagePreview]);
+  // Ref mirror so press handlers stay referentially stable across
+  // workspace refreshes — otherwise every file import busts the memo on
+  // MarkdownContent and re-parses markdown in every visible row.
+  const workspaceFilesRef = useRef(workspaceFiles);
+  workspaceFilesRef.current = workspaceFiles;
   const openVideoFile = useCallback(
     async (video: { displayName: string; mimeType: string; uri: string }) => {
       let localUri = video.uri;
-      const file = workspaceFileFromUrl(video.uri, workspaceFiles);
+      const file = workspaceFileFromUrl(video.uri, workspaceFilesRef.current);
 
       if (file) {
         localUri = resolveWorkspaceFile(file.relativePath).uri;
@@ -1604,11 +1646,11 @@ export const ChatMessage = memo(function ChatMessage({
         mimeType: video.mimeType,
       });
     },
-    [setVideoPreview, workspaceFiles, workspaceRepository],
+    [setVideoPreview, workspaceRepository],
   );
   const handleLinkPress = useCallback(
     (url: string) => {
-      const workspaceFile = workspaceFileFromUrl(url, workspaceFiles);
+      const workspaceFile = workspaceFileFromUrl(url, workspaceFilesRef.current);
 
       if (workspaceFile) {
         if (isVideoWorkspaceFile(workspaceFile)) {
@@ -1649,7 +1691,7 @@ export const ChatMessage = memo(function ChatMessage({
 
       return false;
     },
-    [openVideoFile, setPreviewFile, workspaceFiles, workspaceRepository],
+    [openVideoFile, setPreviewFile, workspaceRepository],
   );
   const mediaContext = useMemo(
     () => ({
@@ -1779,13 +1821,21 @@ export const ChatMessage = memo(function ChatMessage({
 
       const localFile = new File(Paths.cache, `shared-image-${Date.now()}.svg`);
       localFile.create({ intermediates: true, overwrite: true });
-      localFile.write(markup);
+      try {
+        localFile.write(markup);
 
-      await Sharing.shareAsync(localFile.uri, {
-        dialogTitle: "Share SVG image",
-        mimeType: "image/svg+xml",
-        UTI: "public.svg-image",
-      });
+        await Sharing.shareAsync(localFile.uri, {
+          dialogTitle: "Share SVG image",
+          mimeType: "image/svg+xml",
+          UTI: "public.svg-image",
+        });
+      } finally {
+        try {
+          localFile.delete();
+        } catch {
+          // Best-effort cache cleanup.
+        }
+      }
     } catch (error) {
       if (isUserCanceledShare(error)) {
         return;
@@ -2174,7 +2224,7 @@ export const ChatMessage = memo(function ChatMessage({
                     <View className="gap-sp-3">{inlineTermuxContent}</View>
                   ) : message.content.trim() ? (
                     <MarkdownContent
-                      content={message.content}
+                      content={bodyContent}
                       onLinkPress={handleLinkPress}
                       selectable={selectEnabled}
                       styles={markdownStyles}
@@ -2248,7 +2298,9 @@ export const ChatMessage = memo(function ChatMessage({
                           }}
                         >
                           <Image
+                            cachePolicy="memory-disk"
                             contentFit="cover"
+                            recyclingKey={image.id}
                             source={{ uri: image.uri }}
                             style={{
                               aspectRatio: 1,
@@ -2278,7 +2330,7 @@ export const ChatMessage = memo(function ChatMessage({
                     </View>
                   ) : null}
                   {message.status === "streaming" && !hasRunningTermuxRun ? (
-                    <StreamingIndicator idle={<Loading />} />
+                    <StreamingIndicator idle={STREAMING_IDLE_ELEMENT} />
                   ) : null}
                 </View>
               ) : (
@@ -3122,29 +3174,21 @@ function TermuxRunCard({
   const router = useRouter();
   const reduceMotion = useReducedMotion();
   const pulse = useSharedValue(1);
-  const [dotCount, setDotCount] = useState(1);
   const singleLine = command.replace(/\s+/g, " ").trim();
 
   useEffect(() => {
-    if (!running) {
-      setDotCount(1);
+    if (!running || reduceMotion) {
       pulse.value = 1;
       return;
     }
 
-    const interval = setInterval(() => {
-      setDotCount((current) => (current % 3) + 1);
-    }, 420);
-    if (!reduceMotion) {
-      pulse.value = withRepeat(
-        withTiming(0.55, { duration: 700, easing: Easing.inOut(Easing.ease) }),
-        -1,
-        true,
-      );
-    }
+    pulse.value = withRepeat(
+      withTiming(0.55, { duration: 700, easing: Easing.inOut(Easing.ease) }),
+      -1,
+      true,
+    );
 
     return () => {
-      clearInterval(interval);
       cancelAnimation(pulse);
     };
   }, [pulse, reduceMotion, running]);
@@ -3183,7 +3227,7 @@ function TermuxRunCard({
         </Text>
         {running ? (
           <Text className="w-5 font-mono text-sm text-muted-foreground dark:text-muted-foreground-dark">
-            {".".repeat(dotCount)}
+            …
           </Text>
         ) : null}
         <ChevronRight color={theme.textSecondary} size={16} />
