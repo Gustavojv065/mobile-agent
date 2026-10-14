@@ -1441,7 +1441,12 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
     var ctx = null;
     try { ctx = canvas.getContext('2d'); } catch (_) { ctx = null; }
 
-    hijackCanvas(canvas, width, height);
+    try {
+      hijackCanvas(canvas, width, height);
+    } catch (error) {
+      fail('Video canvas setup failed: ' + String((error && error.message) || error));
+      return;
+    }
     post({
       type: 'mobileAgentVideoConfig',
       width: width,
@@ -1473,6 +1478,11 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
       try { window.MOBILE_AGENT_VIDEO_SPEECH = activeSpeechApi; } catch (_) {}
       if (results[1]) runH264(contract, canvas, ctx, width, height, fps, frameCount);
       else runJpeg(contract, canvas, ctx, width, height, fps, frameCount);
+    }).catch(function (error) {
+      // Rejections (decode failure, synth render failure) fail loud.
+      // Never-settling promises still hang until the run aborts — no timer
+      // by design; legit 45 s schedules can need the full prep budget.
+      fail('Video export preparation failed: ' + String((error && error.message) || error));
     });
   }
 

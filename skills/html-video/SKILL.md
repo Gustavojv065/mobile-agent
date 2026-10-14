@@ -616,6 +616,10 @@ inside one canvas scene.
       `getVideoFrame`, tuned `similarity`/`smoothness`/`spill` from
       `previewScene` stills (no eaten subject, no glowing fringe), one keyed
       clip max unless a device measurement cleared more
+- [ ] if the render failed: read the error cause (renderer crash means
+      the document is too heavy — shrink first: shorter duration, lower
+      resolution/fps, smaller clip) and retry the smaller version instead
+      of retrying the same document blindly
 - [ ] if the user asked to recreate/copy a song with synth: declined the full
       cover (plain oscillators can never reproduce a produced track — it will
       sound like a ringtone) and offered the honest alternatives instead: a

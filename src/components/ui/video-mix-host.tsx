@@ -39,6 +39,15 @@ export function MixCheckHost() {
   const warningsRef = useRef<string[]>([]);
   const settledRef = useRef<WeakSet<MixCheckJob>>(new WeakSet());
   const abortCleanupRef = useRef<(() => void) | null>(null);
+  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const startedRef = useRef(false);
+
+  const clearRetries = useCallback(() => {
+    if (retryTimerRef.current) {
+      clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = null;
+    }
+  }, []);
 
   const settle = useCallback(
     (
@@ -63,9 +72,11 @@ export function MixCheckHost() {
     abortCleanupRef.current = null;
     jobRef.current = null;
     warningsRef.current = [];
+    startedRef.current = false;
+    clearRetries();
     setDocumentHtml(null);
     setActive(false);
-  }, []);
+  }, [clearRetries]);
 
   const stopActive = useCallback(
     (error: Error) => {
@@ -83,6 +94,8 @@ export function MixCheckHost() {
     (job: MixCheckJob) => {
       jobRef.current = job;
       warningsRef.current = [];
+      startedRef.current = false;
+      clearRetries();
 
       if (job.signal) {
         const onAbort = () =>
@@ -95,7 +108,7 @@ export function MixCheckHost() {
       setDocumentHtml(job.html);
       setActive(true);
     },
-    [stopActive],
+    [clearRetries, stopActive],
   );
 
   // Drain the queue one check at a time.
@@ -133,19 +146,48 @@ export function MixCheckHost() {
           error: new Error("Mix check was interrupted."),
         });
       }
+      clearRetries();
     };
-  }, [settle]);
+  }, [clearRetries, settle]);
 
-  const attemptStart = (triesLeft: number) => {
+  const attemptStart = useCallback((triesLeft: number) => {
     const job = jobRef.current;
-    if (!job) return;
+    if (!job || startedRef.current) return;
     webViewRef.current?.injectJavaScript(
       `window.__startMobileAgentMixCheck ? (window.__startMobileAgentMixCheck(${JSON.stringify(job.duration)}), true) : false;`,
     );
     if (triesLeft > 0) {
-      setTimeout(() => attemptStart(triesLeft - 1), START_RETRY_MS);
+      retryTimerRef.current = setTimeout(
+        () => attemptStart(triesLeft - 1),
+        START_RETRY_MS,
+      );
     }
-  };
+  }, []);
+
+  const handleRenderProcessGone = useCallback(
+    (event: { nativeEvent: { didCrash?: boolean } }) => {
+      const job = jobRef.current;
+      if (!job) return;
+      stopActive(
+        new Error(
+          event.nativeEvent.didCrash === true
+            ? "Mix check failed: the page renderer crashed (likely out of memory). Try a smaller document."
+            : "Mix check failed: the page renderer was killed. Try a smaller document.",
+        ),
+      );
+    },
+    [stopActive],
+  );
+
+  const handleWebViewError = useCallback(() => {
+    const job = jobRef.current;
+    if (!job || startedRef.current) return;
+    stopActive(
+      new Error(
+        "Mix check failed: the page could not load. Try a smaller document.",
+      ),
+    );
+  }, [stopActive]);
 
   const handleMessage = useCallback(
     (event: WebViewMessageEvent) => {
@@ -158,6 +200,7 @@ export function MixCheckHost() {
         return;
       }
       if (message.type === "mobileAgentVideoAudioWarning" && message.reason) {
+        startedRef.current = true;
         warningsRef.current.push(message.reason);
       } else if (message.type === "mobileAgentMixDone") {
         settle(job, {
@@ -206,6 +249,9 @@ export function MixCheckHost() {
         originWhitelist={["http://*", "https://*"]}
         onLoadEnd={() => attemptStart(START_ATTEMPTS)}
         onMessage={handleMessage}
+        onError={handleWebViewError}
+        onHttpError={handleWebViewError}
+        onRenderProcessGone={handleRenderProcessGone}
         source={{
           html: `${documentHtml}\n<script>${VIDEO_EXPORT_SCRIPT}</script>\n<script>${VIDEO_MIX_SCRIPT}</script>\n`,
         }}

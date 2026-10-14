@@ -47,6 +47,15 @@ export function VideoRenderHost() {
   const abortCleanupRef = useRef<(() => void) | null>(null);
   const keepAwakeRef = useRef(false);
   const lastPercentRef = useRef(-1);
+  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const configReceivedRef = useRef(false);
+
+  const clearRetries = useCallback(() => {
+    if (retryTimerRef.current) {
+      clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = null;
+    }
+  }, []);
 
   const settle = useCallback(
     (
@@ -89,11 +98,13 @@ export function VideoRenderHost() {
     controllerRef.current = null;
     jobRef.current = null;
     lastPercentRef.current = -1;
+    configReceivedRef.current = false;
+    clearRetries();
     setVideoRenderStatus(null);
     setDocumentHtml(null);
     setActive(false);
     releaseKeepAwake();
-  }, [releaseKeepAwake]);
+  }, [clearRetries, releaseKeepAwake]);
 
   const stopActive = useCallback(
     (error: Error) => {
@@ -121,11 +132,26 @@ export function VideoRenderHost() {
       }
 
       abortCurrentFile();
-      const file = new File(Paths.cache, `video-${Date.now()}.mp4`);
-      file.create({ overwrite: true, intermediates: true });
+      let file: File;
+      try {
+        file = new File(Paths.cache, `video-${Date.now()}.mp4`);
+        file.create({ overwrite: true, intermediates: true });
+      } catch (error) {
+        settle(job, {
+          type: "reject",
+          error: new Error(
+            `Video render could not create its output file: ${String(
+              (error as Error)?.message ?? error,
+            )}`,
+          ),
+        });
+        return;
+      }
       fileRef.current = file;
       jobRef.current = job;
       lastPercentRef.current = -1;
+      configReceivedRef.current = false;
+      clearRetries();
 
       const controller = new VideoExportController({
         outputPath: file.uri,
@@ -153,6 +179,9 @@ export function VideoRenderHost() {
           abortCurrentFile();
           finishJob();
         },
+        onConfig: () => {
+          configReceivedRef.current = true;
+        },
       });
       controllerRef.current = controller;
 
@@ -172,7 +201,7 @@ export function VideoRenderHost() {
         void activateKeepAwakeAsync(KEEP_AWAKE_TAG).catch(() => {});
       }
     },
-    [abortCurrentFile, finishJob, settle, stopActive],
+    [abortCurrentFile, clearRetries, finishJob, settle, stopActive],
   );
 
   // Drain the queue one render at a time.
@@ -212,19 +241,56 @@ export function VideoRenderHost() {
       }
       void controllerRef.current?.cancel();
       abortCurrentFile();
+      clearRetries();
       setVideoRenderStatus(null);
       releaseKeepAwake();
     };
-  }, [abortCurrentFile, releaseKeepAwake, settle]);
+  }, [abortCurrentFile, clearRetries, releaseKeepAwake, settle]);
 
-  const attemptStart = (triesLeft: number) => {
-    webViewRef.current?.injectJavaScript(
-      "window.__startMobileAgentVideoExport ? (window.__startMobileAgentVideoExport(), true) : false;",
+  const attemptStart = useCallback(
+    (triesLeft: number) => {
+      if (!jobRef.current) return;
+      // Skip retries once the page is alive — repeated start() calls are
+      // harmless (running guard) but waste bridge traffic.
+      if (configReceivedRef.current) return;
+      webViewRef.current?.injectJavaScript(
+        "window.__startMobileAgentVideoExport ? (window.__startMobileAgentVideoExport(), true) : false;",
+      );
+      if (triesLeft > 0) {
+        retryTimerRef.current = setTimeout(
+          () => attemptStart(triesLeft - 1),
+          200,
+        );
+      }
+    },
+    [],
+  );
+
+  const handleRenderProcessGone = useCallback(
+    (event: { nativeEvent: { didCrash?: boolean } }) => {
+      const job = jobRef.current;
+      if (!job) return;
+      const crashed = event.nativeEvent.didCrash === true;
+      stopActive(
+        new Error(
+          crashed
+            ? "Video render failed: the page renderer crashed (likely out of memory from large inlined clips). Try a smaller clip, lower resolution, or shorter duration."
+            : "Video render failed: the page renderer was killed. Try a smaller clip, lower resolution, or shorter duration.",
+        ),
+      );
+    },
+    [stopActive],
+  );
+
+  const handleWebViewError = useCallback(() => {
+    const job = jobRef.current;
+    if (!job || configReceivedRef.current) return;
+    stopActive(
+      new Error(
+        "Video render failed: the page could not load. Try a smaller document or shorter duration.",
+      ),
     );
-    if (triesLeft > 0) {
-      setTimeout(() => attemptStart(triesLeft - 1), 200);
-    }
-  };
+  }, [stopActive]);
 
   const handleMessage = useCallback((event: WebViewMessageEvent) => {
     void controllerRef.current?.handleMessage(event);
@@ -252,6 +318,9 @@ export function VideoRenderHost() {
         originWhitelist={["http://*", "https://*"]}
         onLoadEnd={() => attemptStart(8)}
         onMessage={handleMessage}
+        onError={handleWebViewError}
+        onHttpError={handleWebViewError}
+        onRenderProcessGone={handleRenderProcessGone}
         source={{ html: buildVideoExportDocument(documentHtml) }}
         style={{ backgroundColor: "transparent", flex: 1 }}
       />

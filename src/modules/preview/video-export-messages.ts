@@ -64,6 +64,7 @@ export type VideoExportControllerOptions = {
   onFinishing: () => void;
   onResult: (result: VideoExportResult) => void | Promise<void>;
   onError: (message: string, kind?: "unsupported") => void;
+  onConfig?: (config: VideoExportConfigMessage) => void;
 };
 
 type VideoExportSession = "idle" | "recording" | "finishing" | "done" | "failed";
@@ -95,6 +96,7 @@ export class VideoExportController {
   private readonly onFinishing: () => void;
   private readonly onResult: VideoExportControllerOptions["onResult"];
   private readonly onError: VideoExportControllerOptions["onError"];
+  private readonly onConfig?: (config: VideoExportConfigMessage) => void;
 
   constructor(options: VideoExportControllerOptions) {
     this.module = options.module;
@@ -103,6 +105,17 @@ export class VideoExportController {
     this.onFinishing = options.onFinishing;
     this.onResult = options.onResult;
     this.onError = options.onError;
+    this.onConfig = options.onConfig;
+  }
+
+  /** True once the page posted its export config (recorder started). */
+  hasConfig(): boolean {
+    return this.config !== null;
+  }
+
+  /** True once the native session is recording frames. */
+  isRecording(): boolean {
+    return this.session === "recording";
   }
 
   handleMessage(event: WebViewMessageEvent): void {
@@ -149,6 +162,11 @@ export class VideoExportController {
     switch (message.type) {
       case "mobileAgentVideoConfig": {
         this.config = message;
+        try {
+          this.onConfig?.(message);
+        } catch {
+          // Progress callbacks must never break the export chain.
+        }
         return;
       }
       case "mobileAgentVideoCsd": {

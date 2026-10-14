@@ -43,6 +43,15 @@ export function ScenePreviewHost() {
   const framesRef = useRef<ScenePreviewFrame[]>([]);
   const settledRef = useRef<WeakSet<ScenePreviewJob>>(new WeakSet());
   const abortCleanupRef = useRef<(() => void) | null>(null);
+  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const startedRef = useRef(false);
+
+  const clearRetries = useCallback(() => {
+    if (retryTimerRef.current) {
+      clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = null;
+    }
+  }, []);
 
   const settle = useCallback(
     (
@@ -67,9 +76,11 @@ export function ScenePreviewHost() {
     abortCleanupRef.current = null;
     jobRef.current = null;
     framesRef.current = [];
+    startedRef.current = false;
+    clearRetries();
     setDocumentHtml(null);
     setActive(false);
-  }, []);
+  }, [clearRetries]);
 
   const stopActive = useCallback(
     (error: Error) => {
@@ -87,6 +98,8 @@ export function ScenePreviewHost() {
     (job: ScenePreviewJob) => {
       jobRef.current = job;
       framesRef.current = [];
+      startedRef.current = false;
+      clearRetries();
 
       if (job.signal) {
         const onAbort = () =>
@@ -99,7 +112,7 @@ export function ScenePreviewHost() {
       setDocumentHtml(job.html);
       setActive(true);
     },
-    [stopActive],
+    [clearRetries, stopActive],
   );
 
   // Drain the queue one preview at a time.
@@ -137,19 +150,48 @@ export function ScenePreviewHost() {
           error: new Error("Scene preview was interrupted."),
         });
       }
+      clearRetries();
     };
-  }, [settle]);
+  }, [clearRetries, settle]);
 
-  const attemptStart = (triesLeft: number) => {
+  const attemptStart = useCallback((triesLeft: number) => {
     const job = jobRef.current;
-    if (!job) return;
+    if (!job || startedRef.current) return;
     webViewRef.current?.injectJavaScript(
       `window.__startMobileAgentScenePreview ? (window.__startMobileAgentScenePreview(${JSON.stringify(job.times)}), true) : false;`,
     );
     if (triesLeft > 0) {
-      setTimeout(() => attemptStart(triesLeft - 1), START_RETRY_MS);
+      retryTimerRef.current = setTimeout(
+        () => attemptStart(triesLeft - 1),
+        START_RETRY_MS,
+      );
     }
-  };
+  }, []);
+
+  const handleRenderProcessGone = useCallback(
+    (event: { nativeEvent: { didCrash?: boolean } }) => {
+      const job = jobRef.current;
+      if (!job) return;
+      stopActive(
+        new Error(
+          event.nativeEvent.didCrash === true
+            ? "Scene preview failed: the page renderer crashed (likely out of memory). Try a smaller document or fewer timestamps."
+            : "Scene preview failed: the page renderer was killed. Try a smaller document.",
+        ),
+      );
+    },
+    [stopActive],
+  );
+
+  const handleWebViewError = useCallback(() => {
+    const job = jobRef.current;
+    if (!job || startedRef.current) return;
+    stopActive(
+      new Error(
+        "Scene preview failed: the page could not load. Try a smaller document.",
+      ),
+    );
+  }, [stopActive]);
 
   const handleMessage = useCallback(
     (event: WebViewMessageEvent) => {
@@ -160,6 +202,13 @@ export function ScenePreviewHost() {
         message = JSON.parse(event.nativeEvent.data) as PreviewMessage;
       } catch {
         return;
+      }
+      if (
+        message.type === "mobileAgentPreviewFrame" ||
+        message.type === "mobileAgentPreviewDone" ||
+        message.type === "mobileAgentPreviewError"
+      ) {
+        startedRef.current = true;
       }
       if (message.type === "mobileAgentPreviewFrame" && message.frame) {
         framesRef.current.push(message.frame);
@@ -208,6 +257,9 @@ export function ScenePreviewHost() {
         originWhitelist={["http://*", "https://*"]}
         onLoadEnd={() => attemptStart(START_ATTEMPTS)}
         onMessage={handleMessage}
+        onError={handleWebViewError}
+        onHttpError={handleWebViewError}
+        onRenderProcessGone={handleRenderProcessGone}
         source={{ html: buildScenePreviewDocument(documentHtml) }}
         style={{ backgroundColor: "transparent", flex: 1 }}
       />

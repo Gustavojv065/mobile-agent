@@ -234,6 +234,57 @@ describe("VideoExportController — audio track", () => {
   });
 });
 
+describe("VideoExportController — config tracking", () => {
+  it("fires onConfig and reports hasConfig/isRecording through the session", async () => {
+    const module = fakeModule();
+    const onConfig = vi.fn();
+    const controller = new VideoExportController({
+      outputPath: "file:///cache/video.mp4",
+      module,
+      onProgress: vi.fn(),
+      onFinishing: vi.fn(),
+      onResult: vi.fn(),
+      onError: vi.fn(),
+      onConfig,
+    });
+
+    expect(controller.hasConfig()).toBe(false);
+    expect(controller.isRecording()).toBe(false);
+
+    post(controller, { type: "mobileAgentVideoConfig", width: 1280, height: 720, fps: 30, frameCount: 300, duration: 10 });
+    await controller.whenIdle();
+
+    expect(controller.hasConfig()).toBe(true);
+    expect(controller.isRecording()).toBe(false);
+    expect(onConfig).toHaveBeenCalledTimes(1);
+    expect(onConfig).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "mobileAgentVideoConfig", width: 1280 }),
+    );
+
+    post(controller, { type: "mobileAgentVideoCsd", spsHex: "6742001f96", ppsHex: "68ce3c80" });
+    await controller.whenIdle();
+
+    expect(controller.isRecording()).toBe(true);
+  });
+
+  it("works without onConfig (host paths that do not need start tracking)", async () => {
+    const module = fakeModule();
+    const controller = new VideoExportController({
+      outputPath: "file:///cache/video.mp4",
+      module,
+      onProgress: vi.fn(),
+      onFinishing: vi.fn(),
+      onResult: vi.fn(),
+      onError: vi.fn(),
+    });
+
+    post(controller, { type: "mobileAgentVideoConfig", width: 640, height: 360, fps: 24, frameCount: 240, duration: 10 });
+    await controller.whenIdle();
+
+    expect(controller.hasConfig()).toBe(true);
+  });
+});
+
 describe("VideoExportController — failures", () => {
   it("reports unsupported pages without starting a session", async () => {
     const module = fakeModule();
