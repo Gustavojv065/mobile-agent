@@ -47,7 +47,10 @@ export function createReadTool({
         }));
 
         // Reading a single section: return only that section's Markdown.
-        if (section !== undefined) {
+        // Plain files have no sections: fall through to the full-text path
+        // with a note instead of failing, so callers asking for `section`
+        // out of habit still get the content.
+        if (section !== undefined && sectionSummaries.length > 0) {
           const target = await workspaceService.readDocumentSection(
             file,
             section,
@@ -117,6 +120,11 @@ export function createReadTool({
               }
             : {}),
           ...(sectionSummaries.length > 0 ? { sections: sectionSummaries } : {}),
+          ...(section !== undefined && sectionSummaries.length === 0
+            ? {
+                note: "This file has no heading sections; `section` applies only to sectioned documents, so the full text was returned instead.",
+              }
+            : {}),
           ...(file.sourceSpec
             ? { sourceSpec: parseStoredSourceSpec(file.sourceSpec) ?? {} }
             : {}),

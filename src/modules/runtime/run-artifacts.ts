@@ -78,6 +78,8 @@ export function buildModelPromptArtifact(input: {
     `File context source: ${input.run.fileContextSource ?? "workspace"}`,
     `Supports tools: ${input.model.supportsTools ? "yes" : "no"}`,
     `Supports image input: ${input.model.supportsImageInput ? "yes" : "no"}`,
+    `Supports audio input: ${input.model.supportsAudioInput ? "yes" : "no"}`,
+    `Supports video input: ${input.model.supportsVideoInput ? "yes" : "no"}`,
     `Supports image generation: ${
       input.model.supportsImageGeneration ? "yes" : "no"
     }`,

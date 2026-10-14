@@ -556,6 +556,25 @@ describe("read tool sections", () => {
       read.execute!({ fileId: created.id, section: 9 }, {} as never),
     ).rejects.toThrow(/no section at index 9/);
   });
+
+  it("returns full text with a note when section is asked of a plain file", async () => {
+    const { repository } = makeRepository();
+    const service = createWorkspaceFileService(repository);
+    const created = await service.createTextFile({
+      content: "<html><body><canvas></canvas></body></html>",
+      mimeType: "text/html",
+      name: "scene.html",
+    });
+    const read = createReadTool({ repository });
+
+    const result = (await read.execute!(
+      { fileId: created.id, section: 0 },
+      {} as never,
+    )) as { content: string; note?: string };
+
+    expect(result.content).toContain("<canvas>");
+    expect(result.note).toMatch(/no heading sections/);
+  });
 });
 
 describe("updateDocument tool sections", () => {

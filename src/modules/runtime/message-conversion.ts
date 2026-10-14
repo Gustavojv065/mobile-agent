@@ -8,14 +8,31 @@ import {
 import type { MessageRole, StoredMessage, WorkspaceFile } from "@/core/types/app-state";
 
 const IMAGE_MIME_PREFIXES = ["image/"];
+const AUDIO_MIME_PREFIXES = ["audio/"];
+const VIDEO_MIME_PREFIXES = ["video/"];
 
-export function isImageMimeType(mimeType: string | null | undefined): boolean {
+function mimeStartsWith(
+  mimeType: string | null | undefined,
+  prefixes: string[],
+) {
   if (!mimeType) {
     return false;
   }
 
   const lower = mimeType.trim().toLowerCase();
-  return IMAGE_MIME_PREFIXES.some((prefix) => lower.startsWith(prefix));
+  return prefixes.some((prefix) => lower.startsWith(prefix));
+}
+
+export function isImageMimeType(mimeType: string | null | undefined): boolean {
+  return mimeStartsWith(mimeType, IMAGE_MIME_PREFIXES);
+}
+
+export function isAudioMimeType(mimeType: string | null | undefined): boolean {
+  return mimeStartsWith(mimeType, AUDIO_MIME_PREFIXES);
+}
+
+export function isVideoMimeType(mimeType: string | null | undefined): boolean {
+  return mimeStartsWith(mimeType, VIDEO_MIME_PREFIXES);
 }
 
 function isTextFile(file: Pick<WorkspaceFile, "displayName" | "mimeType">) {
@@ -46,7 +63,10 @@ export function partitionSelectedFiles(files: WorkspaceFile[]): PartitionedFiles
   return { textFiles, imageFiles, binaryFiles };
 }
 
-async function buildWorkspaceImageParts(files: WorkspaceFile[]) {
+async function buildWorkspaceMediaParts(
+  files: WorkspaceFile[],
+  fallbackMediaType = "application/octet-stream",
+) {
   return Promise.all(
     files.map(async (file) => {
       const localFile = resolveWorkspaceFile(file.relativePath);
@@ -58,7 +78,7 @@ async function buildWorkspaceImageParts(files: WorkspaceFile[]) {
       return {
         type: "file" as const,
         filename: file.displayName,
-        mediaType: file.mimeType ?? "image/png",
+        mediaType: file.mimeType ?? fallbackMediaType,
         data: {
           type: "data" as const,
           data: await localFile.bytes(),
@@ -67,6 +87,13 @@ async function buildWorkspaceImageParts(files: WorkspaceFile[]) {
     }),
   );
 }
+
+/**
+ * Direct model input is capped: huge audio/video payloads blow up request
+ * size and context. Larger files stay usable through the transcribeAudio,
+ * analyzeAudio, and getVideoFrame tools instead.
+ */
+export const MAX_DIRECT_MEDIA_BYTES = 25 * 1024 * 1024;
 
 function parseStoredContent(
   message: StoredMessage,
@@ -118,10 +145,12 @@ function buildAssistantContent(
 export async function convertStoredMessagesToModelMessages(input: {
   messages: StoredMessage[];
   supportsImageInput: boolean;
+  supportsAudioInput: boolean;
+  supportsVideoInput: boolean;
   workspaceFilesById: Map<string, WorkspaceFile>;
 }) {
   const converted: ModelMessage[] = [];
-  const unsupportedImageAttachments: WorkspaceFile[] = [];
+  const unsupportedAttachments: WorkspaceFile[] = [];
 
   for (const message of input.messages.filter(
     (item): item is StoredMessage & { role: MessageRole } =>
@@ -150,9 +179,19 @@ export async function convertStoredMessagesToModelMessages(input: {
     const selectedFiles = (message.metadata?.selectedFileIds ?? [])
       .map((fileId) => input.workspaceFilesById.get(fileId))
       .filter((file): file is WorkspaceFile => file !== undefined);
-    const { imageFiles } = partitionSelectedFiles(selectedFiles);
+    const { binaryFiles, imageFiles } = partitionSelectedFiles(selectedFiles);
+    const audioFiles = binaryFiles.filter((file) =>
+      isAudioMimeType(file.mimeType),
+    );
+    const videoFiles = binaryFiles.filter((file) =>
+      isVideoMimeType(file.mimeType),
+    );
 
-    if (imageFiles.length === 0) {
+    if (
+      imageFiles.length === 0 &&
+      audioFiles.length === 0 &&
+      videoFiles.length === 0
+    ) {
       converted.push({
         role: message.role,
         content: parsedContent,
@@ -172,9 +211,30 @@ export async function convertStoredMessagesToModelMessages(input: {
     }
 
     if (input.supportsImageInput) {
-      parts.push(...(await buildWorkspaceImageParts(imageFiles)));
+      parts.push(
+        ...(await buildWorkspaceMediaParts(imageFiles, "image/png")),
+      );
     } else {
-      unsupportedImageAttachments.push(...imageFiles);
+      unsupportedAttachments.push(...imageFiles);
+    }
+
+    const sendable = (files: WorkspaceFile[]) =>
+      files.filter((file) => (file.size ?? 0) <= MAX_DIRECT_MEDIA_BYTES);
+    const oversized = (files: WorkspaceFile[]) =>
+      files.filter((file) => (file.size ?? 0) > MAX_DIRECT_MEDIA_BYTES);
+
+    if (input.supportsAudioInput) {
+      parts.push(...(await buildWorkspaceMediaParts(sendable(audioFiles))));
+      unsupportedAttachments.push(...oversized(audioFiles));
+    } else {
+      unsupportedAttachments.push(...audioFiles);
+    }
+
+    if (input.supportsVideoInput) {
+      parts.push(...(await buildWorkspaceMediaParts(sendable(videoFiles))));
+      unsupportedAttachments.push(...oversized(videoFiles));
+    } else {
+      unsupportedAttachments.push(...videoFiles);
     }
 
     converted.push({
@@ -190,6 +250,6 @@ export async function convertStoredMessagesToModelMessages(input: {
 
   return {
     messages: converted,
-    unsupportedImageAttachments,
+    unsupportedAttachments,
   };
 }

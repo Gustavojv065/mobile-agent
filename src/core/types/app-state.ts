@@ -237,6 +237,8 @@ export type ModelUsageSnapshot = {
 export type ModelCapabilities = {
   imageGeneration: boolean;
   imageInput: boolean;
+  audioInput: boolean;
+  videoInput: boolean;
   reasoning: boolean;
   tools: boolean;
 };
@@ -595,6 +597,8 @@ export type ResolvedModel = {
   active: boolean;
   supportsTools: boolean;
   supportsImageInput: boolean;
+  supportsAudioInput: boolean;
+  supportsVideoInput: boolean;
   supportsImageGeneration: boolean;
   supportsReasoning: boolean;
   transport: ModelTransport;
@@ -616,6 +620,8 @@ export type ResolvedConfig = {
   currentModel: ResolvedModel | null;
   currentModelSupportsImageGeneration: boolean;
   currentModelSupportsImageInput: boolean;
+  currentModelSupportsAudioInput: boolean;
+  currentModelSupportsVideoInput: boolean;
   currentModelSupportsTools: boolean;
   databaseMode: DatabaseMode;
   databaseUrl: string | null;

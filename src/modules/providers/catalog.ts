@@ -111,6 +111,8 @@ export function resolveConfiguredModel(input: {
     capabilities: profile.capabilities,
     supportsTools: profile.capabilities.tools,
     supportsImageInput: profile.capabilities.imageInput,
+    supportsAudioInput: profile.capabilities.audioInput,
+    supportsVideoInput: profile.capabilities.videoInput,
     supportsImageGeneration: profile.capabilities.imageGeneration,
     supportsReasoning: profile.capabilities.reasoning,
     transport: profile.transport,

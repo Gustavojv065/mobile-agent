@@ -122,16 +122,68 @@ function formatBytes(bytes: number): string {
 
 /**
  * Best-effort read of the contract-level `duration` (seconds) from the HTML.
- * Takes the first `duration:` after the `MOBILE_AGENT_VIDEO` marker, which by
- * contract convention is the top-level field (audio cue timings come later).
- * Returns null when it cannot be determined — callers must treat that as
- * "unknown", never as a mismatch.
+ *
+ * Mirrors JS semantics instead of grabbing the first `duration:` in sight:
+ * an explicit post-creation override (`MOBILE_AGENT_VIDEO.duration = 21`)
+ * wins outright, otherwise the LAST top-level key of the contract object
+ * literal wins (duplicate keys). Nested cue timings (audio tracks live
+ * deeper) and quoted text are ignored. Returns null when nothing can be
+ * determined — callers must treat that as "unknown", never as a mismatch.
  */
 export function readContractDuration(html: string): number | null {
   const marker = html.indexOf("MOBILE_AGENT_VIDEO");
   if (marker === -1) return null;
-  const match = /duration\s*:\s*(\d+(?:\.\d+)?)/.exec(html.slice(marker));
-  if (!match) return null;
-  const value = Number(match[1]);
-  return Number.isFinite(value) ? value : null;
+  const tail = html.slice(marker);
+
+  let override: number | null = null;
+  const assignRe = /MOBILE_AGENT_VIDEO\s*\.\s*duration\s*=\s*(\d+(?:\.\d+)?)/g;
+  let assignMatch: RegExpExecArray | null;
+  while ((assignMatch = assignRe.exec(tail)) !== null) {
+    const value = Number(assignMatch[1]);
+    if (Number.isFinite(value)) override = value;
+  }
+  if (override != null) return override;
+
+  // Strip strings/comments so quoted text can't fake a key, then walk the
+  // contract literal tracking brace depth. Sticky regexes keep this linear
+  // even for large documents.
+  const code = tail.replace(
+    /'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"|`(?:[^`\\]|\\.)*`|\/\/[^\n]*|\/\*[\s\S]*?\*\//g,
+    " ",
+  );
+  const literalOpen = code.search(/MOBILE_AGENT_VIDEO\s*=\s*\{/);
+  if (literalOpen === -1) return null;
+
+  const keyRe = /duration\s*:/gy;
+  const numRe = /duration\s*:\s*(\d+(?:\.\d+)?)/gy;
+  let depth = 0;
+  let last: number | null = null;
+  const start = code.indexOf("{", literalOpen);
+  for (let i = start; i < code.length; i += 1) {
+    const ch = code[i];
+    if (ch === "{") {
+      depth += 1;
+      continue;
+    }
+    if (ch === "}") {
+      depth -= 1;
+      if (depth <= 0) break;
+      continue;
+    }
+    if (depth !== 1 || ch !== "d") continue;
+    keyRe.lastIndex = i;
+    if (!keyRe.exec(code)) continue;
+    // Object-literal keys follow `{` or `,` — skips ternaries and labels.
+    let j = i - 1;
+    while (j >= 0 && /\s/.test(code[j] ?? "")) j -= 1;
+    const prev = code[j] ?? "";
+    if (prev !== "{" && prev !== ",") continue;
+    numRe.lastIndex = i;
+    const num = numRe.exec(code);
+    if (num) {
+      const value = Number(num[1]);
+      if (Number.isFinite(value)) last = value;
+    }
+  }
+  return last;
 }

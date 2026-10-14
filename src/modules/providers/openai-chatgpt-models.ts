@@ -110,6 +110,8 @@ export function mapChatGptRemoteModel(
     capabilities: {
       tools: true,
       imageInput: modalities.includes("image"),
+      audioInput: modalities.includes("audio"),
+      videoInput: modalities.includes("video"),
       imageGeneration: false,
       reasoning: (model.supported_reasoning_levels?.length ?? 0) > 0,
     },

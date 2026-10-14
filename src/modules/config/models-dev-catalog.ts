@@ -285,6 +285,8 @@ export function getModelsDevDefinitionsForProvider(
           imageGeneration,
           imageInput:
             inputModalities.includes("image") || model.attachment === true,
+          audioInput: inputModalities.includes("audio"),
+          videoInput: inputModalities.includes("video"),
           reasoning: model.reasoning === true ? true : undefined,
           tools: model.tool_call === true,
         },

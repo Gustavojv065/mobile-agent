@@ -73,6 +73,14 @@ const catalog: Record<string, ModelsDevProvider> = {
         modalities: { input: ["text"], output: ["audio"] },
         name: "Fish Audio S1",
       },
+      "google/gemini-audio": {
+        modalities: { input: ["text", "audio"], output: ["text"] },
+        name: "Gemini Audio",
+      },
+      "google/veo": {
+        modalities: { input: ["text", "video"], output: ["text"] },
+        name: "Veo Chat",
+      },
       "klingai/kling-v2.6-t2v": {
         modalities: { input: ["text"], output: ["video"] },
         name: "Kling Video",
@@ -205,7 +213,25 @@ describe("getModelsDevDefinitionsForProvider", () => {
     );
     expect(nemotron?.capabilities?.tools).toBe(true);
     expect(nemotron?.capabilities?.reasoning).toBe(true);
+    expect(nemotron?.capabilities?.audioInput).toBe(false);
+    expect(nemotron?.capabilities?.videoInput).toBe(false);
     expect(nemotron?.contextWindow).toBe(256000);
+  });
+
+  it("maps audio and video input modalities from models.dev", () => {
+    const definitions = getModelsDevDefinitionsForProvider(
+      catalog,
+      makeProvider({ id: "vercel", family: "openai-compatible" }),
+    );
+    const byId = new Map(definitions.map((definition) => [definition.id, definition]));
+    expect(byId.get("google/gemini-audio")?.capabilities?.audioInput).toBe(
+      true,
+    );
+    expect(byId.get("google/gemini-audio")?.capabilities?.videoInput).toBe(
+      false,
+    );
+    expect(byId.get("google/veo")?.capabilities?.videoInput).toBe(true);
+    expect(byId.get("google/veo")?.capabilities?.audioInput).toBe(false);
   });
 
   it("serves every cloud provider family but not ollama or on-device", () => {
@@ -243,6 +269,8 @@ describe("getModelsDevDefinitionsForProvider", () => {
     const byId = new Map(definitions.map((definition) => [definition.id, definition]));
 
     expect([...byId.keys()].sort()).toEqual([
+      "google/gemini-audio",
+      "google/veo",
       "meta/llama-4-scout",
       "openai/gpt-5",
       "openai/gpt-image-1",

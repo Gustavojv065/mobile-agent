@@ -54,7 +54,11 @@ import {
 } from "@/modules/providers/openai-chatgpt-oauth";
 import { getOpenAiOAuthFlavor } from "@/modules/providers/openai";
 import { getSupportedProviderDefinition } from "@/modules/providers";
-import { partitionSelectedFiles } from "@/modules/runtime/message-conversion";
+import {
+  isAudioMimeType,
+  isVideoMimeType,
+  partitionSelectedFiles,
+} from "@/modules/runtime/message-conversion";
 import { modelRuntime } from "@/modules/runtime/model-runtime";
 import { createExecutionTimelineEvent } from "@/modules/runtime/run-artifacts";
 import {
@@ -4303,8 +4307,40 @@ Your output must be:
             );
         }
 
+        const audioFiles = binaryFiles.filter((file) =>
+            isAudioMimeType(file.mimeType),
+        );
+        const videoFiles = binaryFiles.filter((file) =>
+            isVideoMimeType(file.mimeType),
+        );
+        const otherBinaryFiles = binaryFiles.filter(
+            (file) =>
+                !isAudioMimeType(file.mimeType) &&
+                !isVideoMimeType(file.mimeType),
+        );
+
         if (
-            (binaryFiles.length > 0 || fileContextSource === "external-folder") &&
+            audioFiles.length > 0 &&
+            !model.supportsAudioInput &&
+            !model.supportsTools
+        ) {
+            failSend(
+                "The current model does not support audio input. Switch to an audio-capable model, or use a tool-capable model with transcribeAudio / analyzeAudio.",
+            );
+        }
+
+        if (
+            videoFiles.length > 0 &&
+            !model.supportsVideoInput &&
+            !model.supportsTools
+        ) {
+            failSend(
+                "The current model does not support video input. Switch to a video-capable model, or use a tool-capable model with getVideoFrame.",
+            );
+        }
+
+        if (
+            (otherBinaryFiles.length > 0 || fileContextSource === "external-folder") &&
             !model.supportsTools
         ) {
             failSend(
@@ -4909,6 +4945,10 @@ export function useConfig() {
             context.resolvedConfig.currentModelSupportsImageGeneration,
         currentModelSupportsImageInput:
             context.resolvedConfig.currentModelSupportsImageInput,
+        currentModelSupportsAudioInput:
+            context.resolvedConfig.currentModelSupportsAudioInput,
+        currentModelSupportsVideoInput:
+            context.resolvedConfig.currentModelSupportsVideoInput,
         currentModelSupportsTools: context.resolvedConfig.currentModelSupportsTools,
         importFiles: context.importFiles,
         memory: context.memory,

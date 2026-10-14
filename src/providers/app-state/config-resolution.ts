@@ -371,6 +371,8 @@ export async function resolveConfig(
     currentModelSupportsImageGeneration:
       currentModel?.supportsImageGeneration ?? false,
     currentModelSupportsImageInput: currentModel?.supportsImageInput ?? false,
+    currentModelSupportsAudioInput: currentModel?.supportsAudioInput ?? false,
+    currentModelSupportsVideoInput: currentModel?.supportsVideoInput ?? false,
     currentModelSupportsTools:
       (currentModel?.supportsTools ?? false) &&
       (hasEnabledWorkspaceTools(input.settings.builtInToolSettings) ||

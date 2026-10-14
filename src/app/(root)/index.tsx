@@ -122,7 +122,11 @@ import {
   getProviderUsage,
   type ProviderUsage,
 } from "@/modules/providers/openai-usage";
-import { partitionSelectedFiles } from "@/modules/runtime/message-conversion";
+import {
+  isAudioMimeType,
+  isVideoMimeType,
+  partitionSelectedFiles,
+} from "@/modules/runtime/message-conversion";
 
 const REASONING_EFFORT_OPTIONS: {
   value: ReasoningEffort;
@@ -231,6 +235,8 @@ export default function Screen() {
     currentModel,
     currentModelSupportsImageGeneration,
     currentModelSupportsImageInput,
+    currentModelSupportsAudioInput,
+    currentModelSupportsVideoInput,
     currentModelSupportsTools,
     currentSelectedMcpServerIds,
     mcpServers,
@@ -615,6 +621,8 @@ export default function Screen() {
                 skills={skills}
                 supportsImageGeneration={currentModelSupportsImageGeneration}
                 supportsImageInput={currentModelSupportsImageInput}
+                supportsAudioInput={currentModelSupportsAudioInput}
+                supportsVideoInput={currentModelSupportsVideoInput}
                 supportsTools={currentModelSupportsTools}
                 mcpServers={mcpServers}
                 selectedMcpServerIds={currentSelectedMcpServerIds}
@@ -1181,6 +1189,8 @@ const ChatInput = memo(function ChatInput({
   skills,
   supportsImageGeneration,
   supportsImageInput,
+  supportsAudioInput,
+  supportsVideoInput,
   supportsTools,
   reasoningEffort,
   savedPrompts,
@@ -1240,6 +1250,8 @@ const ChatInput = memo(function ChatInput({
   skills: SkillConfig[];
   supportsImageGeneration: boolean;
   supportsImageInput: boolean;
+  supportsAudioInput: boolean;
+  supportsVideoInput: boolean;
   supportsTools: boolean;
   reasoningEffort: ReasoningEffort;
   savedPrompts: SavedPrompt[];
@@ -1553,7 +1565,27 @@ const ChatInput = memo(function ChatInput({
 
   const canAttachSelectedFiles =
     !(selectedAttachmentBuckets.imageFiles.length > 0 && !supportsImageInput) &&
-    !(selectedAttachmentBuckets.binaryFiles.length > 0 && !supportsTools);
+    !(
+      selectedAttachmentBuckets.binaryFiles.some(
+        (file) =>
+          !isAudioMimeType(file.mimeType) &&
+          !isVideoMimeType(file.mimeType),
+      ) && !supportsTools
+    ) &&
+    !(
+      selectedAttachmentBuckets.binaryFiles.some((file) =>
+        isAudioMimeType(file.mimeType),
+      ) &&
+      !supportsAudioInput &&
+      !supportsTools
+    ) &&
+    !(
+      selectedAttachmentBuckets.binaryFiles.some((file) =>
+        isVideoMimeType(file.mimeType),
+      ) &&
+      !supportsVideoInput &&
+      !supportsTools
+    );
 
   const handleGenerate = async () => {
     if (sendingRef.current) {
@@ -2509,9 +2541,26 @@ const ChatInput = memo(function ChatInput({
                   const { binaryFiles, imageFiles } = partitionSelectedFiles([
                     file,
                   ]);
+                  const audioVideoFiles = binaryFiles.filter(
+                    (entry) =>
+                      isAudioMimeType(entry.mimeType) ||
+                      isVideoMimeType(entry.mimeType),
+                  );
+                  const otherBinaryFiles = binaryFiles.filter(
+                    (entry) =>
+                      !isAudioMimeType(entry.mimeType) &&
+                      !isVideoMimeType(entry.mimeType),
+                  );
                   const supported =
                     (imageFiles.length === 0 || supportsImageInput) &&
-                    (binaryFiles.length === 0 || supportsTools);
+                    (otherBinaryFiles.length === 0 || supportsTools) &&
+                    (audioVideoFiles.length === 0 ||
+                      supportsTools ||
+                      audioVideoFiles.every((entry) =>
+                        isAudioMimeType(entry.mimeType)
+                          ? supportsAudioInput
+                          : supportsVideoInput,
+                      ));
 
                   return (
                     <DrawerSelectRow

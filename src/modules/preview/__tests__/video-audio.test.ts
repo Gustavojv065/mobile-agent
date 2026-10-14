@@ -111,6 +111,30 @@ describe("readContractDuration", () => {
     ).toBe(6.5);
   });
 
+  it("prefers a later top-level declaration over a stale first one", () => {
+    expect(
+      readContractDuration(
+        "window.MOBILE_AGENT_VIDEO = { duration: 25, fps: 30, render: function () {}, duration: 21 };",
+      ),
+    ).toBe(21);
+  });
+
+  it("prefers a post-creation override assignment", () => {
+    expect(
+      readContractDuration(
+        "window.MOBILE_AGENT_VIDEO = { duration: 25 }; window.MOBILE_AGENT_VIDEO.duration = 21;",
+      ),
+    ).toBe(21);
+  });
+
+  it("ignores durations inside strings", () => {
+    expect(
+      readContractDuration(
+        'MOBILE_AGENT_VIDEO = { duration: 10, label: "duration: 99" };',
+      ),
+    ).toBe(10);
+  });
+
   it("returns null when the contract or duration is absent", () => {
     expect(readContractDuration("<html></html>")).toBeNull();
     expect(

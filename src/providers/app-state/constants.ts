@@ -85,6 +85,8 @@ export const EMPTY_RESOLVED_CONFIG: ResolvedConfig = {
     currentModel: null,
     currentModelSupportsImageGeneration: false,
     currentModelSupportsImageInput: false,
+    currentModelSupportsAudioInput: false,
+    currentModelSupportsVideoInput: false,
     currentModelSupportsTools: false,
     databaseMode: "local",
     databaseUrl: null,

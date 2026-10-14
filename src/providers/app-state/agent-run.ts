@@ -31,6 +31,8 @@ import {
 import { resolveOnDeviceRuntimePolicy } from "@/modules/on-device/runtime-policy";
 import {
   convertStoredMessagesToModelMessages,
+  isAudioMimeType,
+  isVideoMimeType,
   partitionSelectedFiles,
 } from "@/modules/runtime/message-conversion";
 import { modelRuntime } from "@/modules/runtime/model-runtime";
@@ -144,8 +146,12 @@ const WORKSPACE_AUTO_APPROVED_BUILT_IN_TOOL_NAMES = new Set([
   "glob",
   "grep",
   "listFiles",
+  "listVoices",
+  "previewMix",
+  "previewScene",
   "read",
   "renderVideo",
+  "textToSpeech",
   "transcribeAudio",
   "write",
 ]);
@@ -317,11 +323,8 @@ export async function executeClaimedAgentRun(
     error: string,
   ) => {
     try {
-      console.error("[agent-run] failing assistant message", {
-        runId: run.id,
-        assistantMessageId: message.id,
-        error,
-      });
+      // Concise by design: full run context lives in diagnostics, not the console.
+      console.warn(`[agent-run] run ${run.id} failed: ${error}`);
       await repositories.messageRepository.updateContent({
         id: message.id,
         content: message.content,
@@ -626,6 +629,8 @@ export async function executeClaimedAgentRun(
         (message) => message.id !== assistantMessage.id,
       ),
       supportsImageInput: resolvedModel.supportsImageInput,
+      supportsAudioInput: resolvedModel.supportsAudioInput,
+      supportsVideoInput: resolvedModel.supportsVideoInput,
       workspaceFilesById,
     });
   } catch (conversionError) {
@@ -644,17 +649,48 @@ export async function executeClaimedAgentRun(
     return;
   }
 
-  if (runtimeMessageResult.unsupportedImageAttachments.length > 0) {
-    const errorMessage =
-      "This conversation includes image attachments, but the current model cannot read images.";
-    await failAssistantMessage(assistantMessage, errorMessage);
-    await safeUpdateRunRecord(run.id, {
-      completedAt: new Date().toISOString(),
-      lastError: errorMessage,
-      status: "failed",
-    });
-    runRegistry.clear(runId);
-    return;
+  if (runtimeMessageResult.unsupportedAttachments.length > 0) {
+    const shortName = (name: string) =>
+      name.length > 40 ? `${name.slice(0, 37)}...` : name;
+    const isReroutable = (file: { mimeType: string | null }) =>
+      isAudioMimeType(file.mimeType) || isVideoMimeType(file.mimeType);
+    const reroutable = runtimeMessageResult.unsupportedAttachments.filter(
+      isReroutable,
+    );
+    const blocking = runtimeMessageResult.unsupportedAttachments.filter(
+      (file) => !isReroutable(file),
+    );
+
+    if (blocking.length > 0) {
+      const names = blocking.map((file) => shortName(file.displayName)).join(", ");
+      await failAssistantMessage(
+        assistantMessage,
+        `I can't read these attachments with the current model: ${names}.`,
+      );
+      await safeUpdateRunRecord(run.id, {
+        completedAt: new Date().toISOString(),
+        lastError: "Unsupported attachments for the current model.",
+        status: "failed",
+      });
+      runRegistry.clear(runId);
+      return;
+    }
+
+    // Audio/video the model can't ingest directly are rerouted through tools
+    // instead of failing the run: tell the model what arrived and which tool
+    // reads it, then let it proceed with the user's request.
+    const lines = reroutable.map(
+      (file) =>
+        `- "${shortName(file.displayName)}" (${(file.mimeType ?? "file").split("/")[0]}, fileId: ${file.id})`,
+    );
+    appendContextToLatestUserMessage(
+      runtimeMessageResult.messages,
+      [
+        "The user also attached files this model cannot read directly:",
+        ...lines,
+        "Say briefly that you cannot hear/watch them directly, then inspect them with tools instead — transcribeAudio for speech, analyzeAudio for music structure, getVideoFrame for video stills — using the fileId above. Then proceed with the request.",
+      ].join("\n"),
+    );
   }
 
   let runtimeMessages = runtimeMessageResult.messages;
@@ -1276,6 +1312,10 @@ export async function executeClaimedAgentRun(
                 // skill references tools the model cannot see.
                 ["renderVideo", enabledFor("workspaceRenderVideo")],
                 ["getVideoFrame", enabledFor("workspaceRenderVideo")],
+                ["previewScene", enabledFor("workspaceRenderVideo")],
+                ["previewMix", enabledFor("workspaceRenderVideo")],
+                ["listVoices", enabledFor("workspaceRenderVideo")],
+                ["textToSpeech", enabledFor("workspaceRenderVideo")],
               ]),
             );
           } else {
@@ -1298,13 +1338,17 @@ export async function executeClaimedAgentRun(
                 ["glob", enabledFor("workspaceGlob")],
                 ["grep", enabledFor("workspaceGrep")],
                 ["listFiles", enabledFor("workspaceListFiles")],
+                ["listVoices", enabledFor("workspaceRenderVideo")],
                 ["mergeDocuments", enabledFor("workspaceCreateFile")],
                 ["mergePdfs", enabledFor("workspaceCreateFile")],
                 ["ocr", enabledFor("workspaceRead")],
+                ["previewMix", enabledFor("workspaceRenderVideo")],
+                ["previewScene", enabledFor("workspaceRenderVideo")],
                 ["read", enabledFor("workspaceRead")],
                 ["renderVideo", enabledFor("workspaceRenderVideo")],
                 ["splitDocument", enabledFor("workspaceCreateFile")],
                 ["splitPdf", enabledFor("workspaceCreateFile")],
+                ["textToSpeech", enabledFor("workspaceRenderVideo")],
                 ["transcribeAudio", enabledFor("workspaceRenderVideo")],
                 ["updateDocument", enabledFor("workspaceEdit")],
                 ["viewFile", enabledFor("workspaceRead")],

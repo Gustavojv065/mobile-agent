@@ -1835,6 +1835,20 @@ function buildCapabilityBadges(
   }
 
   if (
+    ("supportsAudioInput" in model && model.supportsAudioInput) ||
+    capabilities.audioInput
+  ) {
+    badges.push("Audio input");
+  }
+
+  if (
+    ("supportsVideoInput" in model && model.supportsVideoInput) ||
+    capabilities.videoInput
+  ) {
+    badges.push("Video input");
+  }
+
+  if (
     ("supportsImageGeneration" in model && model.supportsImageGeneration) ||
     capabilities.imageGeneration
   ) {
