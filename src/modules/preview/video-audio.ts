@@ -116,6 +116,12 @@ export function buildAudioDataUri(
   mimeType: string,
   bytes: Uint8Array,
 ): string {
+  // Prefer Buffer: a single native copy. The binary-string loop below costs
+  // a second full-size string plus per-chunk Array garbage — skip it entirely
+  // when Buffer exists (15 MB in → ~20 MB out, not ~40 MB transient).
+  if (typeof Buffer !== "undefined") {
+    return `data:${mimeType};base64,${Buffer.from(bytes).toString("base64")}`;
+  }
   let binary = "";
   const CHUNK = 0x8000;
   for (let i = 0; i < bytes.length; i += CHUNK) {
@@ -124,11 +130,7 @@ export function buildAudioDataUri(
       Array.from(bytes.subarray(i, Math.min(i + CHUNK, bytes.length))),
     );
   }
-  const base64 =
-    typeof Buffer !== "undefined"
-      ? Buffer.from(bytes).toString("base64")
-      : btoa(binary);
-  return `data:${mimeType};base64,${base64}`;
+  return `data:${mimeType};base64,${btoa(binary)}`;
 }
 
 function formatBytes(bytes: number): string {

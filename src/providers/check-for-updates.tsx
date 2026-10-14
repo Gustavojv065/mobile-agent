@@ -8,7 +8,7 @@ import React, {
   useRef,
   useState,
 } from "react";
-import { AppState, Linking } from "react-native";
+import { AppState, InteractionManager, Linking } from "react-native";
 
 import {
   type AvailableRelease,
@@ -74,7 +74,15 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
   }, [release]);
 
   useEffect(() => {
-    checkForUpdates();
+    // The launch check is network I/O — keep it off the startup critical
+    // path. First check runs after interactions settle plus a grace delay;
+    // returning to the app still checks immediately via the listener below.
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const interaction = InteractionManager.runAfterInteractions(() => {
+      timer = setTimeout(() => {
+        void checkForUpdates();
+      }, 3000);
+    });
 
     const subscription = AppState.addEventListener("change", (state) => {
       if (state === "active") {
@@ -82,7 +90,11 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
       }
     });
 
-    return () => subscription.remove();
+    return () => {
+      subscription.remove();
+      if (timer) clearTimeout(timer);
+      interaction.cancel();
+    };
   }, [checkForUpdates]);
 
   return (

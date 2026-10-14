@@ -203,7 +203,7 @@ export function CodePreviewContent({
         if (!saved) throw new Error("The video could not be saved to Downloads.");
         Alert.alert("Video saved", `${saved.name} has been saved to Downloads${result.hasAudio ? " with audio" : ""}.`, [
           { text: "Share", onPress: () => void shareVideo(file) },
-          { text: "OK" },
+          { text: "OK", onPress: () => cleanupExportFile() },
         ]);
       } catch (error) {
         Alert.alert(
