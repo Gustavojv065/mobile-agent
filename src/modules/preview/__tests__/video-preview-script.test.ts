@@ -218,6 +218,8 @@ describe("buildScenePreviewDocument", () => {
       "<html><body><canvas></canvas></body></html>",
     );
     expect(out).toContain("__startMobileAgentScenePreview");
+    // The storyboard is the chroma tuning loop, so the keyer must ride along.
+    expect(out).toContain("__mobileAgentChromaKey");
     expect(out.indexOf("__startMobileAgentScenePreview")).toBeLessThan(
       out.indexOf("</body>"),
     );

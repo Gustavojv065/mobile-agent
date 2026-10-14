@@ -5,6 +5,7 @@ import {
   VIDEO_EXPORT_SCRIPT,
 } from "@/modules/preview/video-recorder";
 import { VIDEO_AUDIO_ANALYSIS_SCRIPT } from "@/modules/preview/video-audio-analysis";
+import { VIDEO_CHROMA_KEY_SCRIPT } from "@/modules/preview/video-chroma-key";
 import {
   bytesToBase64,
   bytesToHex,
@@ -26,14 +27,17 @@ function concat(parts: Uint8Array[]): Uint8Array {
 }
 
 describe("buildVideoExportDocument", () => {
-  it("injects the analysis and recorder scripts before a lowercase closing body tag", () => {
+  it("injects the analysis, chroma-key, and recorder scripts before a lowercase closing body tag", () => {
     const document = buildVideoExportDocument("<html><body><p>x</p></body></html>");
 
-    expect(document.match(/<script>/g)).toHaveLength(2);
-    expect(document.match(/<\/script>/g)).toHaveLength(2);
+    expect(document.match(/<script>/g)).toHaveLength(3);
+    expect(document.match(/<\/script>/g)).toHaveLength(3);
     expect(document.indexOf(VIDEO_AUDIO_ANALYSIS_SCRIPT)).toBeGreaterThan(0);
-    expect(document.indexOf(VIDEO_EXPORT_SCRIPT)).toBeGreaterThan(
+    expect(document.indexOf(VIDEO_CHROMA_KEY_SCRIPT)).toBeGreaterThan(
       document.indexOf(VIDEO_AUDIO_ANALYSIS_SCRIPT),
+    );
+    expect(document.indexOf(VIDEO_EXPORT_SCRIPT)).toBeGreaterThan(
+      document.indexOf(VIDEO_CHROMA_KEY_SCRIPT),
     );
     expect(document).toContain("<p>x</p>");
     expect(document.endsWith("</script>\n</body></html>")).toBe(true);

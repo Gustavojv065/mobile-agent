@@ -262,6 +262,26 @@ Images and video clips in scenes (user-provided visuals):
   Pick per scene and never promise both.
 - Before authoring around a clip, look at it first with `getVideoFrame`
   (poster at a few timestamps) so framing and motion match the footage.
+- Chroma key (green/blue screen): a clip shot against a flat screen is
+  keyed at draw time through the in-page helper (present in every render
+  and preview page — no tool call):
+  `window.__mobileAgentChromaKey.drawKeyed(ctx, video, dx, dy, dw, dh,
+  { key, similarity, smoothness, spill })`. It paints the keyed frame onto
+  the scene canvas and returns true; on false (video not ready, bad key
+  color) fall back to a plain `drawImage` so the scene never blanks.
+  `key` is strict `#rrggbb` (`#00ff00` green, `#0000ff` blue — anything
+  else is rejected); `similarity` (default 0.35) is the UV-distance cut
+  threshold, `smoothness` (default 0.1) the edge ramp, `spill` (default
+  0.15) the green-fringe removal. Defaults are starting points, not
+  answers: sample the screen color with `getVideoFrame`, set `key` to it,
+  render `previewScene` stills, then adjust (raised `similarity` eats
+  screen shadows, raised `smoothness` softens halos, raised `spill` kills
+  fringe on hair/edges) and re-check after every change. Limits:
+  wrinkled/shadowed screens key unevenly, heavy compression fringes (push
+  `spill` up), and a subject wearing the screen color is unkeyable —
+  detect it from the stills and say so instead of shipping holes. Keying
+  costs a full-frame pixel loop per drawn frame — one keyed clip per scene
+  unless a device measurement says otherwise.
 
 Synth cues (`synth.kind`):
 
@@ -592,6 +612,10 @@ inside one canvas scene.
       property from `level`/`lowAt`/`beatPulse`/`beats` instead of ignoring the
       soundtrack (for generated synth/drums beds the live `audio` argument
       already reflects them — no tool call needed)
+- [ ] if the scene keys a green/blue screen: sampled the screen color with
+      `getVideoFrame`, tuned `similarity`/`smoothness`/`spill` from
+      `previewScene` stills (no eaten subject, no glowing fringe), one keyed
+      clip max unless a device measurement cleared more
 - [ ] if the user asked to recreate/copy a song with synth: declined the full
       cover (plain oscillators can never reproduce a produced track — it will
       sound like a ringtone) and offered the honest alternatives instead: a

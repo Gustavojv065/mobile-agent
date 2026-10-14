@@ -1,3 +1,5 @@
+import { VIDEO_CHROMA_KEY_SCRIPT } from "@/modules/preview/video-chroma-key";
+
 /**
  * In-page scene preview runner for the `previewScene` tool.
  *
@@ -225,7 +227,7 @@ export const VIDEO_PREVIEW_SCRIPT = `(function () {
  * `buildVideoExportDocument` (preview script only — no recorder).
  */
 export function buildScenePreviewDocument(html: string): string {
-  const script = `\n<script>${VIDEO_PREVIEW_SCRIPT}</script>\n`;
+  const script = `\n<script>${VIDEO_CHROMA_KEY_SCRIPT}</script>\n<script>${VIDEO_PREVIEW_SCRIPT}</script>\n`;
   const lower = html.toLowerCase();
   const index = lower.lastIndexOf("</body>");
   if (index === -1) return `${html}${script}`;

@@ -1,4 +1,5 @@
 import { VIDEO_AUDIO_ANALYSIS_SCRIPT } from "@/modules/preview/video-audio-analysis";
+import { VIDEO_CHROMA_KEY_SCRIPT } from "@/modules/preview/video-chroma-key";
 
 /**
  * Recorder injected into the HTML preview document.
@@ -1757,7 +1758,7 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
  * on load and `window.__startMobileAgentVideoExport` can be called later.
  */
 export function buildVideoExportDocument(html: string): string {
-  const script = `\n<script>${VIDEO_AUDIO_ANALYSIS_SCRIPT}</script>\n<script>${VIDEO_EXPORT_SCRIPT}</script>\n`;
+  const script = `\n<script>${VIDEO_AUDIO_ANALYSIS_SCRIPT}</script>\n<script>${VIDEO_CHROMA_KEY_SCRIPT}</script>\n<script>${VIDEO_EXPORT_SCRIPT}</script>\n`;
   const lower = html.toLowerCase();
   const index = lower.lastIndexOf("</body>");
   if (index === -1) return `${html}${script}`;
