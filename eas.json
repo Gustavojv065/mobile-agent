@@ -25,7 +25,7 @@
             "channel": "development",
             "android": {
                 "buildType": "apk",
-                "gradleCommand": ":app:assembleDebug --max-workers=4 -PreactNativeArchitectures=arm64-v8a -x lint --console=plain"
+                "gradleCommand": ":app:assembleDebug --max-workers=4 -PreactNativeArchitectures=arm64-v8a -Dorg.gradle.jvmargs=-Xmx8g -x lint --console=plain"
             }
         },
         "production-local": {
@@ -34,7 +34,7 @@
             "channel": "production",
             "android": {
                 "buildType": "apk",
-                "gradleCommand": ":app:assembleRelease --max-workers=4 -PreactNativeArchitectures=arm64-v8a -x lint --console=plain"
+                "gradleCommand": ":app:assembleRelease --max-workers=4 -PreactNativeArchitectures=arm64-v8a -Dorg.gradle.jvmargs=-Xmx8g -x lint --console=plain"
             }
         }
     }
