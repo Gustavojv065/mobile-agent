@@ -1271,6 +1271,11 @@ export async function executeClaimedAgentRun(
               tools,
               pickEnabledTools(workspaceDiscoveryTools, [
                 ["listFiles", enabledFor("workspaceListFiles")],
+                // Video rendering/inspection are workspace-backed but not
+                // folder-scoped: folder chats still need them, otherwise the
+                // skill references tools the model cannot see.
+                ["renderVideo", enabledFor("workspaceRenderVideo")],
+                ["getVideoFrame", enabledFor("workspaceRenderVideo")],
               ]),
             );
           } else {
