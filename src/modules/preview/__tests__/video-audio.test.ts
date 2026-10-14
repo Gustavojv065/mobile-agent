@@ -51,6 +51,18 @@ describe("resolveAudioMimeType", () => {
     expect(resolveAudioMimeType(undefined, "voice.m4a")).toBe("audio/mp4");
   });
 
+  it("accepts video containers (only the audio track is decoded)", () => {
+    expect(resolveAudioMimeType("video/mp4", "clip.mp4")).toBe("video/mp4");
+    expect(resolveAudioMimeType("video/quicktime", "clip.mov")).toBe(
+      "video/quicktime",
+    );
+    expect(resolveAudioMimeType("video/webm", "clip.webm")).toBe("video/webm");
+    expect(resolveAudioMimeType(null, "clip.mp4")).toBe("video/mp4");
+    expect(resolveAudioMimeType(null, "clip.mov")).toBe("video/quicktime");
+    expect(resolveAudioMimeType(null, "clip.m4v")).toBe("video/mp4");
+    expect(resolveAudioMimeType(undefined, "clip.MP4")).toBe("video/mp4");
+  });
+
   it("returns null for unsupported formats", () => {
     expect(resolveAudioMimeType("audio/flac", "song.flac")).toBe(null);
     expect(resolveAudioMimeType(null, "notes.txt")).toBe(null);
@@ -61,6 +73,12 @@ describe("assertAudioFileUsable", () => {
   it("accepts a supported file under the size cap", () => {
     expect(assertAudioFileUsable("song.mp3", "audio/mpeg", 1024)).toBe(
       "audio/mpeg",
+    );
+  });
+
+  it("accepts a video file under the size cap for soundtrack analysis", () => {
+    expect(assertAudioFileUsable("clip.mp4", "video/mp4", 1024)).toBe(
+      "video/mp4",
     );
   });
 

@@ -28,13 +28,13 @@ export function createAnalyzeAudioTool({
 }: WorkspaceToolFactoryParams) {
   return tool({
     description:
-      "Analyze an audio file already saved in the workspace and get its musical/structural features before authoring a video or animation that should follow it. Returns duration, an estimated bpm (or null), detected onset times in seconds (`beats`), downsampled energy/band curves (0..1) you can use to place cuts, text, or beats, plus the dominant-pitch melody: a `pitch` curve in Hz (0 when unvoiced), `notes` with start/end/MIDI/note-name/freq, the implied `key` with confidence, `tuningCents`, and `voicedRatio` (fraction of time with confident pitch — below ~0.3 there is no usable melody). Pitch follows the loudest voice only; it cannot separate chord tones or identify instruments. Use this when the user gives you an audio file and asks for visuals 'as per the audio', so you are not guessing the rhythm or the tune. The same features are also available live inside a video render as the fourth `render` argument (`audio`), so you can either hard-code the timings here or react in-scene. Decoding happens on device; MP3, WAV, M4A, AAC, OGG, and WebM files up to 15 MB are supported.",
+      "Analyze an audio file already saved in the workspace and get its musical/structural features before authoring a video or animation that should follow it. Returns duration, an estimated bpm (or null), detected onset times in seconds (`beats`), downsampled energy/band curves (0..1) you can use to place cuts, text, or beats, plus the dominant-pitch melody: a `pitch` curve in Hz (0 when unvoiced), `notes` with start/end/MIDI/note-name/freq, the implied `key` with confidence, `tuningCents`, and `voicedRatio` (fraction of time with confident pitch — below ~0.3 there is no usable melody). Pitch follows the loudest voice only; it cannot separate chord tones or identify instruments. Video files (MP4, MOV, WebM) are accepted too — only their audio track is decoded and analyzed. Use this when the user gives you an audio file and asks for visuals 'as per the audio', so you are not guessing the rhythm or the tune. The same features are also available live inside a video render as the fourth `render` argument (`audio`), so you can either hard-code the timings here or react in-scene. Decoding happens on device; files up to 15 MB are supported.",
     inputSchema: z.object({
       fileId: z
         .string()
         .min(1)
         .describe(
-          "The id of a workspace audio file to analyze (MP3, WAV, M4A, AAC, OGG, or WebM).",
+          "The id of a workspace audio file to analyze (MP3, WAV, M4A, AAC, OGG, WebM — or MP4/MOV/WebM video, whose audio track is analyzed).",
         ),
       maxSeconds: z
         .number()

@@ -688,7 +688,7 @@ export async function executeClaimedAgentRun(
       [
         "The user also attached files this model cannot read directly:",
         ...lines,
-        "Say briefly that you cannot hear/watch them directly, then inspect them with tools instead — transcribeAudio for speech, analyzeAudio for music (tempo, melody, notes, key), getVideoFrame for video stills — using the fileId above. Then proceed with the request.",
+        "Say briefly that you cannot hear/watch them directly, then inspect them with tools instead — transcribeAudio for speech (including a video's soundtrack), analyzeAudio for music (tempo, melody, notes, key — works on a video's audio track too), getVideoFrame for video stills — using the fileId above. Then proceed with the request.",
       ].join("\n"),
     );
   }

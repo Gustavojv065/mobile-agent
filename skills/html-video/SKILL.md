@@ -393,7 +393,8 @@ Rules:
   authoring (e.g. to place cuts at the right moments or follow the tune), use
   the **`analyzeAudio` tool** on the same `workspace://` file id; then
   hard-code those times/notes or rely on the live `audio` object at render
-  time. Its `voicedRatio` tells you whether a usable melody exists (below
+  time. Video files (MP4/MOV/WebM) are accepted too — only the soundtrack
+  is decoded. Its `voicedRatio` tells you whether a usable melody exists (below
   ~0.3 there is none — say so, do not invent notes). Pitch follows the
   loudest voice only; never claim chord separations or instruments.
 

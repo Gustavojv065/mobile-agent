@@ -24,6 +24,17 @@ const SUPPORTED_AUDIO_MIME_TYPES = new Set([
   "audio/webm",
 ]);
 
+/**
+ * Video containers the audio tools also accept: only the audio track is
+ * decoded (via the WebView's `decodeAudioData`, which demuxes them) for
+ * analysis/transcription. Frames still go through `getVideoFrame`.
+ */
+const SUPPORTED_VIDEO_MIME_TYPES = new Set([
+  "video/mp4",
+  "video/webm",
+  "video/quicktime",
+]);
+
 const AUDIO_MIME_BY_EXTENSION: Record<string, string> = {
   mp3: "audio/mpeg",
   wav: "audio/wav",
@@ -34,6 +45,9 @@ const AUDIO_MIME_BY_EXTENSION: Record<string, string> = {
   opus: "audio/ogg",
   webm: "audio/webm",
   weba: "audio/webm",
+  mp4: "video/mp4",
+  m4v: "video/mp4",
+  mov: "video/quicktime",
 };
 
 /**
@@ -65,7 +79,11 @@ export function resolveAudioMimeType(
   displayName: string,
 ): string | null {
   const normalized = (mimeType ?? "").trim().toLowerCase();
-  if (normalized && SUPPORTED_AUDIO_MIME_TYPES.has(normalized)) {
+  if (
+    normalized &&
+    (SUPPORTED_AUDIO_MIME_TYPES.has(normalized) ||
+      SUPPORTED_VIDEO_MIME_TYPES.has(normalized))
+  ) {
     return normalized;
   }
   const extension = displayName.split(".").pop()?.toLowerCase() ?? "";
@@ -80,7 +98,7 @@ export function assertAudioFileUsable(
   const resolved = resolveAudioMimeType(mimeType, displayName);
   if (!resolved) {
     throw new Error(
-      `Audio file "${displayName}" is not a supported format. Use MP3, WAV, M4A, AAC, OGG, or WebM audio.`,
+      `Audio file "${displayName}" is not a supported format. Use MP3, WAV, M4A, AAC, OGG, or WebM audio — or a video file (MP4, MOV, WebM) to analyze its soundtrack.`,
     );
   }
   if (!Number.isFinite(sizeBytes) || sizeBytes <= 0) {
