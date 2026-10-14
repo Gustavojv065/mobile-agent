@@ -740,6 +740,29 @@ describe("melody (pitch, notes, key)", () => {
     expect(f.notes).toEqual([]);
   });
 
+  it("keeps note freq consistent with note midi under interference", () => {
+    // Sustained 55 Hz with brief 140 Hz blips: the blips must not drag the
+    // reported freq far from the reported midi (the A1/142 Hz failure).
+    const sr = 22050;
+    const total = Math.round(2 * sr);
+    const samples = new Float32Array(total);
+    for (let i = 0; i < total; i += 1) {
+      // Quiet base with loud single-frame blips an octave-plus away: the
+      // blips flip some frame winners but never the smoothed midi track.
+      samples[i] = 0.5 * Math.sin((2 * Math.PI * 55 * i) / sr);
+      const phase = i / sr % 0.23;
+      if (phase < 0.03) {
+        samples[i] += 1.0 * Math.sin((2 * Math.PI * 140 * i) / sr);
+      }
+    }
+    const f = api().analyzeAudio(samples, sr, 2);
+    expect(f.notes.length).toBeGreaterThan(0);
+    for (const note of f.notes) {
+      const midiFloat = 69 + 12 * Math.log2(note.freq / 440);
+      expect(Math.abs(midiFloat - note.midi)).toBeLessThanOrEqual(1);
+    }
+  });
+
   it("is deterministic across runs", () => {
     const samples = concat(sine(220, 1, 22050), sine(440, 1, 22050));
     const first = api().analyzeAudio(samples, 22050, 2);

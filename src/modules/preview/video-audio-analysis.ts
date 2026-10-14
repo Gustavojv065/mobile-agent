@@ -624,34 +624,33 @@ export const VIDEO_AUDIO_ANALYSIS_SCRIPT = `(function () {
     }
 
     // Segment into note events; drop blips shorter than 3 frames (~0.14 s).
+    // Note freq is the MEDIAN frame pitch, so minority octave-jump frames
+    // cannot drag it away from the note midi the way a mean would.
     var noteList = [];
     var openMidi = -1;
     var openStart = 0;
-    var openFreqSum = 0;
-    var openFreqCount = 0;
+    var openFreqs = [];
     for (var s = 0; s <= frameCount; s += 1) {
       var cur = s < frameCount ? smoothMidi[s] : -1;
       if (cur !== openMidi) {
         if (openMidi !== -1) {
           var noteLen = s - openStart;
-          if (noteLen >= MELODY_MIN_NOTE_FRAMES && openFreqCount > 0) {
+          if (noteLen >= MELODY_MIN_NOTE_FRAMES && openFreqs.length > 0) {
             noteList.push({
               start: openStart / frameRate,
               end: s / frameRate,
               midi: openMidi,
               note: midiToNoteName(openMidi),
-              freq: Math.round((openFreqSum / openFreqCount) * 10) / 10
+              freq: Math.round(medianOf(openFreqs) * 10) / 10
             });
           }
         }
         openMidi = cur;
         openStart = s;
-        openFreqSum = 0;
-        openFreqCount = 0;
+        openFreqs = [];
       }
       if (cur !== -1 && s < frameCount && pitch[s] > 0) {
-        openFreqSum += pitch[s];
-        openFreqCount += 1;
+        openFreqs.push(pitch[s]);
       }
     }
 

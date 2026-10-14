@@ -571,6 +571,9 @@ inside one canvas scene.
 
 ## Checklist before you finish
 
+- [ ] never ended a turn on a promise ("I'll make…", "I'll analyze…"): the
+      tool call (`analyzeAudio`, `renderVideo`, …) is in the SAME response as
+      the words — a plan with no tool call delivers nothing and the run ends
 - [ ] `window.MOBILE_AGENT_VIDEO` defined with a `render` function
 - [ ] render is deterministic: only `t` and constants (no `Math.random`,
       `Date.now`, `requestAnimationFrame`)
@@ -588,6 +591,11 @@ inside one canvas scene.
       property from `level`/`lowAt`/`beatPulse`/`beats` instead of ignoring the
       soundtrack (for generated synth/drums beds the live `audio` argument
       already reflects them — no tool call needed)
+- [ ] if the user asked to recreate/copy a song with synth: declined the full
+      cover (plain oscillators can never reproduce a produced track — it will
+      sound like a ringtone) and offered the honest alternatives instead: a
+      rough melody-only sketch clearly labeled as such, an original bed in the
+      measured key/tempo, or a visualization using their audio unchanged
 - [ ] if the user asked for captions or word-synced visuals: ran
       `transcribeAudio` on the file and put the returned `segments` on the
       contract's `speech` (or baked the times in) and drove the captions from
