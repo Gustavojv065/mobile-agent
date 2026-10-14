@@ -39,6 +39,13 @@ const SUMMARY: AudioAnalysisSummary = {
   mid: [0.3, 0.4],
   high: [0.05, 0.2],
   onset: [0, 1],
+  pitch: [220, 440],
+  noteCount: 1,
+  notes: [{ start: 0, end: 1, midi: 69, note: "A4", freq: 440 }],
+  key: "A major",
+  keyConfidence: 0.4,
+  tuningCents: 2,
+  voicedRatio: 0.9,
 };
 
 function repository(record: unknown) {

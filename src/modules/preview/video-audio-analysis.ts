@@ -8,8 +8,14 @@
  *   audio.bpm            // estimated tempo, or null
  *   audio.beats          // onset times in seconds (ascending)
  *   audio.energy/low/mid/high/onset   // normalized 0..1 envelopes
+ *   audio.pitch          // dominant pitch per frame in Hz (0 when unvoiced)
+ *   audio.pitchConf      // per-frame pitch confidence 0..1
+ *   audio.key            // key implied by the notes (e.g. "C major"), or null
+ *   audio.tuningCents    // median tuning offset in cents, or null
  *   audio.level(t)       // energy at time t (linear interpolation, clamped)
  *   audio.lowAt(t) audio.midAt(t) audio.highAt(t) audio.onsetAt(t)
+ *   audio.pitchAt(t)     // dominant pitch in Hz at time t (0 when unvoiced)
+ *   audio.pitchConfAt(t) // pitch confidence 0..1 at time t
  *   audio.beatPulse(t)   // exponential pulse since the last beat (0..1)
  *
  * Every value is a pure function of the precomputed feature track, so the
@@ -59,6 +65,27 @@ export type AudioFeatures = {
   mid: Float32Array;
   high: Float32Array;
   onset: Float32Array;
+  /**
+   * Dominant pitch per frame in Hz (0 when no confident pitch). Monophonic
+   * estimate via harmonic product spectrum — follows the loudest voice, not
+   * every chord tone.
+   */
+  pitch: Float32Array;
+  /**
+   * Per-frame pitch confidence 0..1 (spectral peakiness: 1 = pure tone,
+   * 0 = flat noise-like spectrum at the voicing gate).
+   */
+  pitchConf: Float32Array;
+  /** Key implied by the duration-weighted pitch-class histogram of notes. */
+  key: string | null;
+  /** 0..1 confidence of the key estimate, or null when unknown. */
+  keyConfidence: number | null;
+  /** Median tuning offset in cents (-50..+50), or null when unknown. */
+  tuningCents: number | null;
+  /** Note events from the dominant-pitch track, ascending. */
+  notes: AudioNote[];
+  /** Fraction of analyzed time with a confident pitch (0..1). */
+  voicedRatio: number;
 };
 
 /** One decoded audio file placed on the timeline for analysis. */
@@ -87,11 +114,25 @@ export type AudioReactiveApi = {
   mid: Float32Array;
   high: Float32Array;
   onset: Float32Array;
+  /** Dominant pitch per frame in Hz (0 when unvoiced). */
+  pitch: Float32Array;
+  /** Per-frame pitch confidence 0..1. */
+  pitchConf: Float32Array;
+  /** Key implied by the note histogram (e.g. "C major"), or null. */
+  key: string | null;
+  /** 0..1 confidence of the key estimate, or null. */
+  keyConfidence: number | null;
+  /** Median tuning offset in cents, or null. */
+  tuningCents: number | null;
   level(t: number): number;
   lowAt(t: number): number;
   midAt(t: number): number;
   highAt(t: number): number;
   onsetAt(t: number): number;
+  /** Dominant pitch in Hz at time t (0 when unvoiced). */
+  pitchAt(t: number): number;
+  /** Pitch confidence 0..1 at time t. */
+  pitchConfAt(t: number): number;
   beatPulse(t: number, decay?: number): number;
 };
 
@@ -152,6 +193,20 @@ export type SpeechApi = {
   nextStart(t: number): number | null;
 };
 
+/** One detected note event from the dominant-pitch track. */
+export type AudioNote = {
+  /** Start time in seconds. */
+  start: number;
+  /** End time in seconds. */
+  end: number;
+  /** MIDI number (e.g. 69 = A4). */
+  midi: number;
+  /** Note name (e.g. "A4"). */
+  note: string;
+  /** Mean frequency in Hz across the note. */
+  freq: number;
+};
+
 /** Compact, JSON-safe audio summary returned to the agent by the analyze tool. */
 export type AudioAnalysisSummary = {
   ready: boolean;
@@ -171,6 +226,23 @@ export type AudioAnalysisSummary = {
   mid: number[];
   high: number[];
   onset: number[];
+  /**
+   * Dominant pitch in Hz per curve step (0 when unvoiced), median-pooled to
+   * the same grid as the other curves.
+   */
+  pitch: number[];
+  /** Total number of detected notes (may exceed `notes.length`). */
+  noteCount: number;
+  /** Note events, ascending (capped at `maxNotes`, default 200). */
+  notes: AudioNote[];
+  /** Key implied by the note histogram (e.g. "C major"), or null. */
+  key: string | null;
+  /** 0..1 confidence of the key estimate, or null. */
+  keyConfidence: number | null;
+  /** Median tuning offset in cents, or null. */
+  tuningCents: number | null;
+  /** Fraction of analyzed time with a confident pitch (0..1). */
+  voicedRatio: number;
 };
 
 export type AudioAnalysisApi = {
@@ -192,7 +264,7 @@ export type AudioAnalysisApi = {
   ): SpeechApi;
   summarizeFeatures(
     features: AudioFeatures | null | undefined,
-    options?: { maxBeats?: number; curvePoints?: number },
+    options?: { maxBeats?: number; curvePoints?: number; maxNotes?: number },
   ): AudioAnalysisSummary;
   emptyFeatures(): AudioFeatures;
   FFT_SIZE: number;
@@ -221,7 +293,10 @@ export const VIDEO_AUDIO_ANALYSIS_SCRIPT = `(function () {
     return {
       ready: false, duration: 0, frameRate: 0, bpm: null, beats: [],
       energy: new Float32Array(0), low: new Float32Array(0), mid: new Float32Array(0),
-      high: new Float32Array(0), onset: new Float32Array(0)
+      high: new Float32Array(0), onset: new Float32Array(0),
+      pitch: new Float32Array(0), pitchConf: new Float32Array(0),
+      notes: [], voicedRatio: 0,
+      key: null, keyConfidence: null, tuningCents: null
     };
   }
 
@@ -302,6 +377,137 @@ export const VIDEO_AUDIO_ANALYSIS_SCRIPT = `(function () {
     return bin;
   }
 
+  var MELODY_MIN_HZ = 55;
+  var MELODY_MAX_HZ = 880;
+  var MELODY_HARMONICS = 4;
+  // Frames flatter than this count as unvoiced even when loud. Calibrated
+  // empirically (see melody tests): clean tones sit far below, white noise
+  // far above.
+  var MELODY_MAX_FLATNESS = 0.5;
+  // Frames quieter than this fraction of the track peak are never pitched.
+  var MELODY_RMS_FRACTION = 0.05;
+  var MELODY_MIN_NOTE_FRAMES = 3;
+  var NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+  // Krumhansl probe-tone profiles for key correlation.
+  var KEY_MAJOR = [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88];
+  var KEY_MINOR = [6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17];
+
+  function midiToNoteName(midi) {
+    var m = Math.round(midi);
+    var pc = ((m % 12) + 12) % 12;
+    var octave = Math.floor(m / 12) - 1;
+    return NOTE_NAMES[pc] + octave;
+  }
+
+  function freqToMidiFloat(freq) {
+    if (!(freq > 0)) return 0;
+    return 69 + 12 * (Math.log(freq / 440) / Math.log(2));
+  }
+
+  // Weighted harmonic sum at one candidate bin (1/h weights favour the
+  // fundamental so subharmonics lose even on pure tones).
+  function hpsScore(mags, bin) {
+    var score = 0;
+    for (var h = 1; h <= MELODY_HARMONICS; h += 1) {
+      var k = bin * h;
+      if (k >= HALF) break;
+      score += mags[k] / h;
+    }
+    return score;
+  }
+
+  // Dominant fundamental via harmonic product spectrum over 55-880 Hz.
+  // Returns the refined frequency, or 0 when no candidate scores.
+  function hpsEstimate(mags, sampleRate) {
+    if (!(sampleRate > 0)) return 0;
+    var lo = Math.max(2, Math.round((MELODY_MIN_HZ * FFT_SIZE) / sampleRate));
+    var hi = Math.min(HALF - 2, Math.round((MELODY_MAX_HZ * FFT_SIZE) / sampleRate));
+    if (hi <= lo) return 0;
+    var best = lo;
+    var bestScore = -1;
+    for (var b = lo; b <= hi; b += 1) {
+      var s = hpsScore(mags, b);
+      if (s > bestScore) { bestScore = s; best = b; }
+    }
+    if (!(bestScore > 0)) return 0;
+    // Parabolic interpolation around the peak for sub-bin accuracy (matters
+    // most for low bass, where one bin spans several semitones).
+    var refined = best;
+    if (best > lo && best < hi) {
+      var y0 = hpsScore(mags, best - 1);
+      var y1 = bestScore;
+      var y2 = hpsScore(mags, best + 1);
+      var denom = y0 - 2 * y1 + y2;
+      if (denom < -1e-12) {
+        var offset = 0.5 * (y0 - y2) / denom;
+        if (offset > 0.5) offset = 0.5;
+        else if (offset < -0.5) offset = -0.5;
+        refined = best + offset;
+      }
+    }
+    return (refined * sampleRate) / FFT_SIZE;
+  }
+
+  // Wiener spectral flatness (geometric / arithmetic mean) over 55-4000 Hz:
+  // near 0 for peaky pitched spectra, near 1 for broadband noise. This is
+  // the voicing gate — a loud frame still counts as unvoiced when flat.
+  function spectralFlatness(mags, sampleRate) {
+    var lo = Math.max(2, Math.round((55 * FFT_SIZE) / sampleRate));
+    var hi = Math.min(HALF - 1, Math.round((4000 * FFT_SIZE) / sampleRate));
+    if (hi <= lo) return 1;
+    var sum = 0;
+    var logSum = 0;
+    var count = 0;
+    for (var k = lo; k <= hi; k += 1) {
+      var v = mags[k] + 1e-12;
+      sum += v;
+      logSum += Math.log(v);
+      count += 1;
+    }
+    if (!(sum > 0) || count === 0) return 1;
+    var arith = sum / count;
+    var geo = Math.exp(logSum / count);
+    var flat = geo / arith;
+    if (!(flat >= 0)) return 1;
+    return flat > 1 ? 1 : flat;
+  }
+
+  function medianOf(values) {
+    var n = values.length;
+    if (n === 0) return 0;
+    var copy = Array.prototype.slice.call(values);
+    copy.sort(function (a, b) { return a - b; });
+    var mid = Math.floor(n / 2);
+    if (n % 2 === 1) return copy[mid];
+    return (copy[mid - 1] + copy[mid]) / 2;
+  }
+
+  // Pearson correlation between a pitch-class histogram and a key profile
+  // rotated to the given root.
+  function keyCorrelation(hist, profile, root) {
+    var n = 12;
+    var mh = 0;
+    var mp = 0;
+    for (var i = 0; i < n; i += 1) {
+      mh += hist[i];
+      mp += profile[(i + 12 - root) % 12];
+    }
+    mh /= n;
+    mp /= n;
+    var num = 0;
+    var dh = 0;
+    var dp = 0;
+    for (var j = 0; j < n; j += 1) {
+      var a = hist[j] - mh;
+      var b = profile[(j + 12 - root) % 12] - mp;
+      num += a * b;
+      dh += a * a;
+      dp += b * b;
+    }
+    if (!(dh > 0) || !(dp > 0)) return 0;
+    return num / Math.sqrt(dh * dp);
+  }
+
   function analyzeAudio(samples, sampleRate, maxSeconds) {
     var features = emptyFeatures();
     if (!samples || samples.length === 0 || !(sampleRate > 0)) return features;
@@ -318,11 +524,18 @@ export const VIDEO_AUDIO_ANALYSIS_SCRIPT = `(function () {
     var mid = new Float32Array(frameCount);
     var high = new Float32Array(frameCount);
     var onset = new Float32Array(frameCount);
+    var pitch = new Float32Array(frameCount);
+    var pitchConf = new Float32Array(frameCount);
+    // Scratch for the melody post-pass (gates need the track peak first).
+    var rmsRaw = new Float64Array(frameCount);
+    var f0raw = new Float64Array(frameCount);
+    var flatRaw = new Float64Array(frameCount);
 
     var window = hann(FFT_SIZE);
     var re = new Float64Array(FFT_SIZE);
     var im = new Float64Array(FFT_SIZE);
     var prevMag = new Float64Array(HALF);
+    var mags = new Float64Array(HALF);
 
     var lowLo = binFor(20, sampleRate);
     var lowHi = binFor(250, sampleRate);
@@ -348,6 +561,7 @@ export const VIDEO_AUDIO_ANALYSIS_SCRIPT = `(function () {
       var lb = 0, mb = 0, hb = 0, flux = 0;
       for (var k = 1; k < HALF; k += 1) {
         var mag = Math.sqrt(re[k] * re[k] + im[k] * im[k]);
+        mags[k] = mag;
         if (k >= lowLo && k <= lowHi) lb += mag * mag;
         if (k >= midLo && k <= midHi) mb += mag * mag;
         if (k >= highLo && k <= highHi) hb += mag * mag;
@@ -359,6 +573,11 @@ export const VIDEO_AUDIO_ANALYSIS_SCRIPT = `(function () {
       mid[f] = Math.sqrt(mb);
       high[f] = Math.sqrt(hb);
       onset[f] = flux;
+      // Dominant-pitch estimate for this frame; voicing is decided in the
+      // post-pass once the track RMS peak is known.
+      rmsRaw[f] = energy[f];
+      f0raw[f] = hpsEstimate(mags, sampleRate);
+      flatRaw[f] = spectralFlatness(mags, sampleRate);
     }
     onset[0] = 0;
 
@@ -368,6 +587,121 @@ export const VIDEO_AUDIO_ANALYSIS_SCRIPT = `(function () {
     normalizeEnvelope(high);
     normalizeEnvelope(onset);
 
+    // ---- Melody post-pass: gate frames into a pitch track, then notes. ----
+    // Pitch/periodicity were captured per frame above, but voicing needs the
+    // track RMS peak, which is only known after the full loop.
+    var rmsPeak = 0;
+    for (var r = 0; r < frameCount; r += 1) {
+      if (rmsRaw[r] > rmsPeak) rmsPeak = rmsRaw[r];
+    }
+    var rmsGate = rmsPeak > 1e-6 ? rmsPeak * MELODY_RMS_FRACTION : Infinity;
+    var voicedCount = 0;
+    for (var v = 0; v < frameCount; v += 1) {
+      var isVoiced = rmsRaw[v] > rmsGate &&
+        flatRaw[v] < MELODY_MAX_FLATNESS && f0raw[v] > 0;
+      if (isVoiced) {
+        pitch[v] = Math.round(f0raw[v] * 10) / 10;
+        var conf = (MELODY_MAX_FLATNESS - flatRaw[v]) / MELODY_MAX_FLATNESS;
+        pitchConf[v] = conf < 0 ? 0 : (conf > 1 ? 1 : conf);
+        voicedCount += 1;
+      } else {
+        pitch[v] = 0;
+        pitchConf[v] = 0;
+      }
+    }
+
+    // MIDI track with a 3-point median filter against single-frame jitter.
+    var midiTrack = new Array(frameCount);
+    for (var m = 0; m < frameCount; m += 1) {
+      midiTrack[m] = pitch[m] > 0 ? Math.round(freqToMidiFloat(pitch[m])) : -1;
+    }
+    var smoothMidi = new Array(frameCount);
+    for (var q = 0; q < frameCount; q += 1) {
+      var qa = midiTrack[q - 1 < 0 ? 0 : q - 1];
+      var qb = midiTrack[q];
+      var qc = midiTrack[q + 1 >= frameCount ? frameCount - 1 : q + 1];
+      smoothMidi[q] = medianOf([qa, qb, qc]);
+    }
+
+    // Segment into note events; drop blips shorter than 3 frames (~0.14 s).
+    var noteList = [];
+    var openMidi = -1;
+    var openStart = 0;
+    var openFreqSum = 0;
+    var openFreqCount = 0;
+    for (var s = 0; s <= frameCount; s += 1) {
+      var cur = s < frameCount ? smoothMidi[s] : -1;
+      if (cur !== openMidi) {
+        if (openMidi !== -1) {
+          var noteLen = s - openStart;
+          if (noteLen >= MELODY_MIN_NOTE_FRAMES && openFreqCount > 0) {
+            noteList.push({
+              start: openStart / frameRate,
+              end: s / frameRate,
+              midi: openMidi,
+              note: midiToNoteName(openMidi),
+              freq: Math.round((openFreqSum / openFreqCount) * 10) / 10
+            });
+          }
+        }
+        openMidi = cur;
+        openStart = s;
+        openFreqSum = 0;
+        openFreqCount = 0;
+      }
+      if (cur !== -1 && s < frameCount && pitch[s] > 0) {
+        openFreqSum += pitch[s];
+        openFreqCount += 1;
+      }
+    }
+
+    // Key from the duration-weighted pitch-class histogram of the notes, so
+    // percussion and unvoiced stretches cannot vote. Confidence blends the
+    // absolute correlation (audible keyness) with the margin over runner-up.
+    var pcHist = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    var totalNoteDur = 0;
+    for (var ni = 0; ni < noteList.length; ni += 1) {
+      var nn = noteList[ni];
+      var npc = ((nn.midi % 12) + 12) % 12;
+      var ndur = nn.end - nn.start;
+      pcHist[npc] += ndur;
+      totalNoteDur += ndur;
+    }
+    var finalKey = null;
+    var keyConf = null;
+    if (totalNoteDur > 0) {
+      var bestKeyName = null;
+      var bestR = -2;
+      var secondR = -2;
+      for (var root = 0; root < 12; root += 1) {
+        var rMaj = keyCorrelation(pcHist, KEY_MAJOR, root);
+        if (rMaj > bestR) { secondR = bestR; bestR = rMaj; bestKeyName = NOTE_NAMES[root] + ' major'; }
+        else if (rMaj > secondR) { secondR = rMaj; }
+        var rMin = keyCorrelation(pcHist, KEY_MINOR, root);
+        if (rMin > bestR) { secondR = bestR; bestR = rMin; bestKeyName = NOTE_NAMES[root] + ' minor'; }
+        else if (rMin > secondR) { secondR = rMin; }
+      }
+      if (bestKeyName !== null && bestR > 0.5) {
+        var abs = (bestR - 0.5) / 0.4;
+        var marg = (bestR - secondR) / 0.25;
+        var kc = abs < marg ? abs : marg;
+        if (kc < 0) kc = 0;
+        else if (kc > 1) kc = 1;
+        finalKey = bestKeyName;
+        keyConf = Math.round(kc * 1000) / 1000;
+      }
+    }
+
+    // Tuning from the median cents deviation of voiced frames.
+    var centsList = [];
+    for (var c = 0; c < frameCount; c += 1) {
+      if (pitch[c] > 0) {
+        var mf = freqToMidiFloat(pitch[c]);
+        centsList.push((mf - Math.round(mf)) * 100);
+      }
+    }
+    var tuning = centsList.length >= 8 ? Math.round(medianOf(centsList) * 10) / 10 : null;
+
     features.ready = true;
     features.duration = maxSamples / sampleRate;
     features.frameRate = frameRate;
@@ -376,6 +710,13 @@ export const VIDEO_AUDIO_ANALYSIS_SCRIPT = `(function () {
     features.mid = mid;
     features.high = high;
     features.onset = onset;
+    features.pitch = pitch;
+    features.pitchConf = pitchConf;
+    features.notes = noteList;
+    features.voicedRatio = frameCount > 0 ? voicedCount / frameCount : 0;
+    features.key = finalKey;
+    features.keyConfidence = keyConf;
+    features.tuningCents = tuning;
     features.beats = pickPeaks(onset, frameRate);
     features.bpm = estimateTempo(onset, frameRate);
     return features;
@@ -558,6 +899,8 @@ export const VIDEO_AUDIO_ANALYSIS_SCRIPT = `(function () {
   function createAudioApi(features) {
     var f = features || emptyFeatures();
     var beats = (f.beats || []).slice();
+    var pitchArr = f.pitch || new Float32Array(0);
+    var pitchConfArr = f.pitchConf || new Float32Array(0);
     return {
       ready: !!f.ready,
       duration: f.duration || 0,
@@ -569,11 +912,18 @@ export const VIDEO_AUDIO_ANALYSIS_SCRIPT = `(function () {
       mid: f.mid || new Float32Array(0),
       high: f.high || new Float32Array(0),
       onset: f.onset || new Float32Array(0),
+      pitch: pitchArr,
+      pitchConf: pitchConfArr,
+      key: f.key == null ? null : f.key,
+      keyConfidence: f.keyConfidence == null ? null : f.keyConfidence,
+      tuningCents: f.tuningCents == null ? null : f.tuningCents,
       level: function (t) { return sampleEnvelope(f.energy, f.frameRate, t); },
       lowAt: function (t) { return sampleEnvelope(f.low, f.frameRate, t); },
       midAt: function (t) { return sampleEnvelope(f.mid, f.frameRate, t); },
       highAt: function (t) { return sampleEnvelope(f.high, f.frameRate, t); },
       onsetAt: function (t) { return sampleEnvelope(f.onset, f.frameRate, t); },
+      pitchAt: function (t) { return sampleEnvelope(pitchArr, f.frameRate, t); },
+      pitchConfAt: function (t) { return sampleEnvelope(pitchConfArr, f.frameRate, t); },
       beatPulse: function (t, decay) {
         var d = decay == null ? 0.18 : decay;
         if (!(d > 0)) d = 0.18;
@@ -623,15 +973,39 @@ export const VIDEO_AUDIO_ANALYSIS_SCRIPT = `(function () {
     return out;
   }
 
+  // Median-pools an envelope down to 'count' buckets. Zeros count: a bucket
+  // that is mostly unvoiced summarizes to 0 rather than a stray frequency.
+  function downsampleMedian(values, count) {
+    var out = [];
+    var n = values ? values.length : 0;
+    if (!(count > 0)) return out;
+    if (n === 0) {
+      for (var z = 0; z < count; z += 1) out.push(0);
+      return out;
+    }
+    for (var i = 0; i < count; i += 1) {
+      var lo = Math.floor((i * n) / count);
+      var hi = Math.max(lo + 1, Math.floor(((i + 1) * n) / count));
+      var bucket = [];
+      for (var j = lo; j < hi && j < n; j += 1) bucket.push(values[j]);
+      var med = medianOf(bucket);
+      out.push(Math.round(med * 10) / 10);
+    }
+    return out;
+  }
+
   function summarizeFeatures(features, options) {
     var f = features || emptyFeatures();
     var maxBeats = (options && options.maxBeats) || 300;
     var points = (options && options.curvePoints) || 24;
+    var maxNotes = (options && options.maxNotes) || 200;
     if (!f.ready) {
       return {
         ready: false, duration: 0, frameRate: 0, bpm: null, beatCount: 0,
         beats: [], curvePoints: 0, curveStepSeconds: 0,
-        energy: [], low: [], mid: [], high: [], onset: []
+        energy: [], low: [], mid: [], high: [], onset: [],
+        pitch: [], noteCount: 0, notes: [],
+        key: null, keyConfidence: null, tuningCents: null, voicedRatio: 0
       };
     }
     var beats = f.beats || [];
@@ -643,6 +1017,19 @@ export const VIDEO_AUDIO_ANALYSIS_SCRIPT = `(function () {
       for (var b = 0; b < maxBeats; b += 1) {
         outBeats.push(round3(beats[Math.floor(b * step)]));
       }
+    }
+    var allNotes = f.notes || [];
+    var outNotes = [];
+    var noteCap = allNotes.length < maxNotes ? allNotes.length : maxNotes;
+    for (var nn = 0; nn < noteCap; nn += 1) {
+      var raw = allNotes[nn];
+      outNotes.push({
+        start: round3(raw.start),
+        end: round3(raw.end),
+        midi: raw.midi,
+        note: raw.note,
+        freq: round3(raw.freq)
+      });
     }
     return {
       ready: true,
@@ -657,7 +1044,14 @@ export const VIDEO_AUDIO_ANALYSIS_SCRIPT = `(function () {
       low: downsample(f.low, points),
       mid: downsample(f.mid, points),
       high: downsample(f.high, points),
-      onset: downsample(f.onset, points)
+      onset: downsample(f.onset, points),
+      pitch: downsampleMedian(f.pitch, points),
+      noteCount: allNotes.length,
+      notes: outNotes,
+      key: f.key == null ? null : f.key,
+      keyConfidence: f.keyConfidence == null ? null : f.keyConfidence,
+      tuningCents: f.tuningCents == null ? null : f.tuningCents,
+      voicedRatio: f.voicedRatio == null ? 0 : Math.round(f.voicedRatio * 1000) / 1000
     };
   }
 

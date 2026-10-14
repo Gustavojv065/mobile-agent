@@ -193,6 +193,10 @@ File tracks:
 - Must reference an audio file **already in the workspace**: MP3, WAV, M4A,
   AAC, OGG, or WebM, max 15 MB. Ask the user to attach it, or use one they
   already gave you — never invent a `workspace://` id.
+- In folder-scoped chats the reference media may live in the external folder,
+  which audio tools cannot read: import it first with
+  `importFolderFileToWorkspace`, then use the returned workspace fileId for
+  `analyzeAudio`, `transcribeAudio`, and `file:` tracks.
 - The tool inlines the file automatically. A missing, unreadable, or
   oversized file fails the render with a clear error before recording starts.
 
@@ -358,6 +362,12 @@ Surface (node-safe to ignore — it is always an object):
 - `audio.level(t)`, `audio.lowAt(t)`, `audio.midAt(t)`, `audio.highAt(t)`,
   `audio.onsetAt(t)` — normalized (0..1) envelopes at time `t`, linearly
   interpolated and clamped. `low` = bass/kick, `high` = hats/air.
+- `audio.pitchAt(t)` — dominant pitch in Hz at time `t` (`0` when unvoiced:
+  drums, noise, silence). Follows the loudest voice only — it cannot separate
+  chord tones. `audio.pitchConfAt(t)` is the 0..1 confidence for it.
+- `audio.key` — key implied by the notes (e.g. `"C major"`), or `null` when
+  unknown; `audio.keyConfidence` (0..1) and `audio.tuningCents` likewise.
+  `audio.pitch`/`audio.pitchConf` are the raw per-frame arrays.
 - `audio.beatPulse(t, decay?)` — `1` on a beat decaying exponentially back to
   `0` (default decay 0.18 s). Falls back to the `bpm` grid when no onsets were
   detected.
@@ -379,10 +389,13 @@ Rules:
   `if (audio.ready && t >= nextBeat) { nextBeat = ... }` using `audio.beats`,
   or drive per-frame motion directly with `beatPulse`/`lowAt` (preferred — it
   needs no state).
-- If you want to know the tempo or beat times **before** authoring (e.g. to
-  place cuts at the right moments), use the **`analyzeAudio` tool** on the same
-  `workspace://` file id; then hard-code those times or rely on the live
-  `audio` object at render time.
+- If you want to know the tempo, beat times, melody notes, or key **before**
+  authoring (e.g. to place cuts at the right moments or follow the tune), use
+  the **`analyzeAudio` tool** on the same `workspace://` file id; then
+  hard-code those times/notes or rely on the live `audio` object at render
+  time. Its `voicedRatio` tells you whether a usable melody exists (below
+  ~0.3 there is none — say so, do not invent notes). Pitch follows the
+  loudest voice only; never claim chord separations or instruments.
 
 ## Speech sync and captions
 

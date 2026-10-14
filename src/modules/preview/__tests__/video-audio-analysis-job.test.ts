@@ -74,6 +74,13 @@ describe("video-audio-analysis-job queue", () => {
           mid: [0, 0],
           high: [0, 0],
           onset: [0, 0],
+          pitch: [0, 0],
+          noteCount: 0,
+          notes: [],
+          key: null,
+          keyConfidence: null,
+          tuningCents: null,
+          voicedRatio: 0,
         },
       });
 
@@ -138,6 +145,13 @@ describe("video-audio-analysis-job queue", () => {
           mid: [0, 0],
           high: [0, 0],
           onset: [0, 0],
+          pitch: [0, 0],
+          noteCount: 0,
+          notes: [],
+          key: null,
+          keyConfidence: null,
+          tuningCents: null,
+          voicedRatio: 0,
         },
         pcm: { base64: "AAAA", sampleRate: 16000 },
       });

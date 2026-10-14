@@ -393,6 +393,13 @@ describe("createAudioApi", () => {
       mid: new Float32Array(3),
       high: new Float32Array(3),
       onset: new Float32Array(3),
+      pitch: new Float32Array(3),
+      pitchConf: new Float32Array(3),
+      key: null,
+      keyConfidence: null,
+      tuningCents: null,
+      notes: [],
+      voicedRatio: 0,
       ...partial,
     };
   }
@@ -414,6 +421,11 @@ describe("createAudioApi", () => {
     expect(a.beatPulse(1)).toBe(0);
     expect(a.beats).toEqual([]);
     expect(a.bpm).toBeNull();
+    expect(a.pitchAt(1)).toBe(0);
+    expect(a.pitchConfAt(1)).toBe(0);
+    expect(a.key).toBeNull();
+    expect(a.keyConfidence).toBeNull();
+    expect(a.tuningCents).toBeNull();
   });
 
   it("decays beat pulses from the most recent beat", () => {
@@ -451,6 +463,13 @@ describe("summarizeFeatures", () => {
       mid: new Float32Array(8),
       high: new Float32Array(8),
       onset: new Float32Array(8),
+      pitch: new Float32Array(8),
+      pitchConf: new Float32Array(8),
+      key: null,
+      keyConfidence: null,
+      tuningCents: null,
+      notes: [],
+      voicedRatio: 0,
       ...partial,
     };
   }
@@ -461,6 +480,13 @@ describe("summarizeFeatures", () => {
     expect(s.beats).toEqual([]);
     expect(s.energy).toEqual([]);
     expect(s.bpm).toBeNull();
+    expect(s.pitch).toEqual([]);
+    expect(s.notes).toEqual([]);
+    expect(s.noteCount).toBe(0);
+    expect(s.key).toBeNull();
+    expect(s.keyConfidence).toBeNull();
+    expect(s.tuningCents).toBeNull();
+    expect(s.voicedRatio).toBe(0);
   });
 
   it("downsamples curves to the requested resolution", () => {
@@ -506,6 +532,9 @@ describe("api shape guards (TS types vs injected JS)", () => {
         "energy",
         "frameRate",
         "high",
+        "key",
+        "keyConfidence",
+        "tuningCents",
         "level",
         "low",
         "lowAt",
@@ -514,6 +543,10 @@ describe("api shape guards (TS types vs injected JS)", () => {
         "midAt",
         "onset",
         "onsetAt",
+        "pitch",
+        "pitchAt",
+        "pitchConf",
+        "pitchConfAt",
         "ready",
       ].sort(),
     );
@@ -532,10 +565,17 @@ describe("api shape guards (TS types vs injected JS)", () => {
         "energy",
         "frameRate",
         "high",
+        "key",
+        "keyConfidence",
+        "tuningCents",
         "low",
         "mid",
+        "noteCount",
+        "notes",
         "onset",
+        "pitch",
         "ready",
+        "voicedRatio",
       ].sort(),
     );
   });
@@ -592,6 +632,159 @@ describe("analyzeAudio edge cases", () => {
     }
     expect(f.bpm).not.toBeNull();
     expect(Math.abs((f.bpm as number) - 120)).toBeLessThan(6);
+  });
+});
+
+describe("melody (pitch, notes, key)", () => {
+  // Deterministic pseudo-random noise (seeded LCG) so tests stay stable.
+  function noise(seconds: number, sampleRate: number, amp = 0.5) {
+    const n = Math.round(seconds * sampleRate);
+    const out = new Float32Array(n);
+    let state = 123456789;
+    for (let i = 0; i < n; i += 1) {
+      state = (state * 1103515245 + 12345) & 0x7fffffff;
+      out[i] = amp * (state / 0x3fffffff - 1);
+    }
+    return out;
+  }
+
+  function concat(...parts: Float32Array[]) {
+    const total = parts.reduce((sum, p) => sum + p.length, 0);
+    const out = new Float32Array(total);
+    let at = 0;
+    for (const p of parts) {
+      out.set(p, at);
+      at += p.length;
+    }
+    return out;
+  }
+
+  function voicedMedianPitch(f: AudioFeatures): number {
+    const voiced: number[] = [];
+    for (let i = 0; i < f.pitch.length; i += 1) {
+      if (f.pitch[i] > 0) voiced.push(f.pitch[i]);
+    }
+    if (voiced.length === 0) return 0;
+    voiced.sort((a, b) => a - b);
+    return voiced[Math.floor(voiced.length / 2)];
+  }
+
+  it("tracks a clean 440 Hz tone near its true frequency", () => {
+    const f = api().analyzeAudio(sine(440, 2, 22050), 22050, 2);
+    expect(f.ready).toBe(true);
+    expect(f.voicedRatio).toBeGreaterThan(0.8);
+    expect(Math.abs(voicedMedianPitch(f) - 440)).toBeLessThan(6);
+    expect(f.pitch).toHaveLength(f.energy.length);
+    expect(f.pitchConf).toHaveLength(f.energy.length);
+    expect(allFinite(f.pitch)).toBe(true);
+    expect(allFinite(f.pitchConf)).toBe(true);
+  });
+
+  it("reports A4 with ~zero tuning offset for a concert-pitch tone", () => {
+    const f = api().analyzeAudio(sine(440, 2, 22050), 22050, 2);
+    const a4 = f.notes.filter((n) => n.midi === 69);
+    expect(a4.length).toBeGreaterThan(0);
+    expect(a4[0].note).toBe("A4");
+    expect(f.tuningCents).not.toBeNull();
+    expect(Math.abs(f.tuningCents as number)).toBeLessThan(10);
+  });
+
+  it("segments a two-note line into A3 then A4", () => {
+    const line = concat(sine(220, 1, 22050), sine(440, 1, 22050));
+    const f = api().analyzeAudio(line, 22050, 2);
+    const midis = f.notes.map((n) => n.midi);
+    expect(midis).toContain(57);
+    expect(midis).toContain(69);
+    expect(f.notes.length).toBeGreaterThanOrEqual(2);
+    for (const n of f.notes) {
+      expect(n.end).toBeGreaterThan(n.start);
+      expect(n.note).toMatch(/^[A-G]#?\d$/);
+      expect(n.freq).toBeGreaterThan(0);
+    }
+    // Notes are ascending in time and non-overlapping.
+    for (let i = 1; i < f.notes.length; i += 1) {
+      expect(f.notes[i].start).toBeGreaterThanOrEqual(f.notes[i - 1].start);
+    }
+  });
+
+  it("hears C major in a C-E-G arpeggio", () => {
+    const arp = concat(
+      sine(261.63, 0.5, 22050, 0.7),
+      sine(329.63, 0.5, 22050, 0.7),
+      sine(392.0, 0.5, 22050, 0.7),
+    );
+    const f = api().analyzeAudio(arp, 22050, 2);
+    const midis = new Set(f.notes.map((n) => n.midi));
+    expect(midis.has(60)).toBe(true);
+    expect(midis.has(64)).toBe(true);
+    expect(midis.has(67)).toBe(true);
+    expect(f.key).toBe("C major");
+    expect(f.keyConfidence).not.toBeNull();
+  });
+
+  it("stays silent on silence: no pitch, no notes, no key", () => {
+    const f = api().analyzeAudio(new Float32Array(22050), 22050, 1);
+    expect(f.ready).toBe(true);
+    expect(f.voicedRatio).toBe(0);
+    expect(Array.from(f.pitch).every((v) => v === 0)).toBe(true);
+    expect(f.notes).toEqual([]);
+    expect(f.key).toBeNull();
+    expect(f.keyConfidence).toBeNull();
+    expect(f.tuningCents).toBeNull();
+  });
+
+  it("refuses to hear melody in broadband noise", () => {
+    const f = api().analyzeAudio(noise(2, 22050), 22050, 2);
+    expect(f.ready).toBe(true);
+    expect(f.voicedRatio).toBeLessThan(0.3);
+    expect(f.notes).toEqual([]);
+  });
+
+  it("is deterministic across runs", () => {
+    const samples = concat(sine(220, 1, 22050), sine(440, 1, 22050));
+    const first = api().analyzeAudio(samples, 22050, 2);
+    const second = api().analyzeAudio(samples, 22050, 2);
+    expect(Array.from(first.pitch)).toEqual(Array.from(second.pitch));
+    expect(Array.from(first.pitchConf)).toEqual(
+      Array.from(second.pitchConf),
+    );
+    expect(first.notes).toEqual(second.notes);
+    expect(first.key).toBe(second.key);
+    expect(first.tuningCents).toBe(second.tuningCents);
+  });
+
+  it("summarizes pitch, notes and key as JSON-safe output", () => {
+    const f = api().analyzeAudio(sine(440, 2, 22050), 22050, 2);
+    const s = api().summarizeFeatures(f, { curvePoints: 8 });
+    expect(s.pitch).toHaveLength(8);
+    expect(s.noteCount).toBe(f.notes.length);
+    expect(s.notes.length).toBeLessThanOrEqual(200);
+    expect(s.voicedRatio).toBeGreaterThan(0.8);
+    expect(() => JSON.stringify(s)).not.toThrow();
+    const parsed = JSON.parse(JSON.stringify(s));
+    expect(parsed.pitch).toHaveLength(8);
+    expect(parsed.notes[0].note).toBe("A4");
+  });
+
+  it("caps long note lists but keeps the total count", () => {
+    const parts: Float32Array[] = [];
+    for (let i = 0; i < 12; i += 1) {
+      parts.push(sine(i % 2 === 0 ? 220 : 440, 0.4, 22050));
+    }
+    const f = api().analyzeAudio(concat(...parts), 22050, 5);
+    const s = api().summarizeFeatures(f, { maxNotes: 3 });
+    expect(s.noteCount).toBe(f.notes.length);
+    expect(s.notes).toHaveLength(Math.min(3, f.notes.length));
+  });
+
+  it("exposes pitch lookups on the render-time audio object", () => {
+    const f = api().analyzeAudio(sine(440, 2, 22050), 22050, 2);
+    const a = api().createAudioApi(f);
+    expect(a.pitchAt(1)).toBeGreaterThan(0);
+    expect(a.pitchConfAt(1)).toBeGreaterThan(0);
+    expect(a.pitchAt(99)).toBe(a.pitchAt(2));
+    const silent = api().createAudioApi(null);
+    expect(silent.pitchAt(1)).toBe(0);
   });
 });
 
