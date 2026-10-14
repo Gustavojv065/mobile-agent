@@ -17,6 +17,16 @@ import { resolveHtml } from "@/modules/tools/built-in/render-video";
 
 const MAX_PREVIEW_FRAMES = 8;
 
+type PreviewSceneContentItem = Record<string, unknown>;
+
+export type PreviewSceneOutput = {
+  content?: PreviewSceneContentItem[];
+  text?: string;
+  frames?: unknown;
+  frameCount?: number;
+  warnings?: unknown;
+};
+
 function round2(value: number) {
   return Math.round(value * 100) / 100;
 }
@@ -130,7 +140,22 @@ export function createPreviewSceneTool({
         .optional()
         .describe("Base file name for the saved stills."),
     }),
-    execute: async ({ html, fileId, duration, times, name }, { abortSignal }) => {
+    execute: async (
+      {
+        html,
+        fileId,
+        duration,
+        times,
+        name,
+      }: {
+        html?: string;
+        fileId?: string;
+        duration?: number;
+        times?: number[];
+        name?: string;
+      },
+      { abortSignal },
+    ) => {
       const inputSummary = summarizeValue({
         hasHtml: Boolean(html),
         fileId: fileId ?? null,
@@ -221,7 +246,7 @@ export function createPreviewSceneTool({
           frames.map((f) => `${f.time}s as workspace://${f.fileId}`).join(", ") +
           ". Describe what you see at each timestamp when replying.";
 
-        const output = supportsImageInput
+        const output: PreviewSceneOutput = supportsImageInput
           ? {
               content: [{ type: "text" as const, text }, ...inlineParts],
               frames,
@@ -268,6 +293,68 @@ export function createPreviewSceneTool({
         );
         throw error;
       }
+    },
+    // Without this the SDK ships execute's return (including the storyboard
+    // JPEG bytes) to the model as a giant JSON blob instead of real vision
+    // content — the same failure getVideoFrame had. Normalize the raw file
+    // parts into tagged FileData so the frames arrive as images. Text (with
+    // the workspace:// links) always survives; frames whose bytes are
+    // missing are skipped rather than sent broken.
+    toModelOutput: ({ output }: { output: any }) => {
+      const content = Array.isArray((output as PreviewSceneOutput)?.content)
+        ? (output as PreviewSceneOutput).content!
+        : null;
+      if (!supportsImageInput || !content) {
+        const text =
+          output && typeof output === "object"
+            ? (output as PreviewSceneOutput).text ?? ""
+            : "";
+        return { type: "text", value: text };
+      }
+      const value: (
+        | { type: "text"; text: string }
+        | {
+            type: "file";
+            data: { type: "data"; data: Uint8Array };
+            mediaType: string;
+            filename?: string;
+          }
+      )[] = [];
+      for (const item of content) {
+        if (!item || typeof item !== "object") continue;
+        const record = item as {
+          type?: unknown;
+          text?: unknown;
+          data?: unknown;
+          mediaType?: unknown;
+          filename?: unknown;
+        };
+        if (record.type === "text" && typeof record.text === "string") {
+          value.push({ type: "text", text: record.text });
+          continue;
+        }
+        if (record.type !== "file") continue;
+        const raw =
+          record.data &&
+          typeof record.data === "object" &&
+          "type" in record.data
+            ? (record.data as { data?: unknown }).data
+            : record.data;
+        if (!(raw instanceof Uint8Array)) continue;
+        if (typeof record.mediaType !== "string") continue;
+        value.push({
+          type: "file",
+          data: { type: "data", data: raw },
+          mediaType: record.mediaType,
+          ...(typeof record.filename === "string"
+            ? { filename: record.filename }
+            : {}),
+        });
+      }
+      if (value.length === 0) {
+        return { type: "text", value: output?.text ?? "" };
+      }
+      return { type: "content", value };
     },
   });
 }

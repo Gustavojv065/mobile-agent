@@ -214,4 +214,55 @@ describe("previewScene", () => {
       expect.objectContaining({ name: "intro-preview-2s.jpg" }),
     );
   });
+
+  it("exposes toModelOutput that converts storyboard bytes to vision content", async () => {
+    const tool = makeTool();
+    const out = await execute(tool, {
+      html: SCENE_6S,
+      duration: 6,
+      times: [0, 3],
+    });
+    const def = tool as unknown as {
+      toModelOutput: (args: { output: unknown }) => unknown;
+    };
+    // Regression guard: without this adapter the SDK ships the raw execute
+    // return (JPEG bytes included) as a JSON blob and the model never sees
+    // the storyboard.
+    expect(typeof def.toModelOutput).toBe("function");
+    const modelOutput = def.toModelOutput({ output: out }) as {
+      type: string;
+      value: {
+        type: string;
+        text?: string;
+        mediaType?: string;
+        data?: { type?: string; data?: unknown };
+      }[];
+    };
+    expect(modelOutput.type).toBe("content");
+    expect(modelOutput.value[0]).toMatchObject({ type: "text" });
+    const files = modelOutput.value.slice(1);
+    expect(files).toHaveLength(2);
+    for (const file of files) {
+      expect(file.type).toBe("file");
+      expect(file.mediaType).toBe("image/jpeg");
+      expect(file.data?.type).toBe("data");
+      expect(file.data?.data).toBeInstanceOf(Uint8Array);
+    }
+  });
+
+  it("toModelOutput falls back to text without image input", async () => {
+    const tool = makeTool(false);
+    const out = (await execute(tool, {
+      html: SCENE_6S,
+      duration: 6,
+      times: [2],
+    })) as { text: string };
+    const def = tool as unknown as {
+      toModelOutput: (args: { output: unknown }) => unknown;
+    };
+    expect(def.toModelOutput({ output: out })).toEqual({
+      type: "text",
+      value: out.text,
+    });
+  });
 });
