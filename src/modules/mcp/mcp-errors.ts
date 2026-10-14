@@ -76,3 +76,18 @@ export function getActionableMcpErrorMessage(errors: unknown[]) {
     ? `${base} (Tried both "sse" and "http" transports.)`
     : base;
 }
+
+const TRANSPORT_MISMATCH_PATTERN =
+  /\b404\b|\b405\b|method not allowed|does not support .*transport/i;
+
+/**
+ * Whether a connection failure looks like the wrong transport was used
+ * (e.g. SSE 405 on an http-only server). Only these failures justify
+ * probing the alternate transport; auth/timeout/network errors should fail
+ * fast against the configured transport instead of generating noise.
+ */
+export function isTransportMismatchError(error: unknown): boolean {
+  return getActionableMcpErrorMessages(error).some((message) =>
+    TRANSPORT_MISMATCH_PATTERN.test(message),
+  );
+}

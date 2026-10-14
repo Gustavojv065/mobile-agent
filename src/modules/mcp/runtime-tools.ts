@@ -6,7 +6,7 @@ import type { ToolSet } from "ai";
 import { Platform } from "react-native";
 import "react-native-get-random-values";
 import { createMcpTransportOAuthProvider } from "@/modules/mcp/oauth";
-import { getActionableMcpErrorMessage } from "@/modules/mcp/mcp-errors";
+import { getActionableMcpErrorMessage, isTransportMismatchError } from "@/modules/mcp/mcp-errors";
 import { secureSecretStore } from "@/core/services/secrets";
 import { createRecord, summarizeValue } from "@/modules/tools/built-in/shared";
 import type { McpServerConfig, ToolExecutionRecord } from "@/core/types/app-state";
@@ -154,21 +154,29 @@ async function connectMcpClient(
 
   for (const transportType of transports) {
     try {
+      // Attach a pre-emptive handler so the expected probe failure (e.g. SSE
+      // 405 on an http-only server) is never reported as unhandled on
+      // React Native, even in the window before waitForMcpOperation attaches.
+      const probe = createRuntimeMCPClient({
+        clientName: "mobile-agent",
+        maxRetries: 2,
+        // Sink SDK-internal error reports; failures surface via the awaited
+        // path below and are aggregated into an actionable message.
+        onUncaughtError: () => {},
+        transport: {
+          type: transportType,
+          url: server.url,
+          headers,
+          redirect: "follow",
+          authProvider:
+            server.authMode === "oauth"
+              ? createMcpTransportOAuthProvider(server)
+              : undefined,
+        },
+      });
+      void probe.catch(() => {});
       return await waitForMcpOperation(
-        createRuntimeMCPClient({
-          clientName: "mobile-agent",
-          maxRetries: 2,
-          transport: {
-            type: transportType,
-            url: server.url,
-            headers,
-            redirect: "follow",
-            authProvider:
-              server.authMode === "oauth"
-                ? createMcpTransportOAuthProvider(server)
-                : undefined,
-          },
-        }),
+        probe,
         signal,
         (client) => {
           client.close().catch(() => {});
@@ -176,6 +184,13 @@ async function connectMcpClient(
       );
     } catch (error) {
       failures.push(error);
+      // Trust the configured transport: only probe the alternate when the
+      // failure looks like a transport mismatch (e.g. SSE 405 on an
+      // http-only server). Auth, timeout, and network errors fail fast so a
+      // blip on the right transport doesn't produce a misleading second error.
+      if (!isTransportMismatchError(error)) {
+        break;
+      }
     }
   }
 

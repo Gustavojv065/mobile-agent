@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { getActionableMcpErrorMessage } from "@/modules/mcp/mcp-errors";
+import { getActionableMcpErrorMessage, isTransportMismatchError } from "@/modules/mcp/mcp-errors";
 
 describe("getActionableMcpErrorMessage", () => {
   it("returns the default when there are no failures", () => {
@@ -45,5 +45,40 @@ describe("getActionableMcpErrorMessage", () => {
       new Error('{"error_description": "invalid client secret"}'),
     ]);
     expect(message).toBe("invalid client secret");
+  });
+});
+
+describe("isTransportMismatchError", () => {
+  it("detects SSE 405 transport mismatches", () => {
+    expect(
+      isTransportMismatchError(
+        new Error(
+          "MCP SSE Transport Error: 405. This server does not support SSE transport.",
+        ),
+      ),
+    ).toBe(true);
+  });
+
+  it("detects 404 and method-not-allowed mismatches", () => {
+    expect(isTransportMismatchError(new Error("HTTP 404 Not Found"))).toBe(
+      true,
+    );
+    expect(
+      isTransportMismatchError(new Error("405 Method Not Allowed")),
+    ).toBe(true);
+  });
+
+  it("ignores auth, network, and timeout errors", () => {
+    expect(
+      isTransportMismatchError(new Error("unauthorized: missing token")),
+    ).toBe(false);
+    expect(
+      isTransportMismatchError(new Error("socket hang up")),
+    ).toBe(false);
+    expect(
+      isTransportMismatchError(
+        new Error("MCP connection timed out or was canceled."),
+      ),
+    ).toBe(false);
   });
 });
