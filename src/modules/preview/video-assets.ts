@@ -49,10 +49,14 @@ const IMAGE_MIME_BY_EXTENSION: Record<string, string> = {
 
 const SUPPORTED_VIDEO_MIME_TYPES = new Set(["video/mp4", "video/webm"]);
 
+/** Container the WebView cannot reliably play: always converted to MP4. */
+const TRANSCODE_ONLY_VIDEO_MIME_TYPES = new Set(["video/quicktime"]);
+
 const VIDEO_MIME_BY_EXTENSION: Record<string, string> = {
   mp4: "video/mp4",
   m4v: "video/mp4",
   webm: "video/webm",
+  mov: "video/quicktime",
 };
 
 const IMG_SRC_PATTERN =
@@ -114,11 +118,20 @@ export function resolveVideoMimeType(
   displayName: string,
 ): string | null {
   const normalized = (mimeType ?? "").trim().toLowerCase();
-  if (normalized && SUPPORTED_VIDEO_MIME_TYPES.has(normalized)) {
+  if (
+    normalized &&
+    (SUPPORTED_VIDEO_MIME_TYPES.has(normalized) ||
+      TRANSCODE_ONLY_VIDEO_MIME_TYPES.has(normalized))
+  ) {
     return normalized;
   }
   const extension = displayName.split(".").pop()?.toLowerCase() ?? "";
   return VIDEO_MIME_BY_EXTENSION[extension] ?? null;
+}
+
+/** True for containers the WebView cannot play directly (always converted). */
+export function isTranscodeOnlyVideoMimeType(resolved: string): boolean {
+  return TRANSCODE_ONLY_VIDEO_MIME_TYPES.has(resolved);
 }
 
 function formatBytes(bytes: number): string {
@@ -158,7 +171,14 @@ export function assertVideoFileUsable(
   const resolved = resolveVideoMimeType(mimeType, displayName);
   if (!resolved) {
     throw new Error(
-      `File "${displayName}" is not a supported video clip. Use MP4 or WebM clips.`,
+      `File "${displayName}" is not a supported video clip. Use MP4, WebM, or MOV clips.`,
+    );
+  }
+  if (isTranscodeOnlyVideoMimeType(resolved)) {
+    // MOV never inlines directly (unreliable WebView playback) — it must go
+    // through prepareClipBytes. Reaching here means the caller bypassed it.
+    throw new Error(
+      `File "${displayName}" needs conversion before use as a scene clip.`,
     );
   }
   if (!Number.isFinite(sizeBytes) || sizeBytes <= 0) {
@@ -200,11 +220,19 @@ async function inlineAssetUris(
       );
     }
     // Stat before reading: a 200 MB source must never enter the JS heap
-    // just to be rejected. Clips get a transcode attempt (below); other
-    // kinds fail fast on the stat alone.
+    // just to be rejected. Over-cap clips get a transcode attempt, and MOV
+    // always converts (unreliable WebView playback); other kinds fail fast
+    // on the stat alone.
     const statSize = typeof file.size === "number" ? file.size : null;
-    if (kind === "clip" && statSize != null && statSize > MAX_VIDEO_FILE_BYTES) {
-      const prepared = await prepareClipBytes(record.id, record.displayName, record.mimeType, file, statSize);
+    const clipMime =
+      kind === "clip" ? resolveVideoMimeType(record.mimeType, record.displayName) : null;
+    const needsTranscode =
+      kind === "clip" &&
+      clipMime !== null &&
+      (isTranscodeOnlyVideoMimeType(clipMime) ||
+        (statSize != null && statSize > MAX_VIDEO_FILE_BYTES));
+    if (needsTranscode) {
+      const prepared = await prepareClipBytes(record.id, record.displayName, record.mimeType, file, statSize ?? 0);
       files.push(record.displayName);
       next = next
         .split(`workspace://${id}`)
@@ -254,11 +282,12 @@ async function prepareClipBytes(
   const resolved = resolveVideoMimeType(mimeType, displayName);
   if (!resolved) {
     throw new Error(
-      `File "${displayName}" is not a supported video clip. Use MP4 or WebM clips.`,
+      `File "${displayName}" is not a supported video clip. Use MP4, WebM, or MOV clips.`,
     );
   }
+  const needsConversion = isTranscodeOnlyVideoMimeType(resolved);
   const tooLarge = new Error(
-    `File "${displayName}" is too large (${formatClipBytes(statSize)}). Keep scene clips under ${formatClipBytes(MAX_VIDEO_FILE_BYTES)}.`,
+    `File "${displayName}" is too large (${statSize > 0 ? formatClipBytes(statSize) : "over the budget"}). Keep scene clips under ${formatClipBytes(MAX_VIDEO_FILE_BYTES)}.`,
   );
   // Lazy: expo-file-system and the native module pull react-native, which
   // cannot even parse in unit tests. Only the over-cap path pays for it.
@@ -301,13 +330,14 @@ async function prepareClipBytes(
     return {
       bytes,
       mimeType: "video/mp4",
-      warning:
-        `"${displayName}" was ${formatClipBytes(statSize)} — over the ${formatClipBytes(MAX_VIDEO_FILE_BYTES)} scene-clip budget, so it was compressed to ${formatClipBytes(bytes.length)}. Detail may be softer; attach a smaller file or trim it to skip this.`,
+      warning: needsConversion
+        ? `"${displayName}" is MOV, which scenes cannot play directly — converted to MP4 (${formatClipBytes(bytes.length)}). Detail may be softer; attach an MP4 to skip this.`
+        : `"${displayName}" was ${statSize > 0 ? formatClipBytes(statSize) : "over the budget"} — over the ${formatClipBytes(MAX_VIDEO_FILE_BYTES)} scene-clip budget, so it was compressed to ${formatClipBytes(bytes.length)}. Detail may be softer; attach a smaller file or trim it to skip this.`,
     };
   } catch (error) {
     if (error === tooLarge) throw error;
     throw new Error(
-      `File "${displayName}" is too large (${formatClipBytes(statSize)}) and could not be compressed: ${error instanceof Error ? error.message : String(error)}`,
+      `File "${displayName}" is too large (${statSize > 0 ? formatClipBytes(statSize) : "over the budget"}) and could not be compressed: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
 }

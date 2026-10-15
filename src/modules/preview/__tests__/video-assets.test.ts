@@ -53,6 +53,7 @@ const {
   inlineAudioAssets,
   inlineImageAssets,
   inlineVideoAssets,
+  isTranscodeOnlyVideoMimeType,
   resolveImageMimeType,
   resolveVideoMimeType,
 } = await import("@/modules/preview/video-assets");
@@ -142,8 +143,15 @@ describe("resolveVideoMimeType", () => {
   });
 
   it("returns null for unsupported types", () => {
-    expect(resolveVideoMimeType("video/quicktime", "clip.mov")).toBeNull();
     expect(resolveVideoMimeType(null, "song.mp3")).toBeNull();
+    expect(resolveVideoMimeType("video/avi", "clip.avi")).toBeNull();
+  });
+
+  it("resolves MOV as transcode-only, never direct-playable", () => {
+    expect(resolveVideoMimeType("video/quicktime", "clip.mov")).toBe("video/quicktime");
+    expect(resolveVideoMimeType(null, "clip.mov")).toBe("video/quicktime");
+    expect(isTranscodeOnlyVideoMimeType("video/quicktime")).toBe(true);
+    expect(isTranscodeOnlyVideoMimeType("video/mp4")).toBe(false);
   });
 });
 
@@ -163,7 +171,7 @@ describe("assertImageFileUsable", () => {
 
 describe("assertVideoFileUsable", () => {
   it("rejects unsupported formats, empties, and oversized files", () => {
-    expect(() => assertVideoFileUsable("c.mov", "video/quicktime", 100)).toThrow(
+    expect(() => assertVideoFileUsable("c.avi", "video/avi", 100)).toThrow(
       /not a supported video/,
     );
     expect(() => assertVideoFileUsable("c.mp4", "video/mp4", 0)).toThrow(
@@ -172,6 +180,12 @@ describe("assertVideoFileUsable", () => {
     expect(() =>
       assertVideoFileUsable("big.mp4", "video/mp4", 16 * 1024 * 1024),
     ).toThrow(/too large/);
+  });
+
+  it("rejects MOV on the direct path (must convert first)", () => {
+    expect(() => assertVideoFileUsable("c.mov", "video/quicktime", 100)).toThrow(
+      /needs conversion/,
+    );
   });
 });
 
@@ -316,6 +330,55 @@ describe("inlineVideoAssets over-cap transcoding", () => {
     await expect(
       inlineVideoAssets(`<video src="workspace://vid-1">`, repository()),
     ).rejects.toThrow(/too large|could not be compressed/);
+  });
+
+  it("converts under-cap MOV clips instead of rejecting them", async () => {
+    mocks.getById.mockImplementation(async (id: string) => ({
+      id,
+      displayName: "phone-clip.mov",
+      mimeType: "video/quicktime",
+      relativePath: `${id}/phone-clip.mov`,
+    }));
+    mocks.resolveWorkspaceFile.mockReturnValue({
+      get exists() {
+        return true;
+      },
+      size: 8 * 1024 * 1024,
+      uri: "file:///workspace/phone-clip.mov",
+      bytes: async () => {
+        throw new Error("MOV bytes must never inline directly");
+      },
+    });
+    const { html: out, videoFiles, warnings } = await inlineVideoAssets(
+      `<video src="workspace://vid-1">`,
+      repository(),
+    );
+    expect(nativeMocks.transcodeClip).toHaveBeenCalledTimes(1);
+    expect(videoFiles).toEqual(["phone-clip.mov"]);
+    expect(out).toContain("data:video/mp4;base64,");
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/MOV.*converted to MP4/);
+  });
+
+  it("still rejects containers nothing can play", async () => {
+    mocks.getById.mockImplementation(async (id: string) => ({
+      id,
+      displayName: "clip.avi",
+      mimeType: "video/avi",
+      relativePath: `${id}/clip.avi`,
+    }));
+    mocks.resolveWorkspaceFile.mockReturnValue({
+      get exists() {
+        return true;
+      },
+      size: 1024,
+      uri: "file:///workspace/clip.avi",
+      bytes: async () => new Uint8Array([1, 2, 3, 4]),
+    });
+    await expect(
+      inlineVideoAssets(`<video src="workspace://vid-1">`, repository()),
+    ).rejects.toThrow(/not a supported video/);
+    expect(nativeMocks.transcodeClip).not.toHaveBeenCalled();
   });
 });
 

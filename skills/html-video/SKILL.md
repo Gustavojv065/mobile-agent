@@ -247,7 +247,8 @@ Images and video clips in scenes (user-provided visuals):
   them automatically (JPEG/PNG/WebP/GIF images, MP4/WebM clips, max 15 MB
   each — same cap as audio). Over-cap MP4/WebM clips are auto-compressed
   on-device (downscaled, audio dropped since clips play muted) with a
-  warning naming the new size — tell the user when it happens instead of
+  warning naming the new size, and MOV clips are auto-converted to MP4
+  the same way — tell the user when it happens instead of
   hiding it. Never invent a `workspace://` id: use a file
   the user attached or one already in the workspace.
 - Images: hide an `<img src="workspace://<id>">` and paint it with
