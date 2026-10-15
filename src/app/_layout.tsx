@@ -38,7 +38,12 @@ import { useEffect, useRef } from "react";
 import { Pressable, Text, View } from "react-native";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
+import { enableFreeze } from "react-native-screens";
 import "./global.css";
+
+// Freeze off-screen native screens: settings/library/terminal stop
+// re-rendering while the chat streams. Called once at module scope.
+enableFreeze(true);
 
 SplashScreen.preventAutoHideAsync();
 
