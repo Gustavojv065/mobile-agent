@@ -750,10 +750,12 @@ export function AppStateProvider({ children }: AppStateProviderProps) {
         });
     }, [snapshot.currentConversation?.id, snapshot.messages]);
 
-    function resolvePendingToolApproval(
+    const resolvePendingToolApproval = useCallback(
+        (
+        
         approval: PendingToolApproval,
         decision: import("@/modules/runtime/run-manager").ToolApprovalDecision,
-    ) {
+        ) => {
         runRegistryRef.current.resolvePendingApproval(
             approval.runId,
             approval.id,
@@ -765,12 +767,16 @@ export function AppStateProvider({ children }: AppStateProviderProps) {
         dismissApprovalNotification(approval.runId).catch(() => { });
 
         setBackgroundAgentNotificationState("running").catch(() => { });
-    }
+    },
+        [],
+    );
 
-    function resolvePendingQuestionnaire(
+    const resolvePendingQuestionnaire = useCallback(
+        (
+        
         questionnaire: PendingQuestionnaire,
         answers: PendingQuestionnaireAnswer[] | null,
-    ) {
+        ) => {
         runRegistryRef.current.resolvePendingQuestionnaire(
             questionnaire.runId,
             questionnaire.id,
@@ -781,12 +787,16 @@ export function AppStateProvider({ children }: AppStateProviderProps) {
         );
 
         setBackgroundAgentNotificationState("running").catch(() => { });
-    }
+    },
+        [],
+    );
 
-    async function requestRunQuestionnaire(
+    const requestRunQuestionnaire = useCallback(
+        async (
+        
         run: AgentRun,
         request: import("@/core/types/app-state").PendingQuestionnaireRequest,
-    ): Promise<PendingQuestionnaireAnswer[] | null> {
+        ): Promise<PendingQuestionnaireAnswer[] | null> => {
         const conversation =
             snapshotRef.current.conversations.find(
                 (item) => item.id === run.conversationId,
@@ -808,12 +818,16 @@ export function AppStateProvider({ children }: AppStateProviderProps) {
                 resolve,
             );
         });
-    }
+    },
+        [],
+    );
 
-    function resolvePendingSecretRequest(
+    const resolvePendingSecretRequest = useCallback(
+        (
+        
         secretRequest: PendingSecretRequest,
         answer: PendingSecretRequestAnswer,
-    ) {
+        ) => {
         runRegistryRef.current.resolvePendingSecretRequest(
             secretRequest.runId,
             secretRequest.id,
@@ -824,9 +838,12 @@ export function AppStateProvider({ children }: AppStateProviderProps) {
         );
 
         setBackgroundAgentNotificationState("running").catch(() => { });
-    }
+    },
+        [],
+    );
 
-    async function submitPendingSecretRequest(value: string) {
+    const submitPendingSecretRequest = useCallback(
+        async (value: string) => {
         const secretRequest = pendingSecretRequestsRef.current.find(
             (item) =>
                 item.conversationId === snapshotRef.current.currentConversation?.id,
@@ -845,9 +862,12 @@ export function AppStateProvider({ children }: AppStateProviderProps) {
             );
         }
         resolvePendingSecretRequest(secretRequest, { status: "stored" });
-    }
+    },
+        [resolvePendingSecretRequest],
+    );
 
-    function dismissPendingSecretRequest() {
+    const dismissPendingSecretRequest = useCallback(
+        () => {
         const secretRequest = pendingSecretRequestsRef.current.find(
             (item) =>
                 item.conversationId === snapshotRef.current.currentConversation?.id,
@@ -858,12 +878,16 @@ export function AppStateProvider({ children }: AppStateProviderProps) {
         }
 
         resolvePendingSecretRequest(secretRequest, { status: "deferred" });
-    }
+    },
+        [resolvePendingSecretRequest],
+    );
 
-    async function requestRunSecret(
+    const requestRunSecret = useCallback(
+        async (
+        
         run: AgentRun,
         request: PendingSecretRequestRequest,
-    ): Promise<PendingSecretRequestAnswer> {
+        ): Promise<PendingSecretRequestAnswer> => {
         const conversation =
             snapshotRef.current.conversations.find(
                 (item) => item.id === run.conversationId,
@@ -894,33 +918,17 @@ export function AppStateProvider({ children }: AppStateProviderProps) {
                 resolve,
             );
         });
-    }
+    },
+        [],
+    );
 
-    async function resolveNotificationApproval(input: {
-        approvalId: string;
-        decision: import("@/modules/runtime/run-manager").ToolApprovalDecision;
-        runId: string;
-    }) {
-        const approval = pendingToolApprovalsRef.current.find(
-            (item) =>
-                item.runId === input.runId && item.id === input.approvalId,
-        );
 
-        if (!approval) {
-            return;
-        }
-
-        if (snapshotRef.current.currentConversation?.id !== approval.conversationId) {
-            await selectConversation(approval.conversationId);
-        }
-
-        resolvePendingToolApproval(approval, input.decision);
-    }
-
-    async function requestToolApproval(
+    const requestToolApproval = useCallback(
+        async (
+        
         run: AgentRun,
         request: PendingToolApprovalRequest,
-    ) {
+        ) => {
         if (
             (snapshotRef.current.conversationApprovalModes?.[run.conversationId] ??
                 "ask") !== "ask"
@@ -984,18 +992,25 @@ export function AppStateProvider({ children }: AppStateProviderProps) {
                 resolve,
             );
         });
-    }
+    },
+        [],
+    );
 
-    function dismissInAppNotification() {
+    const dismissInAppNotification = useCallback(
+        () => {
         setInAppNotification(null);
-    }
+    },
+        [],
+    );
 
-    async function notifyRunStateChange(input: {
+    const notifyRunStateChange = useCallback(
+        async (
+        input: {
         body: string;
         conversationId: string;
         status: "success" | "failed";
         title: string;
-    }) {
+        }) => {
         const currentConversationId =
             snapshotRef.current.currentConversation?.id ?? null;
 
@@ -1022,7 +1037,9 @@ export function AppStateProvider({ children }: AppStateProviderProps) {
             status: input.status,
             title: input.title,
         });
-    }
+    },
+        [],
+    );
 
     const updateRunRecord = useCallback(
         async (
@@ -1050,91 +1067,6 @@ export function AppStateProvider({ children }: AppStateProviderProps) {
         [],
     );
 
-    async function generateAndApplyConversationTitle(input: {
-        conversation: Conversation;
-        firstUserMessage: string;
-        model: ResolvedModel;
-        provider: ProviderConfig;
-        runId: string;
-    }) {
-        const GENERATE_TITLE_PROMPT = `
-You are a title generator.
-
-<task>
-Generate a brief title that would help the user find this conversation later.
-
-Follow all rules in <rules>
-Use the <examples> so you know what a good title looks like.
-Your output must be:
-- A single line
-- ≤50 characters
-- No explanations
-</task>
-
-<rules>
-- Never include tool names in the title
-- If the user message is short or conversational (e.g. "hello", "lol", "what's up", "hey"), return "New chat"
-</rules>
-
-<examples>
-"write a blog post on x and store in my notion" → Blog for X
-"checkout x repo on github" → Explore X Repo
-</examples>
-`;
-        const fallback = buildConversationTitle(input.firstUserMessage);
-        let title = fallback;
-
-        try {
-            const result = await modelRuntime.generateTextStream({
-                maxToolSteps: 1,
-                messages: [
-                    {
-                        role: "user",
-                        content: input.firstUserMessage,
-                    },
-                ],
-                model: input.model,
-                provider: input.provider,
-                secretStore: secureSecretStore,
-                sessionId: `${input.runId}:title`,
-                system: GENERATE_TITLE_PROMPT,
-            });
-
-            title = normalizeGeneratedConversationTitle(result.text, fallback);
-        } catch { }
-
-        const latest = await repositoriesRef.current.conversationRepository.getById(
-            input.conversation.id,
-        );
-
-        if (!latest || latest.title !== "New chat") return;
-
-        const updatedConversation = {
-            ...latest,
-            title,
-            updatedAt: new Date().toISOString(),
-        };
-
-        await repositoriesRef.current.conversationRepository.updateMetadata(
-            latest.id,
-            {
-                title,
-                updatedAt: updatedConversation.updatedAt,
-            },
-        );
-
-        setSnapshot((current) => ({
-            ...current,
-            conversations: upsertConversation(
-                current.conversations,
-                updatedConversation,
-            ),
-            currentConversation:
-                current.currentConversation?.id === updatedConversation.id
-                    ? updatedConversation
-                    : current.currentConversation,
-        }));
-    }
 
     const hydrate = useCallback(async () => {
         const hydrationGeneration = ++hydrationGenerationRef.current;
@@ -1861,6 +1793,96 @@ Your output must be:
         }));
     }, []);
 
+    const generateAndApplyConversationTitle = useCallback(
+        async (
+        input: {
+        conversation: Conversation;
+        firstUserMessage: string;
+        model: ResolvedModel;
+        provider: ProviderConfig;
+        runId: string;
+        }) => {
+        const GENERATE_TITLE_PROMPT = `
+You are a title generator.
+
+<task>
+Generate a brief title that would help the user find this conversation later.
+
+Follow all rules in <rules>
+Use the <examples> so you know what a good title looks like.
+Your output must be:
+- A single line
+- ≤50 characters
+- No explanations
+</task>
+
+<rules>
+- Never include tool names in the title
+- If the user message is short or conversational (e.g. "hello", "lol", "what's up", "hey"), return "New chat"
+</rules>
+
+<examples>
+"write a blog post on x and store in my notion" → Blog for X
+"checkout x repo on github" → Explore X Repo
+</examples>
+`;
+        const fallback = buildConversationTitle(input.firstUserMessage);
+        let title = fallback;
+
+        try {
+            const result = await modelRuntime.generateTextStream({
+                maxToolSteps: 1,
+                messages: [
+                    {
+                        role: "user",
+                        content: input.firstUserMessage,
+                    },
+                ],
+                model: input.model,
+                provider: input.provider,
+                secretStore: secureSecretStore,
+                sessionId: `${input.runId}:title`,
+                system: GENERATE_TITLE_PROMPT,
+            });
+
+            title = normalizeGeneratedConversationTitle(result.text, fallback);
+        } catch { }
+
+        const latest = await repositoriesRef.current.conversationRepository.getById(
+            input.conversation.id,
+        );
+
+        if (!latest || latest.title !== "New chat") return;
+
+        const updatedConversation = {
+            ...latest,
+            title,
+            updatedAt: new Date().toISOString(),
+        };
+
+        await repositoriesRef.current.conversationRepository.updateMetadata(
+            latest.id,
+            {
+                title,
+                updatedAt: updatedConversation.updatedAt,
+            },
+        );
+
+        setSnapshot((current) => ({
+            ...current,
+            conversations: upsertConversation(
+                current.conversations,
+                updatedConversation,
+            ),
+            currentConversation:
+                current.currentConversation?.id === updatedConversation.id
+                    ? updatedConversation
+                    : current.currentConversation,
+        }));
+    },
+        [],
+    );
+
     const clearWorkspaceFiles = useCallback(async () => {
         await workspaceServiceRef.current.clearAll();
 
@@ -1938,23 +1960,61 @@ Your output must be:
         }));
     }, []);
 
-    async function updateProvider(
+    const updateProvider = useCallback(
+        async (
+        
         providerId: string,
         input: {
-            baseUrl?: string | null;
-            enabled?: boolean;
-            label?: string;
-            oauthAccountEmail?: string | null;
+        baseUrl?: string | null;
+        enabled?: boolean;
+        label?: string;
+        oauthAccountEmail?: string | null;
         },
-    ) {
+        ) => {
         await repositoriesRef.current.configRepository.updateProvider(
             providerId,
             input,
         );
         await hydrate();
-    }
+    },
+        [hydrate],
+    );
 
-    async function createProvider(input: {
+    const deleteProvider = useCallback(
+        async (providerId: string) => {
+        if (getSupportedProviderDefinition(providerId)) {
+            throw new Error("Built-in providers cannot be deleted.");
+        }
+
+        await repositoriesRef.current.configRepository.deleteProvider(providerId);
+        try {
+            if (repositoriesRef.current.providerAccountRepository) {
+                const accounts =
+                    await repositoriesRef.current.providerAccountRepository.listByProvider(
+                        providerId,
+                    );
+                for (const account of accounts) {
+                    await secureSecretStore.deleteProviderAccountApiKey(account.id);
+                }
+                await repositoriesRef.current.providerAccountRepository.deleteByProvider(
+                    providerId,
+                );
+                await secureSecretStore.setActiveProviderAccount(providerId, null);
+            } else {
+                await secureSecretStore.deleteLegacyProviderApiKey(providerId);
+            }
+        } catch (cleanupError) {
+            console.warn("Failed to delete the provider credential.", cleanupError);
+        } finally {
+            await hydrate();
+        }
+    },
+        [hydrate],
+    );
+
+    const createProvider = useCallback(
+        async (
+        input: {
         apiKey?: string;
         authType: ProviderConfig["authType"];
         baseUrl?: string | null;
@@ -1963,7 +2023,7 @@ Your output must be:
         id: string;
         label: string;
         oauthAccountEmail?: string | null;
-    }) {
+        }) => {
         const provider =
             await repositoriesRef.current.configRepository.createProvider(input);
 
@@ -2001,38 +2061,13 @@ Your output must be:
 
         await hydrate();
         return provider;
-    }
+    },
+        [hydrate],
+    );
 
-    async function deleteProvider(providerId: string) {
-        if (getSupportedProviderDefinition(providerId)) {
-            throw new Error("Built-in providers cannot be deleted.");
-        }
 
-        await repositoriesRef.current.configRepository.deleteProvider(providerId);
-        try {
-            if (repositoriesRef.current.providerAccountRepository) {
-                const accounts =
-                    await repositoriesRef.current.providerAccountRepository.listByProvider(
-                        providerId,
-                    );
-                for (const account of accounts) {
-                    await secureSecretStore.deleteProviderAccountApiKey(account.id);
-                }
-                await repositoriesRef.current.providerAccountRepository.deleteByProvider(
-                    providerId,
-                );
-                await secureSecretStore.setActiveProviderAccount(providerId, null);
-            } else {
-                await secureSecretStore.deleteLegacyProviderApiKey(providerId);
-            }
-        } catch (cleanupError) {
-            console.warn("Failed to delete the provider credential.", cleanupError);
-        } finally {
-            await hydrate();
-        }
-    }
-
-    async function saveProviderApiKey(providerId: string, apiKey: string) {
+    const saveProviderApiKey = useCallback(
+        async (providerId: string, apiKey: string) => {
         if (repositoriesRef.current.providerAccountRepository) {
             const activeAccountId =
                 await secureSecretStore.getActiveProviderAccountId(providerId);
@@ -2064,9 +2099,12 @@ Your output must be:
             );
         }
         await hydrate();
-    }
+    },
+        [hydrate],
+    );
 
-    async function clearProviderApiKey(providerId: string) {
+    const clearProviderApiKey = useCallback(
+        async (providerId: string) => {
         if (repositoriesRef.current.providerAccountRepository) {
             const activeAccountId =
                 await secureSecretStore.getActiveProviderAccountId(providerId);
@@ -2077,13 +2115,17 @@ Your output must be:
             await secureSecretStore.deleteLegacyProviderApiKey(providerId);
         }
         await hydrate();
-    }
+    },
+        [hydrate],
+    );
 
-    async function createProviderAccount(input: {
+    const createProviderAccount = useCallback(
+        async (
+        input: {
         apiKey?: string;
         label: string;
         providerId: string;
-    }) {
+        }) => {
         if (!repositoriesRef.current.providerAccountRepository) {
             throw new Error("Provider accounts are not available.");
         }
@@ -2143,23 +2185,75 @@ Your output must be:
         await hydrate();
 
         return account;
-    }
+    },
+        [hydrate],
+    );
 
-    async function switchProviderAccount(input: {
+    const switchProviderAccount = useCallback(
+        async (
+        input: {
         accountId: string;
         providerId: string;
-    }) {
+        }) => {
         await secureSecretStore.setActiveProviderAccount(
             input.providerId,
             input.accountId,
         );
         await hydrate();
-    }
+    },
+        [hydrate],
+    );
 
-    async function deleteProviderAccount(input: {
+    const setOAuthEmailInSnapshot = useCallback(
+        (
+        
+        providerId: string,
+        email: string | null,
+        ) => {
+        setSnapshot((current) => {
+            const providers = current.resolvedConfig.providers.map((provider) =>
+                provider.id === providerId
+                    ? { ...provider, oauthAccountEmail: email }
+                    : provider,
+            );
+
+            const nextSnapshot = {
+                ...current,
+                resolvedConfig: {
+                    ...current.resolvedConfig,
+                    providers,
+                },
+            };
+
+            snapshotRef.current = nextSnapshot;
+            return nextSnapshot;
+        });
+    },
+        [],
+    );
+
+    const persistOAuthEmail = useCallback(
+        async (
+        
+        providerId: string,
+        email: string | null,
+        ) => {
+        try {
+            await repositoriesRef.current.configRepository.setProviderOauthEmail(
+                providerId,
+                email,
+            );
+        } catch { }
+    },
+        [],
+    );
+
+    const deleteProviderAccount = useCallback(
+        async (
+        input: {
         accountId: string;
         providerId: string;
-    }) {
+        }) => {
         const accountRepo = repositoriesRef.current.providerAccountRepository;
 
         if (!accountRepo) {
@@ -2215,12 +2309,16 @@ Your output must be:
         }
 
         await hydrate();
-    }
+    },
+        [hydrate, persistOAuthEmail, setOAuthEmailInSnapshot],
+    );
 
-    async function updateProviderAccountLabel(input: {
+    const updateProviderAccountLabel = useCallback(
+        async (
+        input: {
         accountId: string;
         label: string;
-    }) {
+        }) => {
         if (!repositoriesRef.current.providerAccountRepository) {
             throw new Error("Provider accounts are not available.");
         }
@@ -2229,9 +2327,13 @@ Your output must be:
             input.label,
         );
         await hydrate();
-    }
+    },
+        [hydrate],
+    );
 
-    async function createMcpServer(input: {
+    const createMcpServer = useCallback(
+        async (
+        input: {
         authMode: McpServerAuthMode;
         enabled?: boolean;
         headerValues?: Record<string, string>;
@@ -2244,7 +2346,7 @@ Your output must be:
         oauthTokenUrl?: string | null;
         transport: McpServerTransport;
         url: string;
-    }) {
+        }) => {
         const server = await repositoriesRef.current.mcpServerRepository.create({
             authMode: input.authMode,
             enabled: input.enabled,
@@ -2266,9 +2368,13 @@ Your output must be:
 
         await hydrate();
         return server;
-    }
+    },
+        [hydrate],
+    );
 
-    async function createMcpServerOAuth(input: {
+    const createMcpServerOAuth = useCallback(
+        async (
+        input: {
         enabled?: boolean;
         label: string;
         oauthAllowedAuthOrigin?: string | null;
@@ -2279,7 +2385,7 @@ Your output must be:
         oauthTokenUrl?: string | null;
         transport: McpServerTransport;
         url: string;
-    }) {
+        }) => {
         const id = Crypto.randomUUID();
         const timestamp = new Date().toISOString();
         const pendingServer: McpServerConfig = {
@@ -2333,25 +2439,29 @@ Your output must be:
             }
             throw error;
         }
-    }
+    },
+        [hydrate],
+    );
 
-    async function updateMcpServer(
+    const updateMcpServer = useCallback(
+        async (
+        
         serverId: string,
         input: {
-            authMode?: McpServerAuthMode;
-            enabled?: boolean;
-            headerValues?: Record<string, string>;
-            label?: string;
-            oauthAllowedAuthOrigin?: string | null;
-            oauthAuthorizationUrl?: string | null;
-            oauthClientId?: string | null;
-            oauthMode?: McpServerOAuthMode;
-            oauthScopes?: string | null;
-            oauthTokenUrl?: string | null;
-            transport?: McpServerTransport;
-            url?: string;
+        authMode?: McpServerAuthMode;
+        enabled?: boolean;
+        headerValues?: Record<string, string>;
+        label?: string;
+        oauthAllowedAuthOrigin?: string | null;
+        oauthAuthorizationUrl?: string | null;
+        oauthClientId?: string | null;
+        oauthMode?: McpServerOAuthMode;
+        oauthScopes?: string | null;
+        oauthTokenUrl?: string | null;
+        transport?: McpServerTransport;
+        url?: string;
         },
-    ) {
+        ) => {
         await repositoriesRef.current.mcpServerRepository.update(serverId, {
             authMode: input.authMode,
             enabled: input.enabled,
@@ -2374,9 +2484,12 @@ Your output must be:
         }
 
         await hydrate();
-    }
+    },
+        [hydrate],
+    );
 
-    async function deleteMcpServer(serverId: string) {
+    const deleteMcpServer = useCallback(
+        async (serverId: string) => {
         const session =
             await secureSecretStore.getMcpOAuthSession(serverId);
         const server =
@@ -2394,20 +2507,27 @@ Your output must be:
             secureSecretStore.deleteMcpOAuthTokens(serverId),
         ]);
         await hydrate();
-    }
+    },
+        [hydrate],
+    );
 
-    async function saveMcpServerHeaderValues(
+    const saveMcpServerHeaderValues = useCallback(
+        async (
+        
         serverId: string,
         headers: Record<string, string>,
-    ) {
+        ) => {
         await secureSecretStore.setMcpHeaderValues(serverId, headers);
         await repositoriesRef.current.mcpServerRepository.update(serverId, {
             headerNames: getHeaderNames(headers),
         });
         await hydrate();
-    }
+    },
+        [hydrate],
+    );
 
-    async function clearMcpServerCredentials(serverId: string) {
+    const clearMcpServerCredentials = useCallback(
+        async (serverId: string) => {
         const session =
             await secureSecretStore.getMcpOAuthSession(serverId);
         const server =
@@ -2427,9 +2547,12 @@ Your output must be:
             headerNames: [],
         });
         await hydrate();
-    }
+    },
+        [hydrate],
+    );
 
-    async function connectMcpServerOAuth(serverId: string) {
+    const connectMcpServerOAuth = useCallback(
+        async (serverId: string) => {
         const server =
             await repositoriesRef.current.mcpServerRepository.getById(serverId);
 
@@ -2458,9 +2581,12 @@ Your output must be:
         } finally {
             await hydrate();
         }
-    }
+    },
+        [hydrate],
+    );
 
-    async function testMcpServer(serverId: string) {
+    const testMcpServer = useCallback(
+        async (serverId: string) => {
         const server =
             await repositoriesRef.current.mcpServerRepository.getById(serverId);
 
@@ -2500,16 +2626,20 @@ Your output must be:
         } finally {
             await hydrate();
         }
-    }
+    },
+        [hydrate],
+    );
 
-    async function createModelPreset(input: {
+    const createModelPreset = useCallback(
+        async (
+        input: {
         label?: string | null;
         makeDefault?: boolean;
         modelId: string;
         options?: Record<string, unknown> | null;
         providerId: string;
         select?: boolean;
-    }) {
+        }) => {
         const preset =
             await repositoriesRef.current.configRepository.createModelPreset({
                 providerId: input.providerId,
@@ -2527,9 +2657,12 @@ Your output must be:
         }
 
         await hydrate();
-    }
+    },
+        [hydrate],
+    );
 
-    async function deleteModelPreset(modelPresetId: string) {
+    const deleteModelPreset = useCallback(
+        async (modelPresetId: string) => {
         const preset = snapshotRef.current.resolvedConfig.modelPresets.find(
             (item) => item.id === modelPresetId,
         );
@@ -2549,16 +2682,23 @@ Your output must be:
             modelPresetId,
         );
         await hydrate();
-    }
+    },
+        [hydrate],
+    );
 
-    async function setDefaultModelPreset(modelPresetId: string) {
+    const setDefaultModelPreset = useCallback(
+        async (modelPresetId: string) => {
         await repositoriesRef.current.configRepository.setDefaultModelPreset(
             modelPresetId,
         );
         await hydrate();
-    }
+    },
+        [hydrate],
+    );
 
-    async function createSkill(input: {
+    const createSkill = useCallback(
+        async (
+        input: {
         autoMatch?: boolean;
         description?: string | null;
         enabled?: boolean;
@@ -2567,38 +2707,46 @@ Your output must be:
         recommendedBuiltInToolKeys?: SkillConfig["recommendedBuiltInToolKeys"];
         recommendedMcpServerIds?: string[];
         title: string;
-    }) {
+        }) => {
         const skill = await repositoriesRef.current.skillRepository.create(input);
         await hydrate();
         return skill;
-    }
+    },
+        [hydrate],
+    );
 
-    async function updateSkill(
+    const updateSkill = useCallback(
+        async (
+        
         skillId: string,
         input: {
-            autoMatch?: boolean;
-            description?: string | null;
-            enabled?: boolean;
-            instructions?: string;
-            matchKeywords?: string[];
-            recommendedBuiltInToolKeys?: SkillConfig["recommendedBuiltInToolKeys"];
-            recommendedMcpServerIds?: string[];
-            title?: string;
+        autoMatch?: boolean;
+        description?: string | null;
+        enabled?: boolean;
+        instructions?: string;
+        matchKeywords?: string[];
+        recommendedBuiltInToolKeys?: SkillConfig["recommendedBuiltInToolKeys"];
+        recommendedMcpServerIds?: string[];
+        title?: string;
         },
-    ) {
+        ) => {
         await repositoriesRef.current.skillRepository.update(skillId, input);
         await hydrate();
-    }
+    },
+        [hydrate],
+    );
 
-    async function addSkillFiles(
+    const addSkillFiles = useCallback(
+        async (
+        
         skillId: string,
         files: {
-            path: string;
-            content: string;
-            mimeType?: string | null;
-            size?: number | null;
+        path: string;
+        content: string;
+        mimeType?: string | null;
+        size?: number | null;
         }[],
-    ) {
+        ) => {
         const current =
             await repositoriesRef.current.skillRepository.getById(skillId);
 
@@ -2661,49 +2809,66 @@ Your output must be:
             files: Array.from(byPath.values()),
         });
         await hydrate();
-    }
+    },
+        [hydrate],
+    );
 
-    async function deleteSkill(skillId: string) {
+    const deleteSkill = useCallback(
+        async (skillId: string) => {
         await repositoriesRef.current.skillRepository.delete(skillId);
         await hydrate();
-    }
+    },
+        [hydrate],
+    );
 
-    async function importPlugin(source: string, sourceUrl?: string) {
+    const importPlugin = useCallback(
+        async (source: string, sourceUrl?: string) => {
         const result = await importPluginSource(source, repositoriesRef.current, sourceUrl);
         if (!result.ok) throw new Error(result.error);
         await hydrate();
         return result.plugin;
-    }
+    },
+        [hydrate],
+    );
 
-    async function updatePlugin(
+    const updatePlugin = useCallback(
+        async (
+        
         pluginId: string,
         input: { enabled?: boolean; options?: Record<string, unknown> | null },
-    ) {
+        ) => {
         await repositoriesRef.current.pluginRepository.update(pluginId, input);
         await hydrate();
-    }
+    },
+        [hydrate],
+    );
 
-    async function deletePlugin(pluginId: string) {
+    const deletePlugin = useCallback(
+        async (pluginId: string) => {
         const { deletePluginFile } = await import("@/modules/plugins/plugin-files");
         const { secureSecretStore } = await import("@/core/services/secrets");
         deletePluginFile(pluginId);
         await secureSecretStore.deletePluginSecrets(pluginId);
         await repositoriesRef.current.pluginRepository.delete(pluginId);
         await hydrate();
-    }
+    },
+        [hydrate],
+    );
 
-    async function importSkillMarkdown(input: {
+    const importSkillMarkdown = useCallback(
+        async (
+        input: {
         markdown: string;
         replaceById?: string | null;
         sourceUrl?: string | null;
         extraFiles?: string[];
         localFiles?: {
-            path: string;
-            content: string;
-            mimeType: string | null;
-            size: number | null;
+        path: string;
+        content: string;
+        mimeType: string | null;
+        size: number | null;
         }[];
-    }) {
+        }) => {
         const parsed = parseSkillMarkdown(input.markdown);
         const discovered = input.sourceUrl
             ? await fetchSkillFiles({
@@ -2769,9 +2934,12 @@ Your output must be:
 
         await hydrate();
         return skill;
-    }
+    },
+        [hydrate],
+    );
 
-    function exportSkillMarkdown(skillId: string) {
+    const exportSkillMarkdown = useCallback(
+        (skillId: string) => {
         const skill = snapshotRef.current.skills.find((item) => item.id === skillId);
 
         if (!skill) {
@@ -2779,9 +2947,13 @@ Your output must be:
         }
 
         return serializeSkillToMarkdown(skill);
-    }
+    },
+        [],
+    );
 
-    async function createAgent(input: {
+    const createAgent = useCallback(
+        async (
+        input: {
         description?: string | null;
         mode?: AgentConfig["mode"];
         modelModelId?: string | null;
@@ -2791,7 +2963,7 @@ Your output must be:
         sourceMarkdown?: string | null;
         temperature?: number | null;
         toolPermissions?: AgentConfig["toolPermissions"];
-    }) {
+        }) => {
         const name = normalizeAgentName(input.name);
         const existing =
             await repositoriesRef.current.agentRepository.getByName(name);
@@ -2811,24 +2983,28 @@ Your output must be:
         });
         await hydrate();
         return agent;
-    }
+    },
+        [hydrate],
+    );
 
-    async function updateAgent(
+    const updateAgent = useCallback(
+        async (
+        
         agentId: string,
         input: {
-            description?: string | null;
-            enabled?: boolean;
-            hidden?: boolean;
-            mode?: AgentConfig["mode"];
-            modelModelId?: string | null;
-            modelProviderId?: string | null;
-            name?: string;
-            prompt?: string | null;
-            sourceMarkdown?: string | null;
-            temperature?: number | null;
-            toolPermissions?: AgentConfig["toolPermissions"];
+        description?: string | null;
+        enabled?: boolean;
+        hidden?: boolean;
+        mode?: AgentConfig["mode"];
+        modelModelId?: string | null;
+        modelProviderId?: string | null;
+        name?: string;
+        prompt?: string | null;
+        sourceMarkdown?: string | null;
+        temperature?: number | null;
+        toolPermissions?: AgentConfig["toolPermissions"];
         },
-    ) {
+        ) => {
         if (input.name !== undefined) {
             const name = normalizeAgentName(input.name);
             const existing =
@@ -2843,17 +3019,24 @@ Your output must be:
 
         await repositoriesRef.current.agentRepository.update(agentId, input);
         await hydrate();
-    }
+    },
+        [hydrate],
+    );
 
-    async function deleteAgent(agentId: string) {
+    const deleteAgent = useCallback(
+        async (agentId: string) => {
         await repositoriesRef.current.agentRepository.delete(agentId);
         await hydrate();
-    }
+    },
+        [hydrate],
+    );
 
-    async function importAgentMarkdown(input: {
+    const importAgentMarkdown = useCallback(
+        async (
+        input: {
         markdown: string;
         replaceById?: string | null;
-    }) {
+        }) => {
         const parsed = parseAgentMarkdown(input.markdown);
         let agent: AgentConfig;
 
@@ -2906,9 +3089,12 @@ Your output must be:
 
         await hydrate();
         return agent;
-    }
+    },
+        [hydrate],
+    );
 
-    function exportAgentMarkdown(agentId: string) {
+    const exportAgentMarkdown = useCallback(
+        (agentId: string) => {
         const agent = snapshotRef.current.agents.find(
             (item) => item.id === agentId,
         );
@@ -2918,9 +3104,12 @@ Your output must be:
         }
 
         return serializeAgentToMarkdown(agent);
-    }
+    },
+        [],
+    );
 
-    async function exportConversationJson(conversationId: string) {
+    const exportConversationJson = useCallback(
+        async (conversationId: string) => {
         const conversation =
             await repositoriesRef.current.conversationRepository.getById(
                 conversationId,
@@ -2936,9 +3125,12 @@ Your output must be:
             );
 
         return serializeConversationExport(conversation, messages);
-    }
+    },
+        [],
+    );
 
-    async function importConversationJson(json: string) {
+    const importConversationJson = useCallback(
+        async (json: string) => {
         const parsed = parseConversationExport(json);
 
         const conversation =
@@ -2976,64 +3168,91 @@ Your output must be:
 
         await hydrate();
         return conversation;
-    }
+    },
+        [hydrate],
+    );
 
-    async function createSavedPrompt(input: {
+    const createSavedPrompt = useCallback(
+        async (
+        input: {
         content: string;
         title: string;
-    }) {
+        }) => {
         const savedPrompt =
             await repositoriesRef.current.savedPromptRepository.create(input);
         await hydrate();
         return savedPrompt;
-    }
+    },
+        [hydrate],
+    );
 
-    async function updateSavedPrompt(
+    const updateSavedPrompt = useCallback(
+        async (
+        
         savedPromptId: string,
         input: {
-            content?: string;
-            title?: string;
+        content?: string;
+        title?: string;
         },
-    ) {
+        ) => {
         await repositoriesRef.current.savedPromptRepository.update(
             savedPromptId,
             input,
         );
         await hydrate();
-    }
+    },
+        [hydrate],
+    );
 
-    async function deleteSavedPrompt(savedPromptId: string) {
+    const deleteSavedPrompt = useCallback(
+        async (savedPromptId: string) => {
         await repositoriesRef.current.savedPromptRepository.delete(savedPromptId);
         await hydrate();
-    }
+    },
+        [hydrate],
+    );
 
-    async function writeMemory(content: string) {
+    const writeMemory = useCallback(
+        async (content: string) => {
         const memory = await repositoriesRef.current.memoryStore.write(content);
         await hydrate();
         return memory;
-    }
+    },
+        [hydrate],
+    );
 
-    async function clearMemory() {
+    const clearMemory = useCallback(
+        async () => {
         await repositoriesRef.current.memoryStore.clear();
         await hydrate();
-    }
+    },
+        [hydrate],
+    );
 
-    async function updateDatabaseSettings(input: {
+    const updateDatabaseSettings = useCallback(
+        async (
+        input: {
         databaseMode?: AppSettings["databaseMode"];
         databaseUrl?: string | null;
-    }) {
+        }) => {
         await repositoriesRef.current.configRepository.setDatabaseSettings(input);
         await hydrate();
-    }
+    },
+        [hydrate],
+    );
 
-    async function updateBuiltInToolSettings(
+    const updateBuiltInToolSettings = useCallback(
+        async (
+        
         input: Partial<BuiltInToolSettings>,
-    ) {
+        ) => {
         await repositoriesRef.current.configRepository.setBuiltInToolSettings(
             input,
         );
         await hydrate();
-    }
+    },
+        [hydrate],
+    );
 
     const setConversationApprovalMode = useCallback(
         (conversationId: string, mode: ToolApprovalMode) => {
@@ -3060,62 +3279,39 @@ Your output must be:
         [],
     );
 
-    async function updateThemeMode(mode: AppSettings["themeMode"]) {
+    const updateThemeMode = useCallback(
+        async (mode: AppSettings["themeMode"]) => {
         await repositoriesRef.current.configRepository.setThemeMode(mode);
         await hydrate();
-    }
+    },
+        [hydrate],
+    );
 
-    async function updateMemoryEnabled(enabled: boolean) {
+    const updateMemoryEnabled = useCallback(
+        async (enabled: boolean) => {
         await repositoriesRef.current.configRepository.setMemoryEnabled(enabled);
         await hydrate();
-    }
+    },
+        [hydrate],
+    );
 
-    async function updateNotificationSettings(
+    const updateNotificationSettings = useCallback(
+        async (
+        
         input: Partial<AppSettings["notificationSettings"]>,
-    ) {
+        ) => {
         await repositoriesRef.current.configRepository.setNotificationSettings(
             input,
         );
         await hydrate();
-    }
+    },
+        [hydrate],
+    );
 
-    function setOAuthEmailInSnapshot(
-        providerId: string,
-        email: string | null,
-    ) {
-        setSnapshot((current) => {
-            const providers = current.resolvedConfig.providers.map((provider) =>
-                provider.id === providerId
-                    ? { ...provider, oauthAccountEmail: email }
-                    : provider,
-            );
 
-            const nextSnapshot = {
-                ...current,
-                resolvedConfig: {
-                    ...current.resolvedConfig,
-                    providers,
-                },
-            };
 
-            snapshotRef.current = nextSnapshot;
-            return nextSnapshot;
-        });
-    }
-
-    async function persistOAuthEmail(
-        providerId: string,
-        email: string | null,
-    ) {
-        try {
-            await repositoriesRef.current.configRepository.setProviderOauthEmail(
-                providerId,
-                email,
-            );
-        } catch { }
-    }
-
-    async function readOAuthTokenInfo(providerId: string, accountId: string | null) {
+    const readOAuthTokenInfo = useCallback(
+        async (providerId: string, accountId: string | null) => {
         if (getOpenAiOAuthFlavor(providerId) === "chatgpt") {
             return accountId
                 ? await getOpenAiChatGptTokenInfoForAccount(accountId)
@@ -3125,12 +3321,16 @@ Your output must be:
         return accountId
             ? await getOpenAiTokenInfoForAccount(accountId)
             : await getOpenAiTokenInfo();
-    }
+    },
+        [],
+    );
 
-    async function loginOpenAiOAuthForAccount(
+    const loginOpenAiOAuthForAccount = useCallback(
+        async (
+        
         providerId: string,
         accountId: string | null,
-    ) {
+        ) => {
         if (getOpenAiOAuthFlavor(providerId) === "chatgpt") {
             await handleChatGptLogin(accountId ? { accountId } : undefined);
         } else {
@@ -3170,17 +3370,21 @@ Your output must be:
         await persistOAuthEmail(providerId, tokenInfo.email);
 
         return tokenInfo;
-    }
+    },
+        [persistOAuthEmail, readOAuthTokenInfo, setOAuthEmailInSnapshot],
+    );
 
     /**
      * Stages the OAuth sign-in in the provider's legacy token slot first so a
      * canceled or failed sign-in never leaves a half-created account behind.
      * Once the tokens exist, move them into a real account row.
      */
-    async function attachLegacyOAuthToAccount(
+    const attachLegacyOAuthToAccount = useCallback(
+        async (
+        
         providerId: string,
         accountId: string,
-    ) {
+        ) => {
         const accountRepo = repositoriesRef.current.providerAccountRepository;
 
         if (getOpenAiOAuthFlavor(providerId) === "chatgpt") {
@@ -3211,14 +3415,17 @@ Your output must be:
 
         setOAuthEmailInSnapshot(providerId, tokenInfo.email);
         await persistOAuthEmail(providerId, tokenInfo.email);
-    }
+    },
+        [persistOAuthEmail, readOAuthTokenInfo, setOAuthEmailInSnapshot],
+    );
 
     /**
      * Reuses the credential-less placeholder account the hydrate step creates
      * for a first sign-in, otherwise returns a fresh account. This keeps the
      * first connect from leaving a second empty row behind.
      */
-    async function resolveOAuthAccountForSignIn(providerId: string) {
+    const resolveOAuthAccountForSignIn = useCallback(
+        async (providerId: string) => {
         const accountRepo = repositoriesRef.current.providerAccountRepository;
 
         if (!accountRepo) {
@@ -3242,9 +3449,12 @@ Your output must be:
         });
 
         return account.id;
-    }
+    },
+        [readOAuthTokenInfo],
+    );
 
-    async function connectOpenAIOAuth(providerId: string = "openai") {
+    const connectOpenAIOAuth = useCallback(
+        async (providerId: string = "openai") => {
         await loginOpenAiOAuthForAccount(providerId, null);
 
         const legacyTokenInfo = await readOAuthTokenInfo(providerId, null);
@@ -3258,12 +3468,16 @@ Your output must be:
         }
 
         await hydrate().catch(() => { });
-    }
+    },
+        [attachLegacyOAuthToAccount, hydrate, loginOpenAiOAuthForAccount, readOAuthTokenInfo, resolveOAuthAccountForSignIn],
+    );
 
-    async function addOpenAiOAuthAccount(input: {
+    const addOpenAiOAuthAccount = useCallback(
+        async (
+        input: {
         label?: string;
         providerId: string;
-    }) {
+        }) => {
         const accountRepo = repositoriesRef.current.providerAccountRepository;
 
         if (!accountRepo) {
@@ -3290,9 +3504,12 @@ Your output must be:
         await attachLegacyOAuthToAccount(input.providerId, account.id);
 
         await hydrate().catch(() => { });
-    }
+    },
+        [attachLegacyOAuthToAccount, hydrate, loginOpenAiOAuthForAccount, readOAuthTokenInfo],
+    );
 
-    async function disconnectOpenAIOAuth(providerId: string = "openai") {
+    const disconnectOpenAIOAuth = useCallback(
+        async (providerId: string = "openai") => {
         const accountId =
             await secureSecretStore.getActiveProviderAccountId(providerId);
         const flavor = getOpenAiOAuthFlavor(providerId);
@@ -3312,7 +3529,9 @@ Your output must be:
         setOAuthEmailInSnapshot(providerId, null);
         await persistOAuthEmail(providerId, null);
         await hydrate().catch(() => { });
-    }
+    },
+        [hydrate, persistOAuthEmail, setOAuthEmailInSnapshot],
+    );
 
     const createConversation = useCallback(async (input?: { agentId?: string | null }) => {
         const currentModel = snapshotRef.current.resolvedConfig.currentModel;
@@ -3362,12 +3581,15 @@ Your output must be:
         }));
     }, []);
 
-    async function deleteConversation(conversationId: string) {
+    const deleteConversation = useCallback(
+        async (conversationId: string) => {
         await repositoriesRef.current.conversationRepository.deleteById(
             conversationId,
         );
         await hydrate();
-    }
+    },
+        [hydrate],
+    );
 
     async function setConversationPinned(
         conversationId: string,
@@ -3418,7 +3640,8 @@ Your output must be:
         });
     }
 
-    async function renameConversation(conversationId: string, title: string) {
+    const renameConversation = useCallback(
+        async (conversationId: string, title: string) => {
         const conversation = snapshotRef.current.conversations.find(
             (item) => item.id === conversationId,
         );
@@ -3463,7 +3686,9 @@ Your output must be:
             snapshotRef.current = nextSnapshot;
             return nextSnapshot;
         });
-    }
+    },
+        [],
+    );
 
     const importFiles = useCallback(async (assets: DocumentPickerAsset[]) => {
         const importedFiles: WorkspaceFile[] = [];
@@ -3487,7 +3712,8 @@ Your output must be:
         return importedFiles;
     }, [refreshWorkspaceFiles]);
 
-    async function createWorkspaceFile(input: { content: string; name: string }) {
+    const createWorkspaceFile = useCallback(
+        async (input: { content: string; name: string }) => {
         const file = await workspaceServiceRef.current.createTextFile(input);
 
         setSnapshot((current) => ({
@@ -3497,7 +3723,9 @@ Your output must be:
 
         await refreshWorkspaceFiles();
         return file;
-    }
+    },
+        [refreshWorkspaceFiles],
+    );
 
     const pickConversationFolder = useCallback(async () => {
         const currentConversation = snapshotRef.current.currentConversation;
@@ -3567,7 +3795,40 @@ Your output must be:
         }));
     }, []);
 
-    async function selectConversation(conversationId: string) {
+    const ensureConversationPersisted = useCallback(
+        async (conversation: Conversation) => {
+            const repositories = repositoriesRef.current;
+            const exists = await repositories.conversationRepository.getById(
+                conversation.id,
+            );
+            if (exists) return;
+
+            const saved = await repositories.conversationRepository.create({
+                id: conversation.id,
+                title: conversation.title,
+                providerId: conversation.providerId,
+                modelId: conversation.modelId,
+            });
+
+            await repositories.configRepository.setSetting(
+                "active_conversation_id",
+                saved.id,
+            );
+
+            setSnapshot((current) => ({
+                ...current,
+                conversations: upsertConversation(current.conversations, saved),
+                settings: {
+                    ...current.settings,
+                    activeConversationId: saved.id,
+                },
+            }));
+        },
+        [],
+    );
+
+    const selectConversation = useCallback(
+        async (conversationId: string) => {
         const repositories = repositoriesRef.current;
         const nextConversation =
             await repositories.conversationRepository.getById(conversationId);
@@ -3602,39 +3863,35 @@ Your output must be:
                 activeConversationId: conversationId,
             },
         }));
-    }
-
-    const ensureConversationPersisted = useCallback(
-        async (conversation: Conversation) => {
-            const repositories = repositoriesRef.current;
-            const exists = await repositories.conversationRepository.getById(
-                conversation.id,
-            );
-            if (exists) return;
-
-            const saved = await repositories.conversationRepository.create({
-                id: conversation.id,
-                title: conversation.title,
-                providerId: conversation.providerId,
-                modelId: conversation.modelId,
-            });
-
-            await repositories.configRepository.setSetting(
-                "active_conversation_id",
-                saved.id,
-            );
-
-            setSnapshot((current) => ({
-                ...current,
-                conversations: upsertConversation(current.conversations, saved),
-                settings: {
-                    ...current.settings,
-                    activeConversationId: saved.id,
-                },
-            }));
-        },
+    },
         [],
     );
+
+    const resolveNotificationApproval = useCallback(
+        async (
+        input: {
+        approvalId: string;
+        decision: import("@/modules/runtime/run-manager").ToolApprovalDecision;
+        runId: string;
+        }) => {
+        const approval = pendingToolApprovalsRef.current.find(
+            (item) =>
+                item.runId === input.runId && item.id === input.approvalId,
+        );
+
+        if (!approval) {
+            return;
+        }
+
+        if (snapshotRef.current.currentConversation?.id !== approval.conversationId) {
+            await selectConversation(approval.conversationId);
+        }
+
+        resolvePendingToolApproval(approval, input.decision);
+    },
+        [selectConversation, resolvePendingToolApproval],
+    );
+
 
     const setCurrentSelectedFileIds = useCallback(
         async (selectedFileIds: string[]) => {
@@ -3869,10 +4126,12 @@ Your output must be:
         [hydrate],
     );
 
-    async function failOrphanedStreamingMessage(
+    const failOrphanedStreamingMessage = useCallback(
+        async (
+        
         runId: string,
         errorMessage: string,
-    ) {
+        ) => {
         const run =
             await repositoriesRef.current.agentRunRepository.getById(runId);
         if (!run) {
@@ -3905,9 +4164,12 @@ Your output must be:
                       )
                     : current.messages,
         }));
-    }
+    },
+        [],
+    );
 
-    async function executeAgentRun(runId: string) {
+    const executeAgentRun = useCallback(
+        async (runId: string) => {
         const registry = runRegistryRef.current;
         if (!registry.claim(runId)) {
             return;
@@ -3968,7 +4230,9 @@ Your output must be:
             );
             throw error;
         }
-    }
+    },
+        [failOrphanedStreamingMessage, generateAndApplyConversationTitle, hydrate, notifyRunStateChange, refreshScheduler, requestRunQuestionnaire, requestRunSecret, requestToolApproval, updateRunRecord],
+    );
     executeAgentRunRef.current = executeAgentRun;
 
     useEffect(() => {
@@ -3979,47 +4243,6 @@ Your output must be:
         }
     });
 
-    async function retryRun(runId: string) {
-        const run = snapshotRef.current.agentRuns.find((r) => r.id === runId);
-        if (!run || (run.status !== "failed" && run.status !== "canceled")) {
-            return;
-        }
-
-        await repositoriesRef.current.agentRunRepository.update(runId, {
-            completedAt: null,
-            lastError: null,
-            status: "resumable",
-            retryCount: 0,
-        });
-
-        await repositoriesRef.current.messageRepository.updateContent({
-            id: run.assistantMessageId,
-            content: "",
-            error: null,
-            status: "streaming",
-        });
-
-        setSnapshot((current) => ({
-            ...current,
-            agentRuns: upsertAgentRun(current.agentRuns, {
-                ...run,
-                completedAt: null,
-                lastError: null,
-                retryCount: 0,
-                status: "resumable",
-            }),
-            messages: current.currentConversation?.id === run.conversationId
-                ? upsertMessages(current.messages, [{
-                    ...current.messages.find((m) => m.id === run.assistantMessageId)!,
-                    content: "",
-                    error: null,
-                    status: "streaming",
-                }])
-                : current.messages,
-        }));
-
-        await executeAgentRun(runId);
-    }
 
     const editAndResendMessage = useCallback(async (messageId: string, content: string) => {
         const cleanContent = content.trim();
@@ -4649,6 +4872,51 @@ Your output must be:
             );
         });
     }, [ensureConversationPersisted]);
+
+    const retryRun = useCallback(
+        async (runId: string) => {
+        const run = snapshotRef.current.agentRuns.find((r) => r.id === runId);
+        if (!run || (run.status !== "failed" && run.status !== "canceled")) {
+            return;
+        }
+
+        await repositoriesRef.current.agentRunRepository.update(runId, {
+            completedAt: null,
+            lastError: null,
+            status: "resumable",
+            retryCount: 0,
+        });
+
+        await repositoriesRef.current.messageRepository.updateContent({
+            id: run.assistantMessageId,
+            content: "",
+            error: null,
+            status: "streaming",
+        });
+
+        setSnapshot((current) => ({
+            ...current,
+            agentRuns: upsertAgentRun(current.agentRuns, {
+                ...run,
+                completedAt: null,
+                lastError: null,
+                retryCount: 0,
+                status: "resumable",
+            }),
+            messages: current.currentConversation?.id === run.conversationId
+                ? upsertMessages(current.messages, [{
+                    ...current.messages.find((m) => m.id === run.assistantMessageId)!,
+                    content: "",
+                    error: null,
+                    status: "streaming",
+                }])
+                : current.messages,
+        }));
+
+        await executeAgentRun(runId);
+    },
+        [executeAgentRun],
+    );
 
     const sending = snapshot.agentRuns.some((run) =>
         isActiveAgentRunStatus(run.status),
