@@ -124,7 +124,7 @@ export function createPreviewMixTool({
         // Every asset inlines exactly as for export: file tracks must decode.
         const { html: audioHtml } = await inlineAudioAssets(rawHtml, repository);
         const { html: imageHtml } = await inlineImageAssets(audioHtml, repository);
-        const { html: sceneHtml } = await inlineVideoAssets(imageHtml, repository);
+        const { html: sceneHtml, warnings: clipWarnings } = await inlineVideoAssets(imageHtml, repository);
 
         const check = await requestMixCheck(sceneHtml, {
           duration: videoDuration,
@@ -139,8 +139,8 @@ export function createPreviewMixTool({
           quietRanges: stats?.quietRanges ?? [],
           duckedRanges: stats?.duckedRanges ?? [],
           duration: videoDuration,
-          warnings: check.warnings,
-          warning: buildMixWarning(stats, check.warnings),
+          warnings: [...clipWarnings, ...check.warnings],
+          warning: buildMixWarning(stats, [...clipWarnings, ...check.warnings]),
         };
 
         onRecord?.(

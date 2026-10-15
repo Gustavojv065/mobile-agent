@@ -46,6 +46,19 @@ export type HtmlVideoExportNativeModule = {
     frameCount: number,
   ): Promise<{ ok: boolean }>;
   pushJpegFrame(index: number, base64: string): Promise<void>;
+  /**
+   * Shrinks an over-cap scene clip (decode → Surface → AVC re-encode, audio
+   * dropped: clips play muted) so it fits the inline budget. `maxBytes` is
+   * the acceptance ceiling, `maxDimension` the first rung of the
+   * 1280→854→640 downscale ladder. Paths are plain filesystem paths
+   * (no file:// scheme). Throws when nothing fits or the clip is undecodable.
+   */
+  transcodeClip(
+    inputPath: string,
+    outputPath: String,
+    maxBytes: number,
+    maxDimension: number,
+  ): Promise<{ path: string; width: number; height: number; sizeBytes: number }>;
   finish(): Promise<{
     uri: string;
     sizeBytes: number;

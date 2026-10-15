@@ -5,6 +5,7 @@ import {
   buildAudioDataUri,
   extractWorkspaceAudioIds,
 } from "@/modules/preview/video-audio";
+import type { File } from "expo-file-system";
 
 /**
  * Image/clip helpers for video scenes with user visuals.
@@ -24,6 +25,12 @@ import {
 
 export const MAX_IMAGE_FILE_BYTES = 15 * 1024 * 1024;
 export const MAX_VIDEO_FILE_BYTES = 15 * 1024 * 1024;
+/**
+ * Transcode target: comfortably under the inline cap so the base64
+ * inflation (~33%) still leaves headroom in the render document.
+ */
+export const TRANSCODE_TARGET_BYTES = 12 * 1024 * 1024;
+export const TRANSCODE_MAX_DIMENSION = 1280;
 
 const SUPPORTED_IMAGE_MIME_TYPES = new Set([
   "image/jpeg",
@@ -175,6 +182,7 @@ async function inlineAssetUris(
     mimeType: string | null | undefined,
     sizeBytes: number,
   ) => string,
+  warnings?: string[],
 ): Promise<{ html: string; files: string[] }> {
   const files: string[] = [];
   let next = html;
@@ -190,6 +198,19 @@ async function inlineAssetUris(
       throw new Error(
         `File "${record.displayName}" is no longer available locally.`,
       );
+    }
+    // Stat before reading: a 200 MB source must never enter the JS heap
+    // just to be rejected. Clips get a transcode attempt (below); other
+    // kinds fail fast on the stat alone.
+    const statSize = typeof file.size === "number" ? file.size : null;
+    if (kind === "clip" && statSize != null && statSize > MAX_VIDEO_FILE_BYTES) {
+      const prepared = await prepareClipBytes(record.id, record.displayName, record.mimeType, file, statSize);
+      files.push(record.displayName);
+      next = next
+        .split(`workspace://${id}`)
+        .join(buildAudioDataUri(prepared.mimeType, prepared.bytes));
+      if (prepared.warning && warnings) warnings.push(prepared.warning);
+      continue;
     }
     const bytes = await file.bytes();
     const mimeType = assertUsable(record.displayName, record.mimeType, bytes.length);
@@ -219,20 +240,102 @@ export function inlineImageAssets(
 }
 
 /**
+ * Over-cap clip handling: transcode down via the native module instead of
+ * failing. Returns scene-ready bytes plus a user-facing warning. Throws the
+ * original oversize error when transcoding is unavailable or cannot fit.
+ */
+async function prepareClipBytes(
+  id: string,
+  displayName: string,
+  mimeType: string | null | undefined,
+  file: File,
+  statSize: number,
+): Promise<{ bytes: Uint8Array; mimeType: string; warning?: string }> {
+  const resolved = resolveVideoMimeType(mimeType, displayName);
+  if (!resolved) {
+    throw new Error(
+      `File "${displayName}" is not a supported video clip. Use MP4 or WebM clips.`,
+    );
+  }
+  const tooLarge = new Error(
+    `File "${displayName}" is too large (${formatClipBytes(statSize)}). Keep scene clips under ${formatClipBytes(MAX_VIDEO_FILE_BYTES)}.`,
+  );
+  // Lazy: expo-file-system and the native module pull react-native, which
+  // cannot even parse in unit tests. Only the over-cap path pays for it.
+  let transcodeClip: ((inputPath: string, outputPath: string, maxBytes: number, maxDimension: number) => Promise<{ path: string; width: number; height: number; sizeBytes: number }>) | null = null;
+  let cacheFileFor: ((name: string) => { uri: string; exists: boolean; bytes: () => Promise<Uint8Array>; delete: () => void }) | null = null;
+  try {
+    const [fs, native] = await Promise.all([
+      import("expo-file-system"),
+      import("html-video-export"),
+    ]);
+    const module = native.getHtmlVideoExportModule();
+    if (module && typeof module.transcodeClip === "function") {
+      transcodeClip = module.transcodeClip.bind(module);
+      cacheFileFor = (name: string) => new fs.File(fs.Paths.cache, name) as unknown as {
+        uri: string; exists: boolean; bytes: () => Promise<Uint8Array>; delete: () => void;
+      };
+    }
+  } catch {
+    transcodeClip = null;
+  }
+  if (!transcodeClip || !cacheFileFor) {
+    throw tooLarge;
+  }
+  const inputUri = file.uri;
+  const inputPath = inputUri.startsWith("file://") ? inputUri.slice("file://".length) : inputUri;
+  const safeId = id.replace(/[^a-zA-Z0-9_-]/g, "_");
+  const outFile = cacheFileFor(`clip-${safeId}-${statSize}.mp4`);
+  try {
+    if (!outFile.exists) {
+      const outPath = outFile.uri.startsWith("file://")
+        ? outFile.uri.slice("file://".length)
+        : outFile.uri;
+      await transcodeClip(inputPath, outPath, TRANSCODE_TARGET_BYTES, TRANSCODE_MAX_DIMENSION);
+    }
+    const bytes = await outFile.bytes();
+    if (!bytes || bytes.length === 0 || bytes.length > MAX_VIDEO_FILE_BYTES) {
+      try { outFile.delete(); } catch { /* best effort */ }
+      throw tooLarge;
+    }
+    return {
+      bytes,
+      mimeType: "video/mp4",
+      warning:
+        `"${displayName}" was ${formatClipBytes(statSize)} — over the ${formatClipBytes(MAX_VIDEO_FILE_BYTES)} scene-clip budget, so it was compressed to ${formatClipBytes(bytes.length)}. Detail may be softer; attach a smaller file or trim it to skip this.`,
+    };
+  } catch (error) {
+    if (error === tooLarge) throw error;
+    throw new Error(
+      `File "${displayName}" is too large (${formatClipBytes(statSize)}) and could not be compressed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+function formatClipBytes(sizeBytes: number): string {
+  if (sizeBytes >= 1024 * 1024) {
+    return `${(sizeBytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
+  return `${Math.max(1, Math.round(sizeBytes / 1024))} KB`;
+}
+
+/**
  * Inlines `<video>`/`<source>`-referenced workspace clips as data URIs.
  * Clips play muted and scene-driven; the recorder captures its own audio
- * graph, never page audio.
+ * graph, never page audio. Over-cap clips are auto-compressed via the
+ * native transcoder with a warning per file; only unfixable clips throw.
  */
 export function inlineVideoAssets(
   html: string,
   repository: WorkspaceRepository,
-): Promise<{ html: string; videoFiles: string[] }> {
+): Promise<{ html: string; videoFiles: string[]; warnings: string[] }> {
   const ids = extractWorkspaceVideoIds(html);
   if (ids.length === 0) {
-    return Promise.resolve({ html, videoFiles: [] });
+    return Promise.resolve({ html, videoFiles: [], warnings: [] });
   }
-  return inlineAssetUris(html, repository, ids, "clip", assertVideoFileUsable).then(
-    ({ html: inlined, files }) => ({ html: inlined, videoFiles: files }),
+  const warnings: string[] = [];
+  return inlineAssetUris(html, repository, ids, "clip", assertVideoFileUsable, warnings).then(
+    ({ html: inlined, files }) => ({ html: inlined, videoFiles: files, warnings }),
   );
 }
 

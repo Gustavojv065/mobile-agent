@@ -121,6 +121,16 @@ class HtmlVideoExportModule : Module() {
         pendingAudio.clear()
       }
     }
+
+    AsyncFunction("transcodeClip") { inputPath: String, outputPath: String, maxBytes: Double, maxDimension: Int ->
+      val result = ClipTranscoder.transcode(inputPath, outputPath, maxBytes.toLong(), maxDimension)
+      mapOf(
+        "path" to result.path,
+        "width" to result.width,
+        "height" to result.height,
+        "sizeBytes" to result.sizeBytes.toDouble(),
+      )
+    }
   }
 
   private fun rejectLegacyRemux() {

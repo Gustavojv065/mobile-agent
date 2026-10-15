@@ -11,6 +11,39 @@ vi.mock("@/core/services/workspace-file-service", () => ({
   resolveWorkspaceFile: mocks.resolveWorkspaceFile,
 }));
 
+const nativeMocks = vi.hoisted(() => ({
+  transcodeClip: vi.fn(),
+  outExists: true,
+  outBytes: new Uint8Array([0x00, 0x00, 0x00, 0x18]),
+  deleted: [] as string[],
+}));
+
+vi.mock("html-video-export", () => ({
+  getHtmlVideoExportModule: () => ({ transcodeClip: nativeMocks.transcodeClip }),
+}));
+
+vi.mock("expo-file-system", () => ({
+  File: class {
+    uri: string;
+    constructor(
+      public dir: unknown,
+      public name: string,
+    ) {
+      this.uri = `file:///cache/${name}`;
+    }
+    get exists() {
+      return nativeMocks.outExists;
+    }
+    async bytes() {
+      return nativeMocks.outBytes;
+    }
+    delete() {
+      nativeMocks.deleted.push(this.name);
+    }
+  },
+  Paths: { cache: "mock-cache-dir" },
+}));
+
 const {
   assertImageFileUsable,
   assertVideoFileUsable,
@@ -202,6 +235,87 @@ describe("inlineVideoAssets", () => {
     await expect(
       inlineVideoAssets(`<video src="workspace://vid-1">`, repository()),
     ).rejects.toThrow(/not a supported video/);
+  });
+});
+
+function bigWorkspaceFile(displayName: string, mimeType: string | null, sizeBytes: number) {
+  mocks.getById.mockImplementation(async (id: string) => ({
+    id,
+    displayName,
+    mimeType,
+    relativePath: `${id}/${displayName}`,
+  }));
+  mocks.resolveWorkspaceFile.mockReturnValue({
+    get exists() {
+      return true;
+    },
+    size: sizeBytes,
+    uri: "file:///workspace/big-clip.mp4",
+    bytes: async () => {
+      throw new Error("original bytes must never be read for over-cap clips");
+    },
+  });
+}
+
+describe("inlineVideoAssets over-cap transcoding", () => {
+  const FIFTY_MB = 50 * 1024 * 1024;
+
+  beforeEach(() => {
+    nativeMocks.transcodeClip.mockReset();
+    nativeMocks.transcodeClip.mockImplementation(async () => ({
+      path: "/cache/clip-vid-1.mp4",
+      width: 1280,
+      height: 720,
+      sizeBytes: 8_000_000,
+    }));
+    nativeMocks.outExists = false;
+    nativeMocks.outBytes = new Uint8Array([0x00, 0x00, 0x00, 0x18]);
+    nativeMocks.deleted = [];
+  });
+
+  it("compresses over-cap clips and warns instead of throwing", async () => {
+    bigWorkspaceFile("big-clip.mp4", "video/mp4", FIFTY_MB);
+    const { html: out, videoFiles, warnings } = await inlineVideoAssets(
+      `<video src="workspace://vid-1">`,
+      repository(),
+    );
+
+    expect(nativeMocks.transcodeClip).toHaveBeenCalledTimes(1);
+    const [inPath, outPath, maxBytes, maxDim] = nativeMocks.transcodeClip.mock.calls[0] as [string, string, number, number];
+    expect(inPath).toBe("/workspace/big-clip.mp4");
+    expect(outPath).toContain("clip-vid-1");
+    expect(maxBytes).toBe(12 * 1024 * 1024);
+    expect(maxDim).toBe(1280);
+    expect(videoFiles).toEqual(["big-clip.mp4"]);
+    expect(out).toContain("data:video/mp4;base64,");
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/compressed/);
+  });
+
+  it("reuses an existing transcoded file without re-running the native op", async () => {
+    bigWorkspaceFile("big-clip.mp4", "video/mp4", FIFTY_MB);
+    nativeMocks.outExists = true;
+    const { warnings } = await inlineVideoAssets(`<video src="workspace://vid-1">`, repository());
+    // Cached hit: bytes inlined, warning still reported, no native call.
+    expect(nativeMocks.transcodeClip).not.toHaveBeenCalled();
+    expect(warnings).toHaveLength(1);
+  });
+
+  it("throws the oversize error when the transcode still does not fit", async () => {
+    bigWorkspaceFile("big-clip.mp4", "video/mp4", FIFTY_MB);
+    nativeMocks.outBytes = new Uint8Array(20 * 1024 * 1024);
+    await expect(
+      inlineVideoAssets(`<video src="workspace://vid-1">`, repository()),
+    ).rejects.toThrow(/too large/);
+    expect(nativeMocks.deleted.length).toBeGreaterThan(0);
+  });
+
+  it("throws the oversize error when transcoding fails", async () => {
+    bigWorkspaceFile("big-clip.mp4", "video/mp4", FIFTY_MB);
+    nativeMocks.transcodeClip.mockRejectedValueOnce(new Error("codec missing"));
+    await expect(
+      inlineVideoAssets(`<video src="workspace://vid-1">`, repository()),
+    ).rejects.toThrow(/too large|could not be compressed/);
   });
 });
 

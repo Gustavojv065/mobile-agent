@@ -121,7 +121,7 @@ export function createRenderVideoTool({
           audioHtml,
           repository,
         );
-        const { html: documentHtml, videoFiles } = await inlineVideoAssets(
+        const { html: documentHtml, videoFiles, warnings: clipWarnings } = await inlineVideoAssets(
           imageHtml,
           repository,
         );
@@ -157,6 +157,7 @@ export function createRenderVideoTool({
           audioFiles,
           imageFiles,
           videoFiles,
+          warnings: clipWarnings,
           hasAudio: result.hasAudio,
           audioWarnings: result.audioWarnings,
         };

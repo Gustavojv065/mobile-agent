@@ -191,7 +191,7 @@ export function createPreviewSceneTool({
         // Image and clip assets inline exactly as for export; file-audio
         // tracks stay as references (nothing plays in a silent preview).
         const { html: imageHtml } = await inlineImageAssets(rawHtml, repository);
-        const { html: sceneHtml } = await inlineVideoAssets(imageHtml, repository);
+        const { html: sceneHtml, warnings: clipWarnings } = await inlineVideoAssets(imageHtml, repository);
 
         const storyboard = normalizePreviewTimes(
           times,
@@ -203,7 +203,7 @@ export function createPreviewSceneTool({
           times: storyboard.times,
           signal: abortSignal,
         });
-        const warnings = [...storyboard.warnings, ...preview.warnings];
+        const warnings = [...storyboard.warnings, ...clipWarnings, ...preview.warnings];
 
         if (preview.frames.length === 0) {
           throw new Error(
