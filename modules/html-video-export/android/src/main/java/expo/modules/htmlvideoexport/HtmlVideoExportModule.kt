@@ -13,6 +13,8 @@ class HtmlVideoExportModule : Module() {
   private var session: ExportSession? = null
   private val audioLock = Any()
   private var pcmEncoder: PcmAudioEncoder? = null
+  private var assetServer: AssetServer? = null
+  private val assetServerLock = Any()
 
   /** Audio format declared by the page; consumed when the video session begins. */
   private var pendingAudioFormat: AudioSpec? = null
@@ -130,6 +132,30 @@ class HtmlVideoExportModule : Module() {
         "height" to result.height,
         "sizeBytes" to result.sizeBytes.toDouble(),
       )
+    }
+
+    AsyncFunction("startAssetServer") { workspaceDir: String, cacheDir: String ->
+      synchronized(assetServerLock) {
+        var server = assetServer
+        if (server == null) {
+          server = AssetServer(
+            mapOf(
+              "files" to java.io.File(workspaceDir),
+              "cache" to java.io.File(cacheDir),
+            ),
+          )
+          assetServer = server
+        }
+        val port = server.acquire()
+        if (port <= 0) throw IllegalStateException("The asset server failed to start.")
+        mapOf("port" to port)
+      }
+    }
+
+    AsyncFunction("stopAssetServer") {
+      synchronized(assetServerLock) {
+        try { assetServer?.release() } catch (_: Exception) {}
+      }
     }
   }
 

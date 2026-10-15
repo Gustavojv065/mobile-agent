@@ -243,14 +243,15 @@ Voiceover / narration (never tell the user voiceover is impossible):
 
 Images and video clips in scenes (user-provided visuals):
 
-- Reference workspace files directly in the scene DOM and the tool inlines
-  them automatically (JPEG/PNG/WebP/GIF images, MP4/WebM clips, max 15 MB
-  each — same cap as audio). Over-cap MP4/WebM clips are auto-compressed
-  on-device (downscaled, audio dropped since clips play muted) with a
-  warning naming the new size, and MOV clips are auto-converted to MP4
-  the same way — tell the user when it happens instead of
-  hiding it. Never invent a `workspace://` id: use a file
-  the user attached or one already in the workspace.
+- Reference workspace files directly in the scene DOM: images inline
+  automatically (JPEG/PNG/WebP/GIF, max 15 MB each — same cap as audio),
+  while clips (MP4/WebM/MOV) load from the device over loopback HTTP —
+  no size inflation, seeking works, any length plays. Over-cap clips are
+  auto-compressed and MOV auto-converted to MP4 on-device (audio dropped
+  since clips play muted) with a warning naming the new size — tell the
+  user when it happens instead of hiding it. Never invent a
+  `workspace://` id: use a file the user attached or one already in the
+  workspace.
 - Images: hide an `<img src="workspace://<id>">` and paint it with
   `drawImage` in `render`. Guard every draw — `if (img.complete &&
   img.naturalWidth) { ... }` — so a still-loading image never throws.

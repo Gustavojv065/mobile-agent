@@ -55,10 +55,22 @@ export type HtmlVideoExportNativeModule = {
    */
   transcodeClip(
     inputPath: string,
-    outputPath: String,
+    outputPath: string,
     maxBytes: number,
     maxDimension: number,
   ): Promise<{ path: string; width: number; height: number; sizeBytes: number }>;
+  /**
+   * Serves workspace + cache files over loopback HTTP so scene pages load
+   * clips without base64 inflation (same origin: canvas stays clean, range
+   * requests work). Plain directory paths in, `{ port }` out. Reference
+   * counted: every start needs a matching stop call.
+   */
+  startAssetServer(
+    workspaceDir: string,
+    cacheDir: string,
+  ): Promise<{ port: number }>;
+  /** Releases one asset-server consumer; stops it when none remain. */
+  stopAssetServer(): Promise<void>;
   finish(): Promise<{
     uri: string;
     sizeBytes: number;

@@ -44,6 +44,18 @@ vi.mock("expo-file-system", () => ({
   Paths: { cache: "mock-cache-dir" },
 }));
 
+const serverMocks = vi.hoisted(() => ({
+  baseUrl: null as string | null,
+}));
+
+vi.mock("@/modules/preview/asset-server", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/modules/preview/asset-server")>();
+  return {
+    ...actual,
+    ensureAssetServer: async () => serverMocks.baseUrl,
+  };
+});
+
 const {
   assertImageFileUsable,
   assertVideoFileUsable,
@@ -82,6 +94,7 @@ beforeEach(() => {
   mocks.resolveWorkspaceFile.mockReset();
   mocks.exists = true;
   mocks.bytes = new Uint8Array([0xff, 0xd8, 0xff, 0x00]);
+  serverMocks.baseUrl = null;
 });
 
 describe("extractWorkspaceImageIds", () => {
@@ -360,8 +373,7 @@ describe("inlineVideoAssets over-cap transcoding", () => {
     expect(warnings[0]).toMatch(/MOV.*converted to MP4/);
   });
 
-  it("still rejects containers nothing can play", async () => {
-    mocks.getById.mockImplementation(async (id: string) => ({
+  it("still rejects containers nothing can play", async () => {    mocks.getById.mockImplementation(async (id: string) => ({
       id,
       displayName: "clip.avi",
       mimeType: "video/avi",
@@ -439,5 +451,77 @@ describe("hasWorkspaceRefs", () => {
     expect(hasWorkspaceRefs(`<img src="https://example.com/x.png">`)).toBe(
       false,
     );
+  });
+});
+
+describe("inlineVideoAssets served URLs", () => {
+  const FIFTY_MB = 50 * 1024 * 1024;
+
+  beforeEach(() => {
+    serverMocks.baseUrl = "http://127.0.0.1:9999";
+    nativeMocks.transcodeClip.mockReset();
+    nativeMocks.transcodeClip.mockImplementation(async () => ({
+      path: "/cache/clip-vid-1.mp4",
+      width: 1280,
+      height: 720,
+      sizeBytes: 8_000_000,
+    }));
+    nativeMocks.outExists = false;
+    nativeMocks.outBytes = new Uint8Array([0x00, 0x00, 0x00, 0x18]);
+    nativeMocks.deleted = [];
+  });
+
+  it("serves fitting clips by URL without reading bytes", async () => {
+    let bytesRead = false;
+    mocks.getById.mockImplementation(async (id: string) => ({
+      id,
+      displayName: "clip.mp4",
+      mimeType: "video/mp4",
+      relativePath: `${id}/clip.mp4`,
+    }));
+    mocks.resolveWorkspaceFile.mockReturnValue({
+      get exists() {
+        return true;
+      },
+      size: 8 * 1024 * 1024,
+      uri: "file:///workspace/clip.mp4",
+      bytes: async () => {
+        bytesRead = true;
+        return new Uint8Array([1, 2, 3]);
+      },
+    });
+    const { html: out, videoFiles, warnings } = await inlineVideoAssets(
+      `<video src="workspace://vid-1">`,
+      repository(),
+    );
+    expect(bytesRead).toBe(false);
+    expect(nativeMocks.transcodeClip).not.toHaveBeenCalled();
+    expect(out).toContain("http://127.0.0.1:9999/files/vid-1/clip.mp4");
+    expect(out).not.toContain("workspace://");
+    expect(out).not.toContain("data:video");
+    expect(videoFiles).toEqual(["clip.mp4"]);
+    expect(warnings).toEqual([]);
+  });
+
+  it("serves transcoded output for over-cap clips with a warning", async () => {
+    bigWorkspaceFile("big-clip.mp4", "video/mp4", FIFTY_MB);
+    const { html: out, warnings } = await inlineVideoAssets(
+      `<video src="workspace://vid-1">`,
+      repository(),
+    );
+    expect(nativeMocks.transcodeClip).toHaveBeenCalledTimes(1);
+    expect(out).toContain("http://127.0.0.1:9999/cache/");
+    expect(out).not.toContain("data:video");
+    expect(warnings).toHaveLength(1);
+  });
+
+  it("falls back to data URIs when the server is unavailable", async () => {
+    serverMocks.baseUrl = null;
+    workspaceFile("clip.mp4", "video/mp4");
+    const { html: out } = await inlineVideoAssets(
+      `<video src="workspace://vid-1">`,
+      repository(),
+    );
+    expect(out).toContain("data:video/mp4;base64,");
   });
 });

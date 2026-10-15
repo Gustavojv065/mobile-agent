@@ -232,7 +232,12 @@ async function inlineAssetUris(
       (isTranscodeOnlyVideoMimeType(clipMime) ||
         (statSize != null && statSize > MAX_VIDEO_FILE_BYTES));
     if (needsTranscode) {
-      const prepared = await prepareClipBytes(record.id, record.displayName, record.mimeType, file, statSize ?? 0);
+      const prepared = await prepareClipBytes(record.id, record.displayName, record.mimeType, file, statSize ?? 0, true);
+      if (!prepared.bytes) {
+        throw new Error(
+          `File "${record.displayName}" is too large. Keep scene clips under ${formatClipBytes(MAX_VIDEO_FILE_BYTES)}.`,
+        );
+      }
       files.push(record.displayName);
       next = next
         .split(`workspace://${id}`)
@@ -278,7 +283,8 @@ async function prepareClipBytes(
   mimeType: string | null | undefined,
   file: File,
   statSize: number,
-): Promise<{ bytes: Uint8Array; mimeType: string; warning?: string }> {
+  readBytes: boolean,
+): Promise<{ bytes: Uint8Array | null; mimeType: string; warning?: string; cacheName: string }> {
   const resolved = resolveVideoMimeType(mimeType, displayName);
   if (!resolved) {
     throw new Error(
@@ -292,7 +298,7 @@ async function prepareClipBytes(
   // Lazy: expo-file-system and the native module pull react-native, which
   // cannot even parse in unit tests. Only the over-cap path pays for it.
   let transcodeClip: ((inputPath: string, outputPath: string, maxBytes: number, maxDimension: number) => Promise<{ path: string; width: number; height: number; sizeBytes: number }>) | null = null;
-  let cacheFileFor: ((name: string) => { uri: string; exists: boolean; bytes: () => Promise<Uint8Array>; delete: () => void }) | null = null;
+  let cacheFileFor: ((name: string) => { uri: string; exists: boolean; size: number | null; bytes: () => Promise<Uint8Array>; delete: () => void }) | null = null;
   try {
     const [fs, native] = await Promise.all([
       import("expo-file-system"),
@@ -302,7 +308,7 @@ async function prepareClipBytes(
     if (module && typeof module.transcodeClip === "function") {
       transcodeClip = module.transcodeClip.bind(module);
       cacheFileFor = (name: string) => new fs.File(fs.Paths.cache, name) as unknown as {
-        uri: string; exists: boolean; bytes: () => Promise<Uint8Array>; delete: () => void;
+        uri: string; exists: boolean; size: number | null; bytes: () => Promise<Uint8Array>; delete: () => void;
       };
     }
   } catch {
@@ -314,25 +320,31 @@ async function prepareClipBytes(
   const inputUri = file.uri;
   const inputPath = inputUri.startsWith("file://") ? inputUri.slice("file://".length) : inputUri;
   const safeId = id.replace(/[^a-zA-Z0-9_-]/g, "_");
-  const outFile = cacheFileFor(`clip-${safeId}-${statSize}.mp4`);
+  const cacheName = `clip-${safeId}-${statSize}.mp4`;
+  const outFile = cacheFileFor(cacheName);
+  let transcodedSize: number | null = null;
   try {
     if (!outFile.exists) {
       const outPath = outFile.uri.startsWith("file://")
         ? outFile.uri.slice("file://".length)
         : outFile.uri;
-      await transcodeClip(inputPath, outPath, TRANSCODE_TARGET_BYTES, TRANSCODE_MAX_DIMENSION);
+      const done = await transcodeClip(inputPath, outPath, TRANSCODE_TARGET_BYTES, TRANSCODE_MAX_DIMENSION);
+      if (done && typeof done.sizeBytes === "number") transcodedSize = done.sizeBytes;
     }
-    const bytes = await outFile.bytes();
-    if (!bytes || bytes.length === 0 || bytes.length > MAX_VIDEO_FILE_BYTES) {
+    const bytes = readBytes ? await outFile.bytes() : null;
+    if (readBytes && (!bytes || bytes.length === 0 || bytes.length > MAX_VIDEO_FILE_BYTES)) {
       try { outFile.delete(); } catch { /* best effort */ }
       throw tooLarge;
     }
+    const outSize = bytes ? bytes.length : (transcodedSize ?? outFile.size ?? statSize);
+    const sizeText = outSize > 0 ? formatClipBytes(outSize) : "unknown size";
     return {
       bytes,
       mimeType: "video/mp4",
+      cacheName,
       warning: needsConversion
-        ? `"${displayName}" is MOV, which scenes cannot play directly — converted to MP4 (${formatClipBytes(bytes.length)}). Detail may be softer; attach an MP4 to skip this.`
-        : `"${displayName}" was ${statSize > 0 ? formatClipBytes(statSize) : "over the budget"} — over the ${formatClipBytes(MAX_VIDEO_FILE_BYTES)} scene-clip budget, so it was compressed to ${formatClipBytes(bytes.length)}. Detail may be softer; attach a smaller file or trim it to skip this.`,
+        ? `"${displayName}" is MOV, which scenes cannot play directly — converted to MP4 (${sizeText}). Detail may be softer; attach an MP4 to skip this.`
+        : `"${displayName}" was ${statSize > 0 ? formatClipBytes(statSize) : "over the budget"} — over the ${formatClipBytes(MAX_VIDEO_FILE_BYTES)} scene-clip budget, so it was compressed to ${sizeText}. Detail may be softer; attach a smaller file or trim it to skip this.`,
     };
   } catch (error) {
     if (error === tooLarge) throw error;
@@ -350,10 +362,15 @@ function formatClipBytes(sizeBytes: number): string {
 }
 
 /**
- * Inlines `<video>`/`<source>`-referenced workspace clips as data URIs.
+ * Inlines `<video>`/`<source>`-referenced workspace clips.
  * Clips play muted and scene-driven; the recorder captures its own audio
- * graph, never page audio. Over-cap clips are auto-compressed via the
- * native transcoder with a warning per file; only unfixable clips throw.
+ * graph, never page audio.
+ *
+ * Preferred path serves clips as same-origin loopback URLs (zero heap
+ * inflation, byte-range seeking, clean canvas readback). Over-cap clips
+ * and MOV are transcoded to cache first, with a warning per file. When the
+ * asset server is unavailable the legacy data-URI path runs instead, and
+ * only unfixable clips throw.
  */
 export function inlineVideoAssets(
   html: string,
@@ -364,9 +381,63 @@ export function inlineVideoAssets(
     return Promise.resolve({ html, videoFiles: [], warnings: [] });
   }
   const warnings: string[] = [];
-  return inlineAssetUris(html, repository, ids, "clip", assertVideoFileUsable, warnings).then(
-    ({ html: inlined, files }) => ({ html: inlined, videoFiles: files, warnings }),
+  return inlineClipRefs(html, repository, ids, warnings).then(
+    ({ html: out, files }) => ({ html: out, videoFiles: files, warnings }),
   );
+}
+
+async function inlineClipRefs(
+  html: string,
+  repository: WorkspaceRepository,
+  ids: string[],
+  warnings: string[],
+): Promise<{ html: string; files: string[] }> {
+  const { ensureAssetServer, workspaceFileUrl, cacheFileUrl } = await import(
+    "@/modules/preview/asset-server"
+  );
+  const baseUrl = await ensureAssetServer().catch(() => null);
+  if (!baseUrl) {
+    return inlineAssetUris(html, repository, ids, "clip", assertVideoFileUsable, warnings);
+  }
+  const files: string[] = [];
+  let next = html;
+  for (const id of ids) {
+    const record = await repository.getById(id);
+    if (!record) {
+      throw new Error(
+        `No workspace clip file found with id ${id}. Save it to the workspace first, or remove its reference from the scene.`,
+      );
+    }
+    const resolved = resolveVideoMimeType(record.mimeType, record.displayName);
+    if (!resolved) {
+      throw new Error(
+        `File "${record.displayName}" is not a supported video clip. Use MP4, WebM, or MOV clips.`,
+      );
+    }
+    const file = resolveWorkspaceFile(record.relativePath);
+    if (!file.exists) {
+      throw new Error(
+        `File "${record.displayName}" is no longer available locally.`,
+      );
+    }
+    files.push(record.displayName);
+    const statSize = typeof file.size === "number" ? file.size : null;
+    const convert =
+      isTranscodeOnlyVideoMimeType(resolved) ||
+      (statSize != null && statSize > MAX_VIDEO_FILE_BYTES);
+    if (!convert) {
+      next = next
+        .split(`workspace://${id}`)
+        .join(workspaceFileUrl(baseUrl, record.relativePath));
+      continue;
+    }
+    const prepared = await prepareClipBytes(record.id, record.displayName, record.mimeType, file, statSize ?? 0, false);
+    next = next
+      .split(`workspace://${id}`)
+      .join(cacheFileUrl(baseUrl, prepared.cacheName));
+    if (prepared.warning) warnings.push(prepared.warning);
+  }
+  return { html: next, files };
 }
 
 /**

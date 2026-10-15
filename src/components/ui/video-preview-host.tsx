@@ -146,15 +146,39 @@ export function ScenePreviewHost() {
         }
       }, SCENE_PREVIEW_JOB_TIMEOUT_MS);
 
-      try {
-        const document = createSceneDocument(buildScenePreviewDocument(job.html));
-        documentRef.current = document;
-        setDocumentUri(document.uri);
-      } catch (error) {
-        stopActive(error instanceof Error ? error : new Error(String(error)));
-        return;
-      }
-      setActive(true);
+      void (async () => {
+        try {
+          const document = createSceneDocument(buildScenePreviewDocument(job.html));
+          documentRef.current = document;
+          let uri = document.uri;
+          try {
+            const { ensureAssetServer, servedCacheUrl } = await import(
+              "@/modules/preview/asset-server"
+            );
+            const baseUrl = await ensureAssetServer();
+            if (jobRef.current !== job) {
+              document.dispose();
+              documentRef.current = null;
+              return;
+            }
+            if (baseUrl) uri = servedCacheUrl(baseUrl, document.uri);
+          } catch {
+            // Server unavailable: file:// document + data-URI clips.
+          }
+          if (jobRef.current !== job) {
+            document.dispose();
+            documentRef.current = null;
+            return;
+          }
+          setDocumentUri(uri);
+        } catch (error) {
+          if (jobRef.current !== job) return;
+          stopActive(error instanceof Error ? error : new Error(String(error)));
+          return;
+        }
+        if (jobRef.current !== job) return;
+        setActive(true);
+      })();
     },
     [clearTimers, stopActive],
   );

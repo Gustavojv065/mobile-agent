@@ -200,14 +200,43 @@ export function VideoRenderHost() {
           job.signal?.removeEventListener("abort", onAbort);
       }
 
-      try {
-        const document = createSceneDocument(buildVideoExportDocument(job.html));
-        documentRef.current = document;
-        setDocumentUri(document.uri);
-      } catch (error) {
-        stopActive(error instanceof Error ? error : new Error(String(error)));
-        return;
-      }
+      // Document + origin resolve before the single setDocumentUri: the
+      // WebView must load exactly once (a URI swap mid-flight would kill a
+      // started export). file:// fallback keeps the data-URI clip path alive.
+      void (async () => {
+        try {
+          const document = createSceneDocument(buildVideoExportDocument(job.html));
+          if (jobRef.current !== job) {
+            document.dispose();
+            return;
+          }
+          documentRef.current = document;
+          let uri = document.uri;
+          try {
+            const { ensureAssetServer, servedCacheUrl } = await import(
+              "@/modules/preview/asset-server"
+            );
+            const baseUrl = await ensureAssetServer();
+            if (jobRef.current !== job) {
+              document.dispose();
+              documentRef.current = null;
+              return;
+            }
+            if (baseUrl) uri = servedCacheUrl(baseUrl, document.uri);
+          } catch {
+            // Server unavailable: file:// document + data-URI clips.
+          }
+          if (jobRef.current !== job) {
+            document.dispose();
+            documentRef.current = null;
+            return;
+          }
+          setDocumentUri(uri);
+        } catch (error) {
+          if (jobRef.current !== job) return;
+          stopActive(error instanceof Error ? error : new Error(String(error)));
+        }
+      })();
       setVideoRenderStatus({ finishing: false, progress: 0 });
       setActive(true);
       if (!keepAwakeRef.current) {
