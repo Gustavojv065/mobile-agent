@@ -653,7 +653,8 @@ export async function executeClaimedAgentRun(
     const shortName = (name: string) =>
       name.length > 40 ? `${name.slice(0, 37)}...` : name;
     const isReroutable = (file: { mimeType: string | null }) =>
-      isAudioMimeType(file.mimeType) || isVideoMimeType(file.mimeType);
+      isAudioMimeType(file.mimeType) || isVideoMimeType(file.mimeType) ||
+      (runtimeSupportsTools && resolvedModel.supportsImageInput && file.mimeType?.startsWith("image/"));
     const reroutable = runtimeMessageResult.unsupportedAttachments.filter(
       isReroutable,
     );
@@ -662,21 +663,25 @@ export async function executeClaimedAgentRun(
     );
 
     if (blocking.length > 0) {
-      const names = blocking.map((file) => shortName(file.displayName)).join(", ");
+      const names = blocking.slice(0, 5).map((file) => shortName(file.displayName)).join(", ");
+      const memoryLimited = runtimeMessageResult.memoryLimitedAttachments.length > 0;
+      const errorMessage = memoryLimited
+        ? "This chat exceeds the mobile direct-media limit (20 files / 25 MB across history). Use a tool-capable vision model to inspect files individually, or start a new chat with a smaller batch."
+        : `I can't read these attachments with the current model: ${names}.`;
       await failAssistantMessage(
         assistantMessage,
-        `I can't read these attachments with the current model: ${names}.`,
+        errorMessage,
       );
       await safeUpdateRunRecord(run.id, {
         completedAt: new Date().toISOString(),
-        lastError: "Unsupported attachments for the current model.",
+        lastError: errorMessage,
         status: "failed",
       });
       runRegistry.clear(runId);
       return;
     }
 
-    // Audio/video the model can't ingest directly are rerouted through tools
+    // Media the model can't ingest directly are rerouted through tools
     // instead of failing the run: tell the model what arrived and which tool
     // reads it, then let it proceed with the user's request.
     const lines = reroutable.map(
@@ -686,9 +691,9 @@ export async function executeClaimedAgentRun(
     appendContextToLatestUserMessage(
       runtimeMessageResult.messages,
       [
-        "The user also attached files this model cannot read directly:",
+        "These attachments were not included as direct media (unsupported format or mobile memory limit):",
         ...lines,
-        "Say briefly that you cannot hear/watch them directly, then inspect them with tools instead — transcribeAudio for speech (including a video's soundtrack), analyzeAudio for music (tempo, melody, notes, key — works on a video's audio track too), getVideoFrame for video stills — using the fileId above. Then proceed with the request.",
+        "Say briefly that these files have not been inspected yet, then inspect them individually with tools — viewFile for images, transcribeAudio for speech (including a video's soundtrack), analyzeAudio for music, getVideoFrame for video stills — using the fileId above. Do not claim to have seen files you have not opened. Then proceed with the request.",
       ].join("\n"),
     );
   }

@@ -1,13 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { convertStoredMessagesToModelMessages } from "@/modules/runtime/message-conversion";
+import { convertStoredMessagesToModelMessages, MAX_DIRECT_MEDIA_BYTES, MAX_REQUEST_MEDIA_PARTS } from "@/modules/runtime/message-conversion";
 import type {
   StoredMessage,
   WorkspaceFile,
 } from "@/core/types/app-state";
 
 const mocks = vi.hoisted(() => ({
-  files: new Map<string, { bytes: Uint8Array }>(),
+  files: new Map<string, { bytes: Uint8Array; size?: number }>(),
+  read: vi.fn(),
 }));
 
 vi.mock("expo-crypto", () => ({
@@ -38,7 +39,12 @@ vi.mock("expo-file-system", () => ({
     get exists() {
       return mocks.files.has(this.uri);
     }
+    get size() {
+      const file = mocks.files.get(this.uri);
+      return file?.size ?? file?.bytes.length ?? 0;
+    }
     async bytes() {
+      mocks.read(this.uri);
       return mocks.files.get(this.uri)?.bytes ?? new Uint8Array(0);
     }
     delete() {}
@@ -160,5 +166,45 @@ describe("convertStoredMessagesToModelMessages media passthrough", () => {
     expect(result.unsupportedAttachments.map((file) => file.id)).toEqual([
       "file-1",
     ]);
+  });
+
+  function images(count: number, size: number) {
+    return Array.from({ length: count }, (_, index) => {
+      const relativePath = `image-${index}.jpg`;
+      mocks.files.set(`file:///document/mobile-agent/workspace/${relativePath}`, {
+        bytes: new Uint8Array([1]),
+        size,
+      });
+      return workspaceFile({ id: `image-${index}`, relativePath, size, mimeType: "image/jpeg" });
+    });
+  }
+
+  it("bounds a 261-image request before reading originals", async () => {
+    const files = images(261, 1024);
+    const result = await convert(files, { audio: true, video: true });
+    expect(mocks.read).toHaveBeenCalledTimes(MAX_REQUEST_MEDIA_PARTS);
+    expect(result.unsupportedAttachments).toHaveLength(261 - MAX_REQUEST_MEDIA_PARTS);
+    expect(JSON.stringify(result.messages)).toContain("Their contents have not been inspected");
+  });
+
+  it("shares the byte budget across chat history", async () => {
+    const files = images(3, 10 * 1024 * 1024);
+    const result = await convertStoredMessagesToModelMessages({
+      messages: files.map((file, index) => ({ ...userMessage([file.id]), id: `message-${index}` })),
+      supportsImageInput: true,
+      supportsAudioInput: true,
+      supportsVideoInput: true,
+      workspaceFilesById: new Map(files.map((file) => [file.id, file])),
+    });
+    expect(mocks.read).toHaveBeenCalledTimes(2);
+    expect(result.unsupportedAttachments).toEqual([files[2]]);
+  });
+
+  it("uses on-disk size instead of trusting stale workspace metadata", async () => {
+    const files = images(1, MAX_DIRECT_MEDIA_BYTES + 1);
+    files[0].size = 1;
+    const result = await convert(files, { audio: true, video: true });
+    expect(mocks.read).not.toHaveBeenCalled();
+    expect(result.unsupportedAttachments).toEqual(files);
   });
 });

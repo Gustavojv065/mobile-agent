@@ -73,40 +73,22 @@ export function createConversationRepository(
         .orderBy(desc(conversations.pinnedAt), desc(conversations.updatedAt));
     },
     async updateMetadata(id, input) {
-      const current = (
-        await db
-          .select()
-          .from(conversations)
-          .where(eq(conversations.id, id))
-          .limit(1)
-      )[0];
-
-      if (!current) {
-        return;
-      }
-
+      // Drizzle ignores undefined fields. Do not read and rewrite unrelated
+      // metadata: a concurrent title update could restore a cleared draft.
       await db
         .update(conversations)
         .set({
-          title: input.title ?? current.title,
-          providerId: input.providerId ?? current.providerId,
-          modelId: input.modelId ?? current.modelId,
-          pinnedAt:
-            input.pinnedAt !== undefined ? input.pinnedAt : current.pinnedAt,
-          reasoningEffort: input.reasoningEffort ?? current.reasoningEffort,
-          agentId:
-            input.agentId !== undefined ? input.agentId : current.agentId,
-          agentMode: input.agentMode ?? current.agentMode,
-          selectedFileIds: input.selectedFileIds ?? current.selectedFileIds,
-          selectedMcpServerIds:
-            input.selectedMcpServerIds !== undefined
-              ? input.selectedMcpServerIds
-              : current.selectedMcpServerIds,
-          selectedSkillIds: input.selectedSkillIds ?? current.selectedSkillIds,
-          externalFolderSession:
-            input.externalFolderSession !== undefined
-              ? input.externalFolderSession
-              : current.externalFolderSession,
+          title: input.title ?? undefined,
+          providerId: input.providerId ?? undefined,
+          modelId: input.modelId ?? undefined,
+          pinnedAt: input.pinnedAt,
+          reasoningEffort: input.reasoningEffort ?? undefined,
+          agentId: input.agentId,
+          agentMode: input.agentMode ?? undefined,
+          selectedFileIds: input.selectedFileIds ?? undefined,
+          selectedMcpServerIds: input.selectedMcpServerIds,
+          selectedSkillIds: input.selectedSkillIds ?? undefined,
+          externalFolderSession: input.externalFolderSession,
           updatedAt: input.updatedAt ?? nowIso(),
         })
         .where(eq(conversations.id, id));

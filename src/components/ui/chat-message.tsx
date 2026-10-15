@@ -1451,6 +1451,10 @@ export const ChatMessage = memo(function ChatMessage({
   const [regenerateOpen, setRegenerateOpen] = useState(false);
   const [customPresets, setCustomPresets] = useState<RegeneratePreset[]>([]);
   const [copied, setCopied] = useRecyclingState(false, [message.id]);
+  const [attachmentPage, setAttachmentPage] = useRecyclingState(0, [
+    message.id,
+    message.metadata?.selectedFileIds?.length,
+  ]);
   const [imageAction, setImageAction] = useRecyclingState<
     "download" | "share" | null
   >(null, [message.id]);
@@ -2021,6 +2025,14 @@ export const ChatMessage = memo(function ChatMessage({
     .map((fileId) => workspaceFiles.find((file) => file.id === fileId))
     .filter((file): file is WorkspaceFile => file !== undefined);
   const hasUserAttachments = isUser && attachedFiles.length > 0;
+  // A virtualized message is still a single cell: mapping hundreds of files
+  // inside it mounts every native row. Keep even that cell bounded.
+  const attachmentPageSize = 5;
+  const attachmentPageCount = Math.ceil(attachedFiles.length / attachmentPageSize);
+  const visibleAttachedFiles = attachedFiles.slice(
+    attachmentPage * attachmentPageSize,
+    (attachmentPage + 1) * attachmentPageSize,
+  );
   const fileHeaderConnected = hasUserAttachments && Boolean(message.content);
   const reasoningBlocks = message.metadata?.reasoning ?? [];
   const reasoningText = reasoningBlocks
@@ -2068,7 +2080,7 @@ export const ChatMessage = memo(function ChatMessage({
                 : "max-w-full rounded-ui",
             )}
           >
-            {attachedFiles.map((file, index) => {
+            {visibleAttachedFiles.map((file, index) => {
               const opening = openingFileId === file.id;
               const FileTypeIcon = getFileTypeIcon(file);
 
@@ -2109,6 +2121,29 @@ export const ChatMessage = memo(function ChatMessage({
                 </Pressable>
               );
             })}
+            {attachmentPageCount > 1 ? (
+              <View className="flex-row items-center justify-between border-t border-border px-sp-2 py-sp-2 dark:border-border-dark">
+                <Button
+                  accessibilityLabel="Previous attached files"
+                  disabled={attachmentPage === 0}
+                  onPress={() => setAttachmentPage((page) => page - 1)}
+                  variant="ghost"
+                >
+                  Prev
+                </Button>
+                <Text className="font-sans text-xs text-muted-foreground dark:text-muted-foreground-dark">
+                  {attachedFiles.length} files · {attachmentPage + 1}/{attachmentPageCount}
+                </Text>
+                <Button
+                  accessibilityLabel="Next attached files"
+                  disabled={attachmentPage + 1 >= attachmentPageCount}
+                  onPress={() => setAttachmentPage((page) => page + 1)}
+                  variant="ghost"
+                >
+                  Next
+                </Button>
+              </View>
+            ) : null}
           </View>
         ) : null}
 

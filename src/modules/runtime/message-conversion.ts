@@ -65,27 +65,38 @@ export function partitionSelectedFiles(files: WorkspaceFile[]): PartitionedFiles
 
 async function buildWorkspaceMediaParts(
   files: WorkspaceFile[],
+  budget: { bytes: number; parts: number },
+  deferred: WorkspaceFile[],
   fallbackMediaType = "application/octet-stream",
 ) {
-  return Promise.all(
-    files.map(async (file) => {
-      const localFile = resolveWorkspaceFile(file.relativePath);
+  const parts = [];
+  // Serialize reads, and bound retained bytes across the entire conversation.
+  // Parallel reads of hundreds of originals can kill Android before fetch starts.
+  for (const file of files) {
+    const localFile = resolveWorkspaceFile(file.relativePath);
 
-      if (!localFile.exists) {
-        throw new Error(`${file.displayName} is no longer available locally.`);
-      }
+    if (!localFile.exists) {
+      throw new Error(`${file.displayName} is no longer available locally.`);
+    }
 
-      return {
-        type: "file" as const,
-        filename: file.displayName,
-        mediaType: file.mimeType ?? fallbackMediaType,
-        data: {
-          type: "data" as const,
-          data: await localFile.bytes(),
-        },
-      };
-    }),
-  );
+    const size = Math.max(file.size ?? 0, localFile.size ?? 0);
+    if (!Number.isFinite(size) || size <= 0 || size > budget.bytes || budget.parts <= 0) {
+      deferred.push(file);
+      continue;
+    }
+    budget.bytes -= size;
+    budget.parts -= 1;
+    parts.push({
+      type: "file" as const,
+      filename: file.displayName,
+      mediaType: file.mimeType ?? fallbackMediaType,
+      data: {
+        type: "data" as const,
+        data: await localFile.bytes(),
+      },
+    });
+  }
+  return parts;
 }
 
 /**
@@ -94,6 +105,7 @@ async function buildWorkspaceMediaParts(
  * analyzeAudio, and getVideoFrame tools instead.
  */
 export const MAX_DIRECT_MEDIA_BYTES = 25 * 1024 * 1024;
+export const MAX_REQUEST_MEDIA_PARTS = 20;
 
 function parseStoredContent(
   message: StoredMessage,
@@ -151,6 +163,10 @@ export async function convertStoredMessagesToModelMessages(input: {
 }) {
   const converted: ModelMessage[] = [];
   const unsupportedAttachments: WorkspaceFile[] = [];
+  const memoryLimitedAttachments: WorkspaceFile[] = [];
+  // Raw bytes are also copied/base64-encoded by providers. A per-file limit
+  // alone does not protect the mobile heap when history contains many files.
+  const budget = { bytes: MAX_DIRECT_MEDIA_BYTES, parts: MAX_REQUEST_MEDIA_PARTS };
 
   for (const message of input.messages.filter(
     (item): item is StoredMessage & { role: MessageRole } =>
@@ -200,6 +216,7 @@ export async function convertStoredMessagesToModelMessages(input: {
     }
 
     const parts: Array<Record<string, unknown>> = [];
+    const deferred: WorkspaceFile[] = [];
 
     if (typeof parsedContent === "string" && parsedContent.trim()) {
       parts.push({
@@ -212,7 +229,7 @@ export async function convertStoredMessagesToModelMessages(input: {
 
     if (input.supportsImageInput) {
       parts.push(
-        ...(await buildWorkspaceMediaParts(imageFiles, "image/png")),
+        ...(await buildWorkspaceMediaParts(imageFiles, budget, deferred, "image/png")),
       );
     } else {
       unsupportedAttachments.push(...imageFiles);
@@ -224,17 +241,26 @@ export async function convertStoredMessagesToModelMessages(input: {
       files.filter((file) => (file.size ?? 0) > MAX_DIRECT_MEDIA_BYTES);
 
     if (input.supportsAudioInput) {
-      parts.push(...(await buildWorkspaceMediaParts(sendable(audioFiles))));
+      parts.push(...(await buildWorkspaceMediaParts(sendable(audioFiles), budget, deferred)));
       unsupportedAttachments.push(...oversized(audioFiles));
     } else {
       unsupportedAttachments.push(...audioFiles);
     }
 
     if (input.supportsVideoInput) {
-      parts.push(...(await buildWorkspaceMediaParts(sendable(videoFiles))));
+      parts.push(...(await buildWorkspaceMediaParts(sendable(videoFiles), budget, deferred)));
       unsupportedAttachments.push(...oversized(videoFiles));
     } else {
       unsupportedAttachments.push(...videoFiles);
+    }
+
+    if (deferred.length > 0) {
+      unsupportedAttachments.push(...deferred);
+      memoryLimitedAttachments.push(...deferred);
+      parts.push({
+        type: "text",
+        text: `${deferred.length} attachment(s) were not included as direct media because of the mobile memory limit. Their contents have not been inspected. Use available workspace file tools to inspect them individually, or ask the user to send a smaller batch.`,
+      });
     }
 
     converted.push({
@@ -251,5 +277,6 @@ export async function convertStoredMessagesToModelMessages(input: {
   return {
     messages: converted,
     unsupportedAttachments,
+    memoryLimitedAttachments,
   };
 }
