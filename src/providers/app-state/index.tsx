@@ -8,6 +8,7 @@ import {
     useCallback,
     useContext,
     useEffect,
+    useMemo,
     useRef,
     useState,
     type ReactNode,
@@ -548,7 +549,177 @@ function ThemePreferenceController({
     return null;
 }
 
-const AppStateContext = createContext<AppStateContextValue | null>(null);
+const AppStateContext = createContext<AppContextValue | null>(null);
+
+// Domain-split contexts (see provider memos below). Key lists partition
+// AppStateContextValue keys; _ALL_KEYS_COVERED fails compile on drift.
+// Type-registry: intentionally value-level only for Pick<> + coverage check.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+const CHAT_KEYS = [
+    "resolveNotificationApproval",
+    "approvePendingToolApproval",
+    "approvePendingToolApprovalForChat",
+    "agentRuns",
+    "cancelRun",
+    "clearConversationFolder",
+    "createConversation",
+    "importConversationJson",
+    "exportConversationJson",
+    "currentConversation",
+    "currentExternalFolderSession",
+    "currentSelectedAgentId",
+    "currentSelectedFileIds",
+    "currentSelectedSkillIds",
+    "deleteConversation",
+    "pendingToolApproval",
+    "denyPendingToolApproval",
+    "pendingQuestionnaire",
+    "submitPendingQuestionnaire",
+    "dismissPendingQuestionnaire",
+    "pendingSecretRequest",
+    "submitPendingSecretRequest",
+    "dismissPendingSecretRequest",
+    "messages",
+    "editAndResendMessage",
+    "pickConversationFolder",
+    "renameConversation",
+    "resumePendingRuns",
+    "retryRun",
+    "runStatusByConversation",
+    "selectConversation",
+    "setConversationPinned",
+    "sendMessage",
+    "sending",
+    "stopSending",
+    "reasoningEffort",
+    "setReasoningEffort",
+    "conversationAgentName",
+    "setConversationAgent",
+    "setCurrentSelectedFileIds",
+    "setCurrentSelectedSkillIds",
+    "conversations",
+] as const;
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+const CONFIG_KEYS = [
+    "clearMcpServerCredentials",
+    "clearProviderApiKey",
+    "connectMcpServerOAuth",
+    "connectOpenAIOAuth",
+    "addOpenAiOAuthAccount",
+    "createProviderAccount",
+    "switchProviderAccount",
+    "deleteProviderAccount",
+    "updateProviderAccountLabel",
+    "activeProviderAccountIds",
+    "providerAccounts",
+    "createMcpServer",
+    "createMcpServerOAuth",
+    "writeMemory",
+    "createProvider",
+    "createModelPreset",
+    "createSavedPrompt",
+    "createSchedule",
+    "createSkill",
+    "createAgent",
+    "updateAgent",
+    "deleteAgent",
+    "importAgentMarkdown",
+    "exportAgentMarkdown",
+    "currentSelectedMcpServerIds",
+    "agents",
+    "deleteProvider",
+    "deleteSchedule",
+    "deleteMcpServer",
+    "clearMemory",
+    "deleteModelPreset",
+    "deleteSavedPrompt",
+    "deleteSkill",
+    "deletePlugin",
+    "disconnectOpenAIOAuth",
+    "importSkillMarkdown",
+    "importPlugin",
+    "exportSkillMarkdown",
+    "runPluginAction",
+    "runPluginTool",
+    "pluginActions",
+    "pluginTools",
+    "savedPrompts",
+    "memory",
+    "mcpServers",
+    "refreshScheduler",
+    "resolvedConfig",
+    "saveProviderApiKey",
+    "saveMcpServerHeaderValues",
+    "schedules",
+    "selectModel",
+    "setCurrentSelectedMcpServerIds",
+    "setDefaultModelPreset",
+    "settings",
+    "skills",
+    "plugins",
+    "testMcpServer",
+    "conversationApprovalModes",
+    "conversationApprovedTools",
+    "updateMcpServer",
+    "updateDatabaseSettings",
+    "updateBuiltInToolSettings",
+    "updateMemoryEnabled",
+    "updateSavedPrompt",
+    "updateSchedule",
+    "updateSchedulingEnabled",
+    "updateSkill",
+    "updatePlugin",
+    "addSkillFiles",
+    "setConversationApprovalMode",
+    "updateThemeMode",
+    "updateProvider",
+    "importFiles",
+    "refreshWorkspaceFiles",
+    "workspaceFiles",
+    "clearWorkspaceFiles",
+    "deleteWorkspaceFile",
+    "createWorkspaceFile",
+] as const;
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+const APP_KEYS = [
+    "updateNotificationSettings",
+    "dismissInAppNotification",
+    "error",
+    "hydrating",
+    "inAppNotification",
+    "modelDiscoveryInProgress",
+    "ready",
+    "refresh",
+] as const;
+type ChatContextValue = Pick<AppStateContextValue, (typeof CHAT_KEYS)[number]>;
+type ConfigContextValue = Pick<AppStateContextValue, (typeof CONFIG_KEYS)[number]>;
+type AppContextValue = Pick<AppStateContextValue, (typeof APP_KEYS)[number]>;
+type _AllKeysCovered = Exclude<keyof AppStateContextValue, (typeof CHAT_KEYS)[number] | (typeof CONFIG_KEYS)[number] | (typeof APP_KEYS)[number]> extends never ? true : never;
+const _allKeysCovered: _AllKeysCovered = true;
+void _allKeysCovered;
+
+const ChatStateContext = createContext<ChatContextValue | null>(null);
+const ConfigStateContext = createContext<ConfigContextValue | null>(null);
+
+function useChatStateContext() {
+    const context = useContext(ChatStateContext);
+
+    if (!context) {
+        throw new Error("App state hooks must be used within AppStateProvider.");
+    }
+
+    return context;
+}
+
+function useConfigStateContext() {
+    const context = useContext(ConfigStateContext);
+
+    if (!context) {
+        throw new Error("App state hooks must be used within AppStateProvider.");
+    }
+
+    return context;
+}
 
 function getHeaderNames(headers?: Record<string, string>) {
     return Object.entries(headers ?? {})
@@ -4942,209 +5113,228 @@ Your output must be:
                 snapshot.currentConversation?.id,
         ) ?? null;
 
+    // Split contexts: chat state churns per token, config on user edits,
+    // app/boot almost never. Consumers re-render only when a context they
+    // read changes identity — settings screens skip streaming churn.
+    const chatValue = useMemo(
+        (): ChatContextValue => ({
+            resolveNotificationApproval,
+            approvePendingToolApproval: () => {
+                if (pendingToolApproval) {
+                    resolvePendingToolApproval(pendingToolApproval, "approve");
+                }
+            },
+            approvePendingToolApprovalForChat: () => {
+                if (pendingToolApproval) {
+                    const { conversationId, toolName } = pendingToolApproval;
+                    const existing =
+                        snapshotRef.current.conversationApprovedTools?.[
+                            conversationId
+                        ] ?? [];
+
+                    if (!existing.includes(toolName)) {
+                        const conversationApprovedTools = {
+                            ...snapshotRef.current.conversationApprovedTools,
+                            [conversationId]: [...existing, toolName],
+                        };
+
+                        setSnapshot((current) => ({
+                            ...current,
+                            conversationApprovedTools,
+                        }));
+                        snapshotRef.current = {
+                            ...snapshotRef.current,
+                            conversationApprovedTools,
+                        };
+
+                        repositoriesRef.current.configRepository
+                            .setApprovedToolsByConversation(
+                                conversationApprovedTools,
+                            )
+                            .catch((error) => {
+                                console.error(
+                                    "Failed to persist approved tools",
+                                    error,
+                                );
+                            });
+                    }
+
+                    resolvePendingToolApproval(pendingToolApproval, "approve");
+                }
+            },
+            agentRuns: snapshot.agentRuns,
+            cancelRun,
+            clearConversationFolder,
+            createConversation,
+            importConversationJson,
+            exportConversationJson,
+            currentConversation: snapshot.currentConversation,
+            currentExternalFolderSession:
+                snapshot.currentConversation?.externalFolderSession ?? null,
+            currentSelectedAgentId: snapshot.currentSelectedAgentId,
+            currentSelectedFileIds: snapshot.currentSelectedFileIds,
+            currentSelectedSkillIds: snapshot.currentSelectedSkillIds,
+            deleteConversation,
+            pendingToolApproval,
+            denyPendingToolApproval: () => {
+                if (pendingToolApproval) {
+                    resolvePendingToolApproval(pendingToolApproval, "deny");
+                }
+            },
+            pendingQuestionnaire,
+            submitPendingQuestionnaire: (answers) => {
+                if (pendingQuestionnaire) {
+                    resolvePendingQuestionnaire(
+                        pendingQuestionnaire,
+                        answers,
+                    );
+                }
+            },
+            dismissPendingQuestionnaire: () => {
+                if (pendingQuestionnaire) {
+                    resolvePendingQuestionnaire(pendingQuestionnaire, null);
+                }
+            },
+            pendingSecretRequest,
+            submitPendingSecretRequest,
+            dismissPendingSecretRequest,
+            messages: snapshot.messages,
+            editAndResendMessage,
+            pickConversationFolder,
+            renameConversation,
+            resumePendingRuns,
+            retryRun,
+            runStatusByConversation,
+            selectConversation,
+            setConversationPinned,
+            sendMessage,
+            sending,
+            stopSending,
+            reasoningEffort:
+                snapshot.currentConversation?.reasoningEffort ?? "medium",
+            setReasoningEffort,
+            conversationAgentName: resolveConversationAgent(
+                { agents: snapshot.agents },
+                snapshot.currentSelectedAgentId,
+            ).name,
+            setConversationAgent,
+            setCurrentSelectedFileIds,
+            setCurrentSelectedSkillIds,
+            conversations: snapshot.conversations,
+        }),
+        [cancelRun, clearConversationFolder, createConversation, deleteConversation, dismissPendingSecretRequest, editAndResendMessage, exportConversationJson, importConversationJson, pendingQuestionnaire, pendingSecretRequest, pendingToolApproval, pickConversationFolder, renameConversation, resolveNotificationApproval, resolvePendingQuestionnaire, resolvePendingToolApproval, resumePendingRuns, retryRun, runStatusByConversation, selectConversation, sendMessage, sending, setConversationAgent, setCurrentSelectedFileIds, setCurrentSelectedSkillIds, setReasoningEffort, snapshot.agentRuns, snapshot.agents, snapshot.conversations, snapshot.currentConversation, snapshot.currentSelectedAgentId, snapshot.currentSelectedFileIds, snapshot.currentSelectedSkillIds, snapshot.messages, stopSending, submitPendingSecretRequest],
+    );
+    const configValue = useMemo(
+        (): ConfigContextValue => ({
+            clearMcpServerCredentials,
+            clearProviderApiKey,
+            connectMcpServerOAuth,
+            connectOpenAIOAuth,
+            addOpenAiOAuthAccount,
+            createProviderAccount,
+            switchProviderAccount,
+            deleteProviderAccount,
+            updateProviderAccountLabel,
+            activeProviderAccountIds: snapshot.activeProviderAccountIds,
+            providerAccounts: snapshot.providerAccounts,
+            createMcpServer,
+            createMcpServerOAuth,
+            writeMemory,
+            createProvider,
+            createModelPreset,
+            createSavedPrompt,
+            createSchedule,
+            createSkill,
+            createAgent,
+            updateAgent,
+            deleteAgent,
+            importAgentMarkdown,
+            exportAgentMarkdown,
+            currentSelectedMcpServerIds: snapshot.currentSelectedMcpServerIds,
+            agents: snapshot.agents,
+            deleteProvider,
+            deleteSchedule,
+            deleteMcpServer,
+            clearMemory,
+            deleteModelPreset,
+            deleteSavedPrompt,
+            deleteSkill,
+            deletePlugin,
+            disconnectOpenAIOAuth,
+            importSkillMarkdown,
+            importPlugin,
+            exportSkillMarkdown,
+            runPluginAction: (pluginId, name, args, onProgress) =>
+                pluginRuntimeRef.current
+                    .snapshot("app")
+                    .runAction(pluginId, name, args, onProgress),
+            runPluginTool: (pluginId, name, args, onProgress) =>
+                pluginRuntimeRef.current
+                    .snapshot("app")
+                    .runTool(pluginId, name, args, onProgress),
+            pluginActions,
+            pluginTools,
+            savedPrompts: snapshot.savedPrompts,
+            memory: snapshot.memory,
+            mcpServers: snapshot.mcpServers,
+            refreshScheduler,
+            resolvedConfig: snapshot.resolvedConfig,
+            saveProviderApiKey,
+            saveMcpServerHeaderValues,
+            schedules: snapshot.schedules,
+            selectModel,
+            setCurrentSelectedMcpServerIds,
+            setDefaultModelPreset,
+            settings: snapshot.settings,
+            skills: snapshot.skills,
+            plugins: snapshot.plugins,
+            testMcpServer,
+            conversationApprovalModes: snapshot.conversationApprovalModes,
+            conversationApprovedTools: snapshot.conversationApprovedTools,
+            updateMcpServer,
+            updateDatabaseSettings,
+            updateBuiltInToolSettings,
+            updateMemoryEnabled,
+            updateSavedPrompt,
+            updateSchedule,
+            updateSchedulingEnabled,
+            updateSkill,
+            updatePlugin,
+            addSkillFiles,
+            setConversationApprovalMode,
+            updateThemeMode,
+            updateProvider,
+            clearWorkspaceFiles,
+            createWorkspaceFile,
+            deleteWorkspaceFile,
+            importFiles,
+            refreshWorkspaceFiles,
+            workspaceFiles: snapshot.workspaceFiles,
+        }),
+        [addOpenAiOAuthAccount, addSkillFiles, clearMcpServerCredentials, clearMemory, clearProviderApiKey, clearWorkspaceFiles, connectMcpServerOAuth, connectOpenAIOAuth, createAgent, createMcpServer, createMcpServerOAuth, createModelPreset, createProvider, createProviderAccount, createSavedPrompt, createSchedule, createSkill, createWorkspaceFile, deleteAgent, deleteMcpServer, deleteModelPreset, deletePlugin, deleteProvider, deleteProviderAccount, deleteSavedPrompt, deleteSchedule, deleteSkill, deleteWorkspaceFile, disconnectOpenAIOAuth, exportAgentMarkdown, exportSkillMarkdown, importAgentMarkdown, importFiles, importPlugin, importSkillMarkdown, pluginActions, pluginTools, refreshScheduler, refreshWorkspaceFiles, saveMcpServerHeaderValues, saveProviderApiKey, selectModel, setConversationApprovalMode, setCurrentSelectedMcpServerIds, setDefaultModelPreset, snapshot.activeProviderAccountIds, snapshot.agents, snapshot.conversationApprovalModes, snapshot.conversationApprovedTools, snapshot.currentSelectedMcpServerIds, snapshot.mcpServers, snapshot.memory, snapshot.plugins, snapshot.providerAccounts, snapshot.resolvedConfig, snapshot.savedPrompts, snapshot.schedules, snapshot.settings, snapshot.skills, snapshot.workspaceFiles, switchProviderAccount, testMcpServer, updateAgent, updateBuiltInToolSettings, updateDatabaseSettings, updateMcpServer, updateMemoryEnabled, updatePlugin, updateProvider, updateProviderAccountLabel, updateSavedPrompt, updateSchedule, updateSchedulingEnabled, updateSkill, updateThemeMode, writeMemory],
+    );
+    const appValue = useMemo(
+        (): AppContextValue => ({
+            updateNotificationSettings,
+            dismissInAppNotification,
+            error,
+            hydrating,
+            inAppNotification,
+            modelDiscoveryInProgress,
+            ready,
+            refresh,
+        }),
+        [dismissInAppNotification, error, hydrating, inAppNotification, modelDiscoveryInProgress, ready, refresh, updateNotificationSettings],
+    );
     return (
-        <AppStateContext.Provider
-            value={{
-                resolveNotificationApproval,
-                updateNotificationSettings,
-                approvePendingToolApproval: () => {
-                    if (pendingToolApproval) {
-                        resolvePendingToolApproval(pendingToolApproval, "approve");
-                    }
-                },
-                approvePendingToolApprovalForChat: () => {
-                    if (pendingToolApproval) {
-                        const { conversationId, toolName } = pendingToolApproval;
-                        const existing =
-                            snapshotRef.current.conversationApprovedTools?.[
-                                conversationId
-                            ] ?? [];
-
-                        if (!existing.includes(toolName)) {
-                            const conversationApprovedTools = {
-                                ...snapshotRef.current.conversationApprovedTools,
-                                [conversationId]: [...existing, toolName],
-                            };
-
-                            setSnapshot((current) => ({
-                                ...current,
-                                conversationApprovedTools,
-                            }));
-                            snapshotRef.current = {
-                                ...snapshotRef.current,
-                                conversationApprovedTools,
-                            };
-
-                            repositoriesRef.current.configRepository
-                                .setApprovedToolsByConversation(
-                                    conversationApprovedTools,
-                                )
-                                .catch((error) => {
-                                    console.error(
-                                        "Failed to persist approved tools",
-                                        error,
-                                    );
-                                });
-                        }
-
-                        resolvePendingToolApproval(pendingToolApproval, "approve");
-                    }
-                },
-                agentRuns: snapshot.agentRuns,
-                cancelRun,
-                clearMcpServerCredentials,
-                clearProviderApiKey,
-                clearWorkspaceFiles,
-                clearConversationFolder,
-                connectMcpServerOAuth,
-                connectOpenAIOAuth,
-                addOpenAiOAuthAccount,
-                createProviderAccount,
-                switchProviderAccount,
-                deleteProviderAccount,
-                updateProviderAccountLabel,
-                activeProviderAccountIds: snapshot.activeProviderAccountIds,
-                providerAccounts: snapshot.providerAccounts,
-                createMcpServer,
-                createMcpServerOAuth,
-                writeMemory,
-                createProvider,
-                createConversation,
-                createModelPreset,
-                createSavedPrompt,
-                createSchedule,
-                createSkill,
-                createAgent,
-                updateAgent,
-                deleteAgent,
-                importAgentMarkdown,
-                exportAgentMarkdown,
-                importConversationJson,
-                exportConversationJson,
-                createWorkspaceFile,
-                currentConversation: snapshot.currentConversation,
-                currentExternalFolderSession:
-                    snapshot.currentConversation?.externalFolderSession ?? null,
-                currentSelectedAgentId: snapshot.currentSelectedAgentId,
-                currentSelectedFileIds: snapshot.currentSelectedFileIds,
-                currentSelectedMcpServerIds: snapshot.currentSelectedMcpServerIds,
-                currentSelectedSkillIds: snapshot.currentSelectedSkillIds,
-                agents: snapshot.agents,
-                deleteProvider,
-                deleteConversation,
-                deleteSchedule,
-                dismissInAppNotification,
-                pendingToolApproval,
-                denyPendingToolApproval: () => {
-                    if (pendingToolApproval) {
-                        resolvePendingToolApproval(pendingToolApproval, "deny");
-                    }
-                },
-                pendingQuestionnaire,
-                submitPendingQuestionnaire: (answers) => {
-                    if (pendingQuestionnaire) {
-                        resolvePendingQuestionnaire(
-                            pendingQuestionnaire,
-                            answers,
-                        );
-                    }
-                },
-                dismissPendingQuestionnaire: () => {
-                    if (pendingQuestionnaire) {
-                        resolvePendingQuestionnaire(pendingQuestionnaire, null);
-                    }
-                },
-                pendingSecretRequest,
-                submitPendingSecretRequest,
-                dismissPendingSecretRequest,
-                deleteMcpServer,
-                clearMemory,
-                deleteModelPreset,
-                deleteSavedPrompt,
-                deleteSkill,
-                deletePlugin,
-                deleteWorkspaceFile,
-                disconnectOpenAIOAuth,
-                error,
-                hydrating,
-                importFiles,
-                inAppNotification,
-                importSkillMarkdown,
-                importPlugin,
-                modelDiscoveryInProgress,
-                exportSkillMarkdown,
-                runPluginAction: (pluginId, name, args, onProgress) =>
-                    pluginRuntimeRef.current
-                        .snapshot("app")
-                        .runAction(pluginId, name, args, onProgress),
-                runPluginTool: (pluginId, name, args, onProgress) =>
-                    pluginRuntimeRef.current
-                        .snapshot("app")
-                        .runTool(pluginId, name, args, onProgress),
-                pluginActions,
-                pluginTools,
-                messages: snapshot.messages,
-                editAndResendMessage,
-                savedPrompts: snapshot.savedPrompts,
-                memory: snapshot.memory,
-                mcpServers: snapshot.mcpServers,
-                pickConversationFolder,
-                ready,
-                refresh,
-                refreshScheduler,
-                refreshWorkspaceFiles,
-                renameConversation,
-                resumePendingRuns,
-                retryRun,
-                resolvedConfig: snapshot.resolvedConfig,
-                runStatusByConversation,
-                saveProviderApiKey,
-                saveMcpServerHeaderValues,
-                schedules: snapshot.schedules,
-                selectConversation,
-                setConversationPinned,
-                selectModel,
-                sendMessage,
-                sending,
-                stopSending,
-                reasoningEffort:
-                    snapshot.currentConversation?.reasoningEffort ?? "medium",
-                setReasoningEffort,
-                conversationAgentName: resolveConversationAgent(
-                    snapshot,
-                    snapshot.currentSelectedAgentId,
-                ).name,
-                setConversationAgent,
-                setCurrentSelectedFileIds,
-                setCurrentSelectedMcpServerIds,
-                setCurrentSelectedSkillIds,
-                setDefaultModelPreset,
-                settings: snapshot.settings,
-                skills: snapshot.skills,
-                plugins: snapshot.plugins,
-                testMcpServer,
-                conversations: snapshot.conversations,
-                conversationApprovalModes: snapshot.conversationApprovalModes,
-                conversationApprovedTools: snapshot.conversationApprovedTools,
-                updateMcpServer,
-                updateDatabaseSettings,
-                updateBuiltInToolSettings,
-                updateMemoryEnabled,
-                updateSavedPrompt,
-                updateSchedule,
-                updateSchedulingEnabled,
-                updateSkill,
-                updatePlugin,
-                addSkillFiles,
-                setConversationApprovalMode,
-                updateThemeMode,
-                updateProvider,
-                workspaceFiles: snapshot.workspaceFiles,
-            }}
-        >
-            <ThemePreferenceController mode={snapshot.settings.themeMode} />
-            {children}
-        </AppStateContext.Provider>
+        <ChatStateContext.Provider value={chatValue}>
+            <ConfigStateContext.Provider value={configValue}>
+                <AppStateContext.Provider value={appValue}>
+                    <ThemePreferenceController mode={snapshot.settings.themeMode} />
+                    {children}
+                </AppStateContext.Provider>
+            </ConfigStateContext.Provider>
+        </ChatStateContext.Provider>
     );
 }
 
@@ -5159,166 +5349,169 @@ function useAppStateContext() {
 }
 
 export function useAppState() {
-    const context = useAppStateContext();
+    const app = useAppStateContext();
+    const chat = useChatStateContext();
 
     return {
-        dismissInAppNotification: context.dismissInAppNotification,
-        ready: context.ready,
-        hydrating: context.hydrating,
-        modelDiscoveryInProgress: context.modelDiscoveryInProgress,
-        inAppNotification: context.inAppNotification,
-        sending: context.sending,
-        error: context.error,
-        refresh: context.refresh,
-        stopSending: context.stopSending,
+        dismissInAppNotification: app.dismissInAppNotification,
+        ready: app.ready,
+        hydrating: app.hydrating,
+        modelDiscoveryInProgress: app.modelDiscoveryInProgress,
+        inAppNotification: app.inAppNotification,
+        sending: chat.sending,
+        error: app.error,
+        refresh: app.refresh,
+        stopSending: chat.stopSending,
     };
 }
 
 export function useConfig() {
-    const context = useAppStateContext();
+    const config = useConfigStateContext();
+    const app = useAppStateContext();
 
     return {
-        ...context.resolvedConfig,
-        clearMcpServerCredentials: context.clearMcpServerCredentials,
-        clearProviderApiKey: context.clearProviderApiKey,
-        createProviderAccount: context.createProviderAccount,
-        switchProviderAccount: context.switchProviderAccount,
-        deleteProviderAccount: context.deleteProviderAccount,
-        updateProviderAccountLabel: context.updateProviderAccountLabel,
-        activeProviderAccountIds: context.activeProviderAccountIds,
-        providerAccounts: context.providerAccounts,
-        connectMcpServerOAuth: context.connectMcpServerOAuth,
-        connectOpenAIOAuth: context.connectOpenAIOAuth,
-        addOpenAiOAuthAccount: context.addOpenAiOAuthAccount,
-        createMcpServer: context.createMcpServer,
-        createMcpServerOAuth: context.createMcpServerOAuth,
-        writeMemory: context.writeMemory,
-        createProvider: context.createProvider,
-        createModelPreset: context.createModelPreset,
-        createSavedPrompt: context.createSavedPrompt,
-        createSkill: context.createSkill,
-        importPlugin: context.importPlugin,
-        importSkillMarkdown: context.importSkillMarkdown,
-        exportSkillMarkdown: context.exportSkillMarkdown,
-        pluginActions: context.pluginActions,
-        pluginTools: context.pluginTools,
-        runPluginAction: context.runPluginAction,
-        runPluginTool: context.runPluginTool,
-        agents: context.agents,
-        createAgent: context.createAgent,
-        updateAgent: context.updateAgent,
-        deleteAgent: context.deleteAgent,
-        importAgentMarkdown: context.importAgentMarkdown,
-        exportAgentMarkdown: context.exportAgentMarkdown,
-        createWorkspaceFile: context.createWorkspaceFile,
-        deleteMcpServer: context.deleteMcpServer,
-        deleteProvider: context.deleteProvider,
-        clearMemory: context.clearMemory,
-        deleteModelPreset: context.deleteModelPreset,
-        deleteSavedPrompt: context.deleteSavedPrompt,
-        deleteSkill: context.deleteSkill,
-        deletePlugin: context.deletePlugin,
-        deleteWorkspaceFile: context.deleteWorkspaceFile,
-        disconnectOpenAIOAuth: context.disconnectOpenAIOAuth,
-        currentSelectedMcpServerIds: context.currentSelectedMcpServerIds,
-        setCurrentSelectedMcpServerIds: context.setCurrentSelectedMcpServerIds,
+        ...config.resolvedConfig,
+        clearMcpServerCredentials: config.clearMcpServerCredentials,
+        clearProviderApiKey: config.clearProviderApiKey,
+        createProviderAccount: config.createProviderAccount,
+        switchProviderAccount: config.switchProviderAccount,
+        deleteProviderAccount: config.deleteProviderAccount,
+        updateProviderAccountLabel: config.updateProviderAccountLabel,
+        activeProviderAccountIds: config.activeProviderAccountIds,
+        providerAccounts: config.providerAccounts,
+        connectMcpServerOAuth: config.connectMcpServerOAuth,
+        connectOpenAIOAuth: config.connectOpenAIOAuth,
+        addOpenAiOAuthAccount: config.addOpenAiOAuthAccount,
+        createMcpServer: config.createMcpServer,
+        createMcpServerOAuth: config.createMcpServerOAuth,
+        writeMemory: config.writeMemory,
+        createProvider: config.createProvider,
+        createModelPreset: config.createModelPreset,
+        createSavedPrompt: config.createSavedPrompt,
+        createSkill: config.createSkill,
+        importPlugin: config.importPlugin,
+        importSkillMarkdown: config.importSkillMarkdown,
+        exportSkillMarkdown: config.exportSkillMarkdown,
+        pluginActions: config.pluginActions,
+        pluginTools: config.pluginTools,
+        runPluginAction: config.runPluginAction,
+        runPluginTool: config.runPluginTool,
+        agents: config.agents,
+        createAgent: config.createAgent,
+        updateAgent: config.updateAgent,
+        deleteAgent: config.deleteAgent,
+        importAgentMarkdown: config.importAgentMarkdown,
+        exportAgentMarkdown: config.exportAgentMarkdown,
+        createWorkspaceFile: config.createWorkspaceFile,
+        deleteMcpServer: config.deleteMcpServer,
+        deleteProvider: config.deleteProvider,
+        clearMemory: config.clearMemory,
+        deleteModelPreset: config.deleteModelPreset,
+        deleteSavedPrompt: config.deleteSavedPrompt,
+        deleteSkill: config.deleteSkill,
+        deletePlugin: config.deletePlugin,
+        deleteWorkspaceFile: config.deleteWorkspaceFile,
+        disconnectOpenAIOAuth: config.disconnectOpenAIOAuth,
+        currentSelectedMcpServerIds: config.currentSelectedMcpServerIds,
+        setCurrentSelectedMcpServerIds: config.setCurrentSelectedMcpServerIds,
         currentModelSupportsImageGeneration:
-            context.resolvedConfig.currentModelSupportsImageGeneration,
+            config.resolvedConfig.currentModelSupportsImageGeneration,
         currentModelSupportsImageInput:
-            context.resolvedConfig.currentModelSupportsImageInput,
+            config.resolvedConfig.currentModelSupportsImageInput,
         currentModelSupportsAudioInput:
-            context.resolvedConfig.currentModelSupportsAudioInput,
+            config.resolvedConfig.currentModelSupportsAudioInput,
         currentModelSupportsVideoInput:
-            context.resolvedConfig.currentModelSupportsVideoInput,
-        currentModelSupportsTools: context.resolvedConfig.currentModelSupportsTools,
-        importFiles: context.importFiles,
-        memory: context.memory,
-        memoryEnabled: context.settings.memoryEnabled,
-        mcpServers: context.mcpServers,
-        selectModel: context.selectModel,
-        saveMcpServerHeaderValues: context.saveMcpServerHeaderValues,
-        saveProviderApiKey: context.saveProviderApiKey,
-        savedPrompts: context.savedPrompts,
-        schedules: context.schedules,
-        createSchedule: context.createSchedule,
-        updateSchedule: context.updateSchedule,
-        deleteSchedule: context.deleteSchedule,
-        schedulingEnabled: context.settings.schedulingEnabled,
-        updateSchedulingEnabled: context.updateSchedulingEnabled,
-        setDefaultModelPreset: context.setDefaultModelPreset,
-        skills: context.skills,
-        plugins: context.plugins,
-        refresh: context.refresh,
-        refreshWorkspaceFiles: context.refreshWorkspaceFiles,
-        testMcpServer: context.testMcpServer,
-        themeMode: context.settings.themeMode,
-        conversationApprovalModes: context.conversationApprovalModes,
-        conversationApprovedTools: context.conversationApprovedTools,
-        toolSettings: context.settings.builtInToolSettings,
-        updateDatabaseSettings: context.updateDatabaseSettings,
-        updateMcpServer: context.updateMcpServer,
-        updateBuiltInToolSettings: context.updateBuiltInToolSettings,
-        updateMemoryEnabled: context.updateMemoryEnabled,
-        updateSavedPrompt: context.updateSavedPrompt,
-        updateSkill: context.updateSkill,
-        updatePlugin: context.updatePlugin,
-        addSkillFiles: context.addSkillFiles,
-        setConversationApprovalMode: context.setConversationApprovalMode,
-        updateThemeMode: context.updateThemeMode,
-        notificationSettings: context.settings.notificationSettings,
-        updateNotificationSettings: context.updateNotificationSettings,
-        updateProvider: context.updateProvider,
+            config.resolvedConfig.currentModelSupportsVideoInput,
+        currentModelSupportsTools: config.resolvedConfig.currentModelSupportsTools,
+        importFiles: config.importFiles,
+        memory: config.memory,
+        memoryEnabled: config.settings.memoryEnabled,
+        mcpServers: config.mcpServers,
+        selectModel: config.selectModel,
+        saveMcpServerHeaderValues: config.saveMcpServerHeaderValues,
+        saveProviderApiKey: config.saveProviderApiKey,
+        savedPrompts: config.savedPrompts,
+        schedules: config.schedules,
+        createSchedule: config.createSchedule,
+        updateSchedule: config.updateSchedule,
+        deleteSchedule: config.deleteSchedule,
+        schedulingEnabled: config.settings.schedulingEnabled,
+        updateSchedulingEnabled: config.updateSchedulingEnabled,
+        setDefaultModelPreset: config.setDefaultModelPreset,
+        skills: config.skills,
+        plugins: config.plugins,
+        refresh: app.refresh,
+        refreshWorkspaceFiles: config.refreshWorkspaceFiles,
+        testMcpServer: config.testMcpServer,
+        themeMode: config.settings.themeMode,
+        conversationApprovalModes: config.conversationApprovalModes,
+        conversationApprovedTools: config.conversationApprovedTools,
+        toolSettings: config.settings.builtInToolSettings,
+        updateDatabaseSettings: config.updateDatabaseSettings,
+        updateMcpServer: config.updateMcpServer,
+        updateBuiltInToolSettings: config.updateBuiltInToolSettings,
+        updateMemoryEnabled: config.updateMemoryEnabled,
+        updateSavedPrompt: config.updateSavedPrompt,
+        updateSkill: config.updateSkill,
+        updatePlugin: config.updatePlugin,
+        addSkillFiles: config.addSkillFiles,
+        setConversationApprovalMode: config.setConversationApprovalMode,
+        updateThemeMode: config.updateThemeMode,
+        notificationSettings: config.settings.notificationSettings,
+        updateNotificationSettings: app.updateNotificationSettings,
+        updateProvider: config.updateProvider,
     };
 }
 
 export function useChat() {
-    const context = useAppStateContext();
-    const currentConversationRunStatus = context.currentConversation
-        ? (context.runStatusByConversation[context.currentConversation.id] ?? null)
+    const chat = useChatStateContext();
+    const config = useConfigStateContext();
+    const currentConversationRunStatus = chat.currentConversation
+        ? (chat.runStatusByConversation[chat.currentConversation.id] ?? null)
         : null;
 
     return {
-        agentRuns: context.agentRuns,
-        conversations: context.conversations,
-        cancelRun: context.cancelRun,
+        agentRuns: chat.agentRuns,
+        conversations: chat.conversations,
+        cancelRun: chat.cancelRun,
         currentConversationRunStatus,
-        currentConversation: context.currentConversation,
-        currentExternalFolderSession: context.currentExternalFolderSession,
-        currentSelectedMcpServerIds: context.currentSelectedMcpServerIds,
-        currentSelectedSkillIds: context.currentSelectedSkillIds,
-        pendingToolApproval: context.pendingToolApproval,
-        approvePendingToolApproval: context.approvePendingToolApproval,
-        approvePendingToolApprovalForChat: context.approvePendingToolApprovalForChat,
-        denyPendingToolApproval: context.denyPendingToolApproval,
-        pendingQuestionnaire: context.pendingQuestionnaire,
-        submitPendingQuestionnaire: context.submitPendingQuestionnaire,
-        dismissPendingQuestionnaire: context.dismissPendingQuestionnaire,
-        pendingSecretRequest: context.pendingSecretRequest,
-        submitPendingSecretRequest: context.submitPendingSecretRequest,
-        dismissPendingSecretRequest: context.dismissPendingSecretRequest,
-        resolveNotificationApproval: context.resolveNotificationApproval,
-        createConversation: context.createConversation,
-        createSavedPrompt: context.createSavedPrompt,
-        createWorkspaceFile: context.createWorkspaceFile,
-        clearConversationFolder: context.clearConversationFolder,
-        clearWorkspaceFiles: context.clearWorkspaceFiles,
-        deleteWorkspaceFile: context.deleteWorkspaceFile,
-        currentSelectedFileIds: context.currentSelectedFileIds,
-        importFiles: context.importFiles,
-        messages: context.messages,
-        editAndResendMessage: context.editAndResendMessage,
-        savedPrompts: context.savedPrompts,
-        pickConversationFolder: context.pickConversationFolder,
-        resumePendingRuns: context.resumePendingRuns,
-        retryRun: context.retryRun,
-        renameConversation: context.renameConversation,
-        runStatusByConversation: context.runStatusByConversation,
-        selectConversation: context.selectConversation,
-        setConversationPinned: context.setConversationPinned,
-        sendMessage: context.sendMessage,
-        skills: context.skills,
-        updateSavedPrompt: context.updateSavedPrompt,
-        deleteSavedPrompt: context.deleteSavedPrompt,
+        currentConversation: chat.currentConversation,
+        currentExternalFolderSession: chat.currentExternalFolderSession,
+        currentSelectedMcpServerIds: config.currentSelectedMcpServerIds,
+        currentSelectedSkillIds: chat.currentSelectedSkillIds,
+        pendingToolApproval: chat.pendingToolApproval,
+        approvePendingToolApproval: chat.approvePendingToolApproval,
+        approvePendingToolApprovalForChat: chat.approvePendingToolApprovalForChat,
+        denyPendingToolApproval: chat.denyPendingToolApproval,
+        pendingQuestionnaire: chat.pendingQuestionnaire,
+        submitPendingQuestionnaire: chat.submitPendingQuestionnaire,
+        dismissPendingQuestionnaire: chat.dismissPendingQuestionnaire,
+        pendingSecretRequest: chat.pendingSecretRequest,
+        submitPendingSecretRequest: chat.submitPendingSecretRequest,
+        dismissPendingSecretRequest: chat.dismissPendingSecretRequest,
+        resolveNotificationApproval: chat.resolveNotificationApproval,
+        createConversation: chat.createConversation,
+        createSavedPrompt: config.createSavedPrompt,
+        createWorkspaceFile: config.createWorkspaceFile,
+        clearConversationFolder: chat.clearConversationFolder,
+        clearWorkspaceFiles: config.clearWorkspaceFiles,
+        deleteWorkspaceFile: config.deleteWorkspaceFile,
+        currentSelectedFileIds: chat.currentSelectedFileIds,
+        importFiles: config.importFiles,
+        messages: chat.messages,
+        editAndResendMessage: chat.editAndResendMessage,
+        savedPrompts: config.savedPrompts,
+        pickConversationFolder: chat.pickConversationFolder,
+        resumePendingRuns: chat.resumePendingRuns,
+        retryRun: chat.retryRun,
+        renameConversation: chat.renameConversation,
+        runStatusByConversation: chat.runStatusByConversation,
+        selectConversation: chat.selectConversation,
+        setConversationPinned: chat.setConversationPinned,
+        sendMessage: chat.sendMessage,
+        skills: config.skills,
+        updateSavedPrompt: config.updateSavedPrompt,
+        deleteSavedPrompt: config.deleteSavedPrompt,
         sending:
             currentConversationRunStatus === "queued" ||
             currentConversationRunStatus === "running" ||
@@ -5326,25 +5519,25 @@ export function useChat() {
             currentConversationRunStatus === "waiting_for_question" ||
             currentConversationRunStatus === "resumable" ||
             currentConversationRunStatus === "retrying",
-        stopSending: context.stopSending,
-        reasoningEffort: context.reasoningEffort,
-        setReasoningEffort: context.setReasoningEffort,
-        agents: context.agents,
-        currentSelectedAgentId: context.currentSelectedAgentId,
-        conversationAgentName: context.conversationAgentName,
-        setConversationAgent: context.setConversationAgent,
-        createAgent: context.createAgent,
-        updateAgent: context.updateAgent,
-        deleteAgent: context.deleteAgent,
-        importAgentMarkdown: context.importAgentMarkdown,
-        exportAgentMarkdown: context.exportAgentMarkdown,
-        importConversationJson: context.importConversationJson,
-        exportConversationJson: context.exportConversationJson,
-        setCurrentSelectedFileIds: context.setCurrentSelectedFileIds,
-        setCurrentSelectedMcpServerIds: context.setCurrentSelectedMcpServerIds,
-        setCurrentSelectedSkillIds: context.setCurrentSelectedSkillIds,
-        refreshWorkspaceFiles: context.refreshWorkspaceFiles,
-        workspaceFiles: context.workspaceFiles,
-        deleteConversation: context.deleteConversation,
+        stopSending: chat.stopSending,
+        reasoningEffort: chat.reasoningEffort,
+        setReasoningEffort: chat.setReasoningEffort,
+        agents: config.agents,
+        currentSelectedAgentId: chat.currentSelectedAgentId,
+        conversationAgentName: chat.conversationAgentName,
+        setConversationAgent: chat.setConversationAgent,
+        createAgent: config.createAgent,
+        updateAgent: config.updateAgent,
+        deleteAgent: config.deleteAgent,
+        importAgentMarkdown: config.importAgentMarkdown,
+        exportAgentMarkdown: config.exportAgentMarkdown,
+        importConversationJson: chat.importConversationJson,
+        exportConversationJson: chat.exportConversationJson,
+        setCurrentSelectedFileIds: chat.setCurrentSelectedFileIds,
+        setCurrentSelectedMcpServerIds: config.setCurrentSelectedMcpServerIds,
+        setCurrentSelectedSkillIds: chat.setCurrentSelectedSkillIds,
+        refreshWorkspaceFiles: config.refreshWorkspaceFiles,
+        workspaceFiles: config.workspaceFiles,
+        deleteConversation: chat.deleteConversation,
     };
 }
