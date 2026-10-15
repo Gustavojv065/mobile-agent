@@ -25,6 +25,7 @@ export const DEFAULT_BUILT_IN_TOOL_SETTINGS: BuiltInToolSettings = {
   question: true,
   skill: true,
   schedules: true,
+  workspaceFetchPage: true,
   requestSecret: true,
 };
 
@@ -84,6 +85,10 @@ export const BUILT_IN_FILE_TOOL_CONTROLS: Array<{
   {
     label: "Search files",
     keys: ["workspaceGrep", "folderGrep"],
+  },
+  {
+    label: "Fetch web page",
+    keys: ["workspaceFetchPage"],
   },
   {
     label: "Create folder",

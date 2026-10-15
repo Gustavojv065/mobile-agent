@@ -142,6 +142,7 @@ const WORKSPACE_AUTO_APPROVED_BUILT_IN_TOOL_NAMES = new Set([
   "analyzeAudio",
   "createFile",
   "edit",
+  "fetchPage",
   "getVideoFrame",
   "glob",
   "grep",
@@ -1321,6 +1322,9 @@ export async function executeClaimedAgentRun(
             const workspaceDiscoveryTools = createWorkspaceTools({
               repository: repositories.workspaceRepository,
               onRecord: handleToolExecutionRecord,
+              // Without this, long renders in folder chats never reset the
+              // inactivity timer and the run aborts at 5 min mid-render.
+              onProgress: () => markActivity(),
               supportsImageInput: resolvedModel.supportsImageInput,
               supportsAudioInput: resolvedModel.supportsAudioInput,
               supportsVideoInput: resolvedModel.supportsVideoInput,
@@ -1330,6 +1334,7 @@ export async function executeClaimedAgentRun(
               tools,
               pickEnabledTools(workspaceDiscoveryTools, [
                 ["listFiles", enabledFor("workspaceListFiles")],
+                ["fetchPage", enabledFor("workspaceFetchPage")],
                 // Video rendering/inspection are workspace-backed but not
                 // folder-scoped: folder chats still need them, otherwise the
                 // skill references tools the model cannot see.
@@ -1363,6 +1368,7 @@ export async function executeClaimedAgentRun(
                 ["edit", enabledFor("workspaceEdit")],
                 ["getVideoFrame", enabledFor("workspaceRenderVideo")],
                 ["glob", enabledFor("workspaceGlob")],
+                ["fetchPage", enabledFor("workspaceFetchPage")],
                 ["grep", enabledFor("workspaceGrep")],
                 ["listFiles", enabledFor("workspaceListFiles")],
                 ["listVoices", enabledFor("workspaceRenderVideo")],

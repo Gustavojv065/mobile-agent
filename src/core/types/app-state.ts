@@ -73,6 +73,7 @@ export type BuiltInToolKey =
   | "question"
   | "skill"
   | "schedules"
+  | "workspaceFetchPage"
   | "requestSecret";
 export type BuiltInToolSettings = Record<BuiltInToolKey, boolean>;
 export type SkillFile = {
