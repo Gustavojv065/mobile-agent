@@ -279,7 +279,9 @@ Images and video clips in scenes (user-provided visuals):
   { key, similarity, smoothness, spill })`. It paints the keyed frame onto
   the scene canvas and returns true; on false (video not ready, bad key
   color) fall back to a plain `drawImage` so the scene never blanks.
-  `key` is strict `#rrggbb` (`#00ff00` green, `#0000ff` blue — anything
+  The helper keys on the GPU (WebGL shader, zero pixel readback) and falls
+  back to a CPU pixel loop per draw where WebGL is missing — same call,
+  same params either way. `key` is strict `#rrggbb` (`#00ff00` green, `#0000ff` blue — anything
   else is rejected); `similarity` (default 0.35) is the UV-distance cut
   threshold, `smoothness` (default 0.1) the edge ramp, `spill` (default
   0.15) the green-fringe removal. Defaults are starting points, not
@@ -289,9 +291,9 @@ Images and video clips in scenes (user-provided visuals):
   fringe on hair/edges) and re-check after every change. Limits:
   wrinkled/shadowed screens key unevenly, heavy compression fringes (push
   `spill` up), and a subject wearing the screen color is unkeyable —
-  detect it from the stills and say so instead of shipping holes. Keying
-  costs a full-frame pixel loop per drawn frame — one keyed clip per scene
-  unless a device measurement says otherwise.
+  detect it from the stills and say so instead of shipping holes. One
+  keyed clip per scene unless a device measurement clears more (measure
+  GPU vs CPU via sustained-frame cost on a real render, not a still).
 
 Synth cues (`synth.kind`):
 
