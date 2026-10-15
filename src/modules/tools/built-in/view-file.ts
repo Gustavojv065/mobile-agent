@@ -5,6 +5,7 @@ import { inferMimeType } from "@/core/services/file-names";
 import { resolveWorkspaceFile } from "@/core/services/workspace-file-service";
 import { createRecord, summarizeValue } from "@/modules/tools/built-in/shared";
 import type { WorkspaceToolFactoryParams } from "@/modules/tools/built-in/types";
+import { fileInputGuidance } from "@/modules/tools/built-in/file-input-guidance";
 
 /** Keep inline file parts small enough to avoid OOM on-device (~256 MB heap). */
 const MAX_FILE_BYTES = 20_000_000;
@@ -20,11 +21,6 @@ function resolveMimeType(file: {
   return inferMimeType(file.displayName);
 }
 
-function isImageMimeType(mimeType: string) {
-  const lower = mimeType.toLowerCase();
-  return lower.startsWith("image/") && lower !== "image/svg+xml";
-}
-
 type ViewFileOutput = {
   text: string;
   fileId: string;
@@ -35,22 +31,25 @@ type ViewFileOutput = {
 };
 
 /**
- * Passes any workspace file straight to the model as file input.
+ * Passes workspace files to the model subject to its input modalities.
  *
  * `read` handles text/docs only and `ocr` returns text lines only, so without
  * this the model can list a file (via `listFiles`) but never see non-text
  * bytes — it then guesses or asks the user to show it on screen. This tool
  * reads the bytes and returns them inline via `toModelOutput`, letting the
- * model handle images, PDFs, audio, or any other file itself.
+ * model handle supported files itself. Unsupported media stays link-only
+ * with tool guidance and is never read into memory here.
  */
 export function createViewFileTool({
   onRecord,
   repository,
   supportsImageInput = true,
+  supportsAudioInput = false,
+  supportsVideoInput = false,
 }: WorkspaceToolFactoryParams) {
   return tool({
     description:
-      "Look at any workspace file by passing its fileId from listFiles. Returns the file bytes inline so you can use its contents directly — images, PDFs, audio, or any other file. Use this to describe, compare, or read all files. Do not use read for images or other binary files (text/docs only) and do not use ocr when the user wants the actual file content. On models without image input, images only return the file link: use ocr for on-screen text or ask the user what they see.",
+      "Look at a workspace file by passing its fileId from listFiles. Returns inline bytes only for media modalities supported by the active model. Unsupported audio/video returns tool guidance instead: getVideoFrame for visuals, transcribeAudio for speech, analyzeAudio for soundtrack features. Do not retry viewFile to bypass a modality restriction. Use read for text/docs and ocr for images on models without image input.",
     inputSchema: z.object({
       fileId: z.string().min(1),
     }),
@@ -72,30 +71,32 @@ export function createViewFileTool({
           );
         }
 
-        const bytes = await localFile.bytes();
+        const mimeType = resolveMimeType(file);
+        const guidance = fileInputGuidance(mimeType, { supportsImageInput, supportsAudioInput, supportsVideoInput });
+        if (!guidance && localFile.size > MAX_FILE_BYTES) {
+          throw new Error(`${file.displayName} is too large to view inline (${localFile.size} bytes, max ${MAX_FILE_BYTES}).`);
+        }
+        const bytes = guidance ? null : await localFile.bytes();
 
-        if (bytes.byteLength > MAX_FILE_BYTES) {
+        if (bytes && bytes.byteLength > MAX_FILE_BYTES) {
           throw new Error(
             `${file.displayName} is too large to view inline (${bytes.byteLength} bytes, max ${MAX_FILE_BYTES}).`,
           );
         }
 
-        const mimeType = resolveMimeType(file);
         const text =
           `File "${file.displayName}" (workspace://${file.id}, ${mimeType}). ` +
           "Use its contents when replying.";
-        const imageWithoutVision =
-          isImageMimeType(mimeType) && !supportsImageInput;
 
         const output: ViewFileOutput = {
-          text: imageWithoutVision
-            ? `${text} Your model cannot display images, so inspect it with the ocr tool for on-screen text, or ask the user what they see.`
+          text: guidance
+            ? `File "${file.displayName}" (workspace://${file.id}, ${mimeType}). ${guidance}`
             : text,
           fileId: file.id,
           displayName: file.displayName,
           mimeType,
-          inlineFile: !imageWithoutVision,
-          file: imageWithoutVision ? null : bytes,
+          inlineFile: !guidance,
+          file: bytes,
         };
 
         onRecord?.(

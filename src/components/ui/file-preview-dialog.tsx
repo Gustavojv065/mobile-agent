@@ -195,7 +195,7 @@ function MarkupPreviewBody({ file, onDismiss }: { file: WorkspaceFile; onDismiss
   }, [file.relativePath]);
   const html = useMemo(() => code === null ? null : buildPreviewDocument(code, language, { title: file.displayName }), [code, language, file.displayName]);
   if (code !== null && html) {
-    return <CodePreviewContent code={code} html={html} language={language} onDismiss={onDismiss} />;
+    return <CodePreviewContent code={code} html={html} language={language} onDismiss={onDismiss} exportFileName={file.displayName.replace(/(\.source)?\.[^.]+$/, "")} />;
   }
   return (
     <View className="flex-1 items-center justify-center">

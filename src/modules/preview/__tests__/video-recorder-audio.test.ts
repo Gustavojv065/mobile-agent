@@ -99,7 +99,11 @@ function installBrowserStubs(options: {
     MOBILE_AGENT_VIDEO: null,
     ReactNativeWebView: {
       postMessage: (data: string) => {
-        messages.push(JSON.parse(data));
+        const message = JSON.parse(data);
+        messages.push(message);
+        if (message.requestId !== undefined) {
+          (g.window as Record<string, (id: number) => void>).__mobileAgentExportConsumed(message.requestId);
+        }
       },
     },
   };
@@ -314,7 +318,11 @@ function installBrowserStubs(options: {
         for (let c = 0; c < channels; c += 1) {
           this.channelData.push(new Float32Array(length).fill(fill));
         }
+        if (options.noFxApi) {
+          Object.assign(this, { createConvolver: undefined, createDelay: undefined });
+        }
       }
+      decodeAudioData() { return FakeAudioContext.prototype.decodeAudioData(); }
       createGain() {
         const gain = {
           value: 1,
@@ -412,6 +420,7 @@ function installBrowserStubs(options: {
       }
       startRendering() {
         return Promise.resolve({
+          length: this.length,
           numberOfChannels: this.numberOfChannels,
           sampleRate: this.sampleRate,
           getChannelData: (ch: number) => this.channelData[ch],
@@ -442,7 +451,7 @@ function installBrowserStubs(options: {
   // recorder; mirror that here so the audio-reactive path is exercised.
   new Function(VIDEO_AUDIO_ANALYSIS_SCRIPT)();
 
-  return { messages, canvas, oscillators, sources, convolvers, delays, gains, offline };
+  return { messages, canvas, oscillators: offline.oscillators, sources: offline.sources, convolvers: offline.convolvers, delays: offline.delays, gains: offline.gains, offline };
 }
 
 function runScript() {
@@ -505,8 +514,8 @@ describe("VIDEO_EXPORT_SCRIPT audio engine", () => {
     const pcm = messages.find((m) => m.type === "mobileAgentVideoAudioPcmChunk");
     expect(pcm).toBeDefined();
     const bytes = Buffer.from(pcm!.base64 as string, "base64");
-    const negative = audio === "pcm-legacy" ? -16383 : -16384;
-    expect([0, 2, 4, 6].map((offset) => bytes.readInt16LE(offset))).toEqual([16384, 16384, negative, negative]);
+    // The offline renderer fixture outputs a constant +0.5 in both channels.
+    expect([0, 2, 4, 6].map((offset) => bytes.readInt16LE(offset))).toEqual([16384, 16384, 16384, 16384]);
     expect(messages.findIndex((m) => m.type === "mobileAgentVideoAudioPcmChunk")).toBeLessThan(
       messages.findIndex((m) => m.type === "mobileAgentVideoDone"),
     );
@@ -576,7 +585,7 @@ describe("VIDEO_EXPORT_SCRIPT audio engine", () => {
     expect(types).not.toContain("mobileAgentVideoAudioUnsupported");
   }, 15000);
 
-  it("degrades to a silent video with a warning when audio APIs are missing", async () => {
+  it("fails explicitly rather than silently omitting a requested soundtrack", async () => {
     const { messages } = installBrowserStubs();
     setContract({
       duration: 1,
@@ -590,18 +599,18 @@ describe("VIDEO_EXPORT_SCRIPT audio engine", () => {
     await vi.waitFor(
       () => {
         expect(
-          messages.some((m) => m.type === "mobileAgentVideoDone"),
+          messages.some((m) => m.type === "mobileAgentVideoError"),
         ).toBe(true);
       },
       { timeout: 8000 },
     );
 
     const types = messages.map((m) => m.type);
-    expect(types).toContain("mobileAgentVideoAudioUnsupported");
-    expect(types).not.toContain("mobileAgentVideoError");
+    expect(types).not.toContain("mobileAgentVideoDone");
+    expect(types).toContain("mobileAgentVideoError");
   }, 15000);
 
-  it("skips undecodable file cues with a warning and keeps recording", async () => {
+  it("fails explicitly when a requested audio asset cannot be loaded", async () => {
     const { messages } = installBrowserStubs({
       audio: "full",
       fetchImpl: (() => Promise.reject(new Error("nope"))) as typeof fetch,
@@ -623,16 +632,15 @@ describe("VIDEO_EXPORT_SCRIPT audio engine", () => {
     await vi.waitFor(
       () => {
         expect(
-          messages.some((m) => m.type === "mobileAgentVideoDone"),
+          messages.some((m) => m.type === "mobileAgentVideoError"),
         ).toBe(true);
       },
       { timeout: 8000 },
     );
 
     const types = messages.map((m) => m.type);
-    expect(types).toContain("mobileAgentVideoAudioWarning");
-    expect(types).toContain("mobileAgentVideoAudioConfig");
-    expect(types).not.toContain("mobileAgentVideoError");
+    expect(types).not.toContain("mobileAgentVideoDone");
+    expect(types).toContain("mobileAgentVideoError");
   }, 15000);
 
   it("hands render an audio-reactive object for decoded file audio", async () => {
@@ -847,7 +855,7 @@ describe("VIDEO_EXPORT_SCRIPT audio engine", () => {
       { timeout: 8000 },
     );
 
-    const t0 = 0.03;
+    const t0 = 0;
     // Kick body: sine swept 150 -> 40 Hz with a ~0.4 s decay, plus a click.
     const kickBodies = oscillators.filter(
       (o) => o.type === "sine" && o.frequency.setCalls.length === 1,
@@ -995,7 +1003,7 @@ describe("VIDEO_EXPORT_SCRIPT audio engine", () => {
       { timeout: 8000 },
     );
 
-    const t0 = 0.03;
+    const t0 = 0;
     const starts = oscillators.flatMap((o) => o.startCalls);
     expect(starts).toEqual([t0, t0 + 0.25, t0 + 0.5, t0 + 0.75]);
     const types = messages.map((m) => m.type);
@@ -1044,7 +1052,7 @@ describe("VIDEO_EXPORT_SCRIPT audio engine", () => {
     }
   }, 30000);
 
-  it("skips sound events past the voice budget with a warning", async () => {
+  it("fails explicitly when the soundtrack exceeds the voice budget", async () => {
     vi.useFakeTimers();
     try {
       const { messages, oscillators } = installBrowserStubs({ audio: "full" });
@@ -1065,7 +1073,7 @@ describe("VIDEO_EXPORT_SCRIPT audio engine", () => {
       await vi.advanceTimersByTimeAsync(60000);
 
       expect(
-        messages.some((m) => m.type === "mobileAgentVideoDone"),
+        messages.some((m) => m.type === "mobileAgentVideoError"),
       ).toBe(true);
       // 4096 attempted hits, 2048 claimed; each hit is a body + a click.
       expect(
@@ -1075,11 +1083,11 @@ describe("VIDEO_EXPORT_SCRIPT audio engine", () => {
       ).toHaveLength(2048);
       expect(oscillators).toHaveLength(4096);
       const warnings = messages.filter(
-        (m) => m.type === "mobileAgentVideoAudioWarning",
+        (m) => m.type === "mobileAgentVideoError",
       );
       expect(
         warnings.some(
-          (m) => String(m.reason).indexOf("simultaneous sounds") >= 0,
+          (m) => String(m.message).indexOf("voice limit") >= 0,
         ),
       ).toBe(true);
     } finally {
@@ -1404,7 +1412,7 @@ describe("VIDEO_EXPORT_SCRIPT audio engine", () => {
       { timeout: 8000 },
     );
 
-    const t0 = 0.03;
+    const t0 = 0;
     const ducks = gains.filter(
       (gn) =>
         gn.gain.setCalls.length === 3 &&
@@ -1462,7 +1470,7 @@ describe("VIDEO_EXPORT_SCRIPT audio engine", () => {
       { timeout: 8000 },
     );
 
-    const t0 = 0.03;
+    const t0 = 0;
     const ducks = gains.filter(
       (gn) =>
         gn.gain.setCalls.length === 2 &&
@@ -1614,7 +1622,7 @@ describe("VIDEO_EXPORT_SCRIPT audio engine", () => {
     expect(types).not.toContain("mobileAgentVideoError");
   }, 15000);
 
-  it("skips file cues when rendering stems", async () => {
+  it("mixes file cues and synth cues in the same offline renderer", async () => {
     const { messages, offline } = installBrowserStubs({
       audio: "full",
       fetchImpl: (() =>
@@ -1650,16 +1658,17 @@ describe("VIDEO_EXPORT_SCRIPT audio engine", () => {
       { timeout: 8000 },
     );
 
-    // Only the kick hit renders offline: body + click, no file nodes.
+    // Both file and synth audio must be present in the exported mix.
     expect(offline.oscillators).toHaveLength(2);
-    expect(offline.sources).toHaveLength(0);
+    expect(offline.sources).toHaveLength(1);
     const types = messages.map((m) => m.type);
     expect(types).not.toContain("mobileAgentVideoError");
   }, 15000);
 
-  it("warns and falls back to file analysis without an offline renderer", async () => {
+  it("fails if the offline renderer is missing instead of using live capture", async () => {
     const { messages } = installBrowserStubs({ audio: "full" });
     delete (globalThis as Record<string, unknown>).OfflineAudioContext;
+    delete ((globalThis as Record<string, unknown>).window as Record<string, unknown>).OfflineAudioContext;
     const seenAudio: { ready: boolean }[] = [];
     setContract({
       duration: 1,
@@ -1684,22 +1693,16 @@ describe("VIDEO_EXPORT_SCRIPT audio engine", () => {
     await vi.waitFor(
       () => {
         expect(
-          messages.some((m) => m.type === "mobileAgentVideoDone"),
+          messages.some((m) => m.type === "mobileAgentVideoError"),
         ).toBe(true);
       },
       { timeout: 8000 },
     );
 
-    const warnings = messages.filter(
-      (m) => m.type === "mobileAgentVideoAudioWarning",
-    );
-    expect(
-      warnings.some((m) => String(m.reason).indexOf("visualizer") >= 0),
-    ).toBe(true);
-    expect(seenAudio.length).toBeGreaterThan(0);
-    expect(seenAudio[0].ready).toBe(false);
+    expect(seenAudio).toHaveLength(0);
     const types = messages.map((m) => m.type);
-    expect(types).not.toContain("mobileAgentVideoError");
+    expect(types).toContain("mobileAgentVideoError");
+    expect(types).not.toContain("mobileAgentVideoDone");
   }, 15000);
 
   it("applies sends and ducking inside stem renders", async () => {

@@ -14,6 +14,7 @@ import {
   type VideoRenderResult,
 } from "@/modules/preview/video-render";
 import { buildVideoExportDocument } from "@/modules/preview/video-recorder";
+import { createSceneDocument } from "@/modules/preview/scene-document";
 import { VideoExportController } from "@/modules/preview/video-export-messages";
 import { getHtmlVideoExportModule } from "html-video-export";
 
@@ -37,9 +38,10 @@ export function VideoRenderHost() {
 
   const [pending, setPending] = useState<VideoRenderJob[]>([]);
   const [active, setActive] = useState(false);
-  const [documentHtml, setDocumentHtml] = useState<string | null>(null);
+  const [documentUri, setDocumentUri] = useState<string | null>(null);
 
   const webViewRef = useRef<WebView>(null);
+  const documentRef = useRef<ReturnType<typeof createSceneDocument> | null>(null);
   const controllerRef = useRef<VideoExportController | null>(null);
   const fileRef = useRef<File | null>(null);
   const jobRef = useRef<VideoRenderJob | null>(null);
@@ -93,6 +95,8 @@ export function VideoRenderHost() {
   }, [cleanupFile]);
 
   const finishJob = useCallback(() => {
+    documentRef.current?.dispose();
+    documentRef.current = null;
     abortCleanupRef.current?.();
     abortCleanupRef.current = null;
     controllerRef.current = null;
@@ -101,7 +105,7 @@ export function VideoRenderHost() {
     configReceivedRef.current = false;
     clearRetries();
     setVideoRenderStatus(null);
-    setDocumentHtml(null);
+    setDocumentUri(null);
     setActive(false);
     releaseKeepAwake();
   }, [clearRetries, releaseKeepAwake]);
@@ -156,6 +160,9 @@ export function VideoRenderHost() {
       const controller = new VideoExportController({
         outputPath: file.uri,
         module,
+        onConsumed: (id) => webViewRef.current?.injectJavaScript(
+          `window.__mobileAgentExportConsumed?.(${id}); true;`,
+        ),
         onProgress: (progress) => {
           job.onProgress?.(progress);
           const percent = Math.round(progress * 100);
@@ -193,7 +200,14 @@ export function VideoRenderHost() {
           job.signal?.removeEventListener("abort", onAbort);
       }
 
-      setDocumentHtml(job.html);
+      try {
+        const document = createSceneDocument(buildVideoExportDocument(job.html));
+        documentRef.current = document;
+        setDocumentUri(document.uri);
+      } catch (error) {
+        stopActive(error instanceof Error ? error : new Error(String(error)));
+        return;
+      }
       setVideoRenderStatus({ finishing: false, progress: 0 });
       setActive(true);
       if (!keepAwakeRef.current) {
@@ -232,6 +246,8 @@ export function VideoRenderHost() {
     return () => {
       abortCleanupRef.current?.();
       abortCleanupRef.current = null;
+      documentRef.current?.dispose();
+      documentRef.current = null;
       const inFlight = jobRef.current;
       if (inFlight) {
         settle(inFlight, {
@@ -298,7 +314,7 @@ export function VideoRenderHost() {
 
   if (!canRender) return null;
 
-  return documentHtml ? (
+  return documentUri ? (
     <View
       pointerEvents="none"
       style={{
@@ -315,13 +331,14 @@ export function VideoRenderHost() {
         ref={webViewRef}
         allowsInlineMediaPlayback
         mediaPlaybackRequiresUserAction={false}
-        originWhitelist={["http://*", "https://*"]}
+        allowFileAccess
+        originWhitelist={["file://*", "http://*", "https://*"]}
         onLoadEnd={() => attemptStart(8)}
         onMessage={handleMessage}
         onError={handleWebViewError}
         onHttpError={handleWebViewError}
         onRenderProcessGone={handleRenderProcessGone}
-        source={{ html: buildVideoExportDocument(documentHtml) }}
+        source={{ uri: documentUri }}
         style={{ backgroundColor: "transparent", flex: 1 }}
       />
     </View>

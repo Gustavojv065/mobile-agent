@@ -10,4 +10,6 @@ export type ExternalFolderToolFactoryParams = {
    * current behavior.
    */
   supportsImageInput?: boolean;
+  supportsAudioInput?: boolean;
+  supportsVideoInput?: boolean;
 };

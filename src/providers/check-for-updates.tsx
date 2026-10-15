@@ -8,7 +8,7 @@ import React, {
   useRef,
   useState,
 } from "react";
-import { AppState, InteractionManager, Linking } from "react-native";
+import { AppState, Linking } from "react-native";
 
 import {
   type AvailableRelease,
@@ -75,14 +75,20 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     // The launch check is network I/O — keep it off the startup critical
-    // path. First check runs after interactions settle plus a grace delay;
+    // path. First check runs when the JS thread is idle plus a grace delay;
     // returning to the app still checks immediately via the listener below.
     let timer: ReturnType<typeof setTimeout> | null = null;
-    const interaction = InteractionManager.runAfterInteractions(() => {
+    let idleHandle: number | null = null;
+    const schedule = () => {
       timer = setTimeout(() => {
         void checkForUpdates();
       }, 3000);
-    });
+    };
+    if (typeof requestIdleCallback === "function") {
+      idleHandle = requestIdleCallback(schedule);
+    } else {
+      schedule();
+    }
 
     const subscription = AppState.addEventListener("change", (state) => {
       if (state === "active") {
@@ -93,7 +99,9 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
     return () => {
       subscription.remove();
       if (timer) clearTimeout(timer);
-      interaction.cancel();
+      if (idleHandle !== null && typeof cancelIdleCallback === "function") {
+        cancelIdleCallback(idleHandle);
+      }
     };
   }, [checkForUpdates]);
 

@@ -15,4 +15,6 @@ export type WorkspaceToolFactoryParams = {
    * call sites keep current behavior.
    */
   supportsImageInput?: boolean;
+  supportsAudioInput?: boolean;
+  supportsVideoInput?: boolean;
 };

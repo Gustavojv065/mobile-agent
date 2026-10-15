@@ -35,8 +35,18 @@ export function inferFileNameFromUrl(url: string) {
   }
 }
 
+const MEDIA_MIME_TYPES: Record<string, string> = {
+  mp4: "video/mp4", m4v: "video/mp4", mov: "video/quicktime",
+  webm: "video/webm", mkv: "video/x-matroska", avi: "video/x-msvideo",
+  mp3: "audio/mpeg", m4a: "audio/mp4", wav: "audio/wav",
+  aac: "audio/aac", ogg: "audio/ogg", oga: "audio/ogg",
+  opus: "audio/opus", flac: "audio/flac",
+};
+
 export function inferMimeType(fileName: string) {
   const lowerName = fileName.toLowerCase();
+  const mediaMime = MEDIA_MIME_TYPES[lowerName.split(".").pop() ?? ""];
+  if (mediaMime) return mediaMime;
 
   if (lowerName.endsWith(".json")) {
     return "application/json";

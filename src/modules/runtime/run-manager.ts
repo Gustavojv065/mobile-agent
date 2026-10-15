@@ -95,6 +95,7 @@ export function createPendingSecretRequest(
 }
 
 export function createRunControllerRegistry() {
+  let disposed = false;
   const abortControllers = new Map<string, AbortController>();
   const claimedRuns = new Set<string>();
   const canceledRuns = new Set<string>();
@@ -112,7 +113,16 @@ export function createRunControllerRegistry() {
   >();
 
   return {
-    version: 3 as number,
+    version: 4 as number,
+    isDisposed() {
+      return disposed;
+    },
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      for (const runId of claimedRuns) this.stopRun(runId);
+      for (const controller of abortControllers.values()) controller.abort();
+    },
     clear(runId: string) {
       abortControllers.delete(runId);
       approvalResolvers.delete(runId);
@@ -122,7 +132,7 @@ export function createRunControllerRegistry() {
       canceledRuns.delete(runId);
     },
     claim(runId: string) {
-      if (claimedRuns.has(runId)) return false;
+      if (disposed || claimedRuns.has(runId)) return false;
       claimedRuns.add(runId);
       return true;
     },
@@ -137,13 +147,14 @@ export function createRunControllerRegistry() {
     },
     registerAbortController(runId: string, controller: AbortController) {
       abortControllers.set(runId, controller);
-      if (canceledRuns.has(runId)) controller.abort();
+      if (disposed || canceledRuns.has(runId)) controller.abort();
     },
     registerPendingApproval(
       runId: string,
       approvalId: string,
       resolver: (decision: ToolApprovalDecision) => void,
     ) {
+      if (disposed) { resolver("abort"); return; }
       const runApprovals = approvalResolvers.get(runId) ?? new Map();
       runApprovals.set(approvalId, resolver);
       approvalResolvers.set(runId, runApprovals);
@@ -165,6 +176,7 @@ export function createRunControllerRegistry() {
       questionnaireId: string,
       resolver: (answers: PendingQuestionnaireAnswer[] | null) => void,
     ) {
+      if (disposed) { resolver(null); return; }
       const runQuestionnaires =
         questionnaireResolvers.get(runId) ?? new Map();
       runQuestionnaires.set(questionnaireId, resolver);
@@ -189,6 +201,7 @@ export function createRunControllerRegistry() {
       secretRequestId: string,
       resolver: (answer: PendingSecretRequestAnswer) => void,
     ) {
+      if (disposed) { resolver({ status: "aborted" }); return; }
       const runSecretRequests =
         secretRequestResolvers.get(runId) ?? new Map();
       runSecretRequests.set(secretRequestId, resolver);

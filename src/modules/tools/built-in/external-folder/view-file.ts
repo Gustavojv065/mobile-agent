@@ -5,6 +5,7 @@ import { createExternalFolderService } from "@/core/services/external-folder/ext
 import { inferMimeType } from "@/core/services/file-names";
 import { createRecord, summarizeValue } from "@/modules/tools/built-in/shared";
 import type { ExternalFolderToolFactoryParams } from "@/modules/tools/built-in/external-folder/types";
+import { fileInputGuidance } from "@/modules/tools/built-in/file-input-guidance";
 
 /** Keep inline file parts small enough to avoid OOM on-device (~256 MB heap). */
 const MAX_FILE_BYTES = 20_000_000;
@@ -17,11 +18,6 @@ function resolveMimeType(path: string, mimeType: string | null) {
   return inferMimeType(path);
 }
 
-function isImageMimeType(mimeType: string) {
-  const lower = mimeType.toLowerCase();
-  return lower.startsWith("image/") && lower !== "image/svg+xml";
-}
-
 type ViewFileOutput = {
   text: string;
   path: string;
@@ -31,24 +27,26 @@ type ViewFileOutput = {
 };
 
 /**
- * Passes any external-folder file straight to the model as file input.
+ * Passes external-folder files subject to the model's input modalities.
  *
  * The folder `read` tool only returns text (`readTextFile`), so asking it to
  * read an image or other binary file either fails or returns garbage — the
  * path alone never becomes usable content. This tool uses `readBytesFile`
  * and returns the bytes inline via `toModelOutput`, letting the model handle
- * the file itself.
+ * supported files itself; unsupported media gets workspace-import guidance.
  */
 export function createExternalViewFileTool({
   onRecord,
   session,
   supportsImageInput = true,
+  supportsAudioInput = false,
+  supportsVideoInput = false,
 }: ExternalFolderToolFactoryParams) {
   const service = createExternalFolderService();
 
   return tool({
     description:
-      "Look at any file inside the granted external folder by passing its path from listDirectory. Returns the file bytes inline so you can use its contents directly — images, PDFs, audio, or any other file. Use this to describe, compare, or read all files. Do not use read for images or other binary files (text only). On models without image input, images only return the path: ask the user what they see.",
+      "Look at a file inside the granted external folder using its path from listDirectory. Inline media is limited to modalities supported by the active model. For unsupported audio/video, first importFolderFileToWorkspace, then use getVideoFrame, transcribeAudio or analyzeAudio with the returned fileId. Do not retry viewFile to bypass modality restrictions. Use read for text files.",
     inputSchema: z.object({
       path: z.string().trim().min(1),
     }),
@@ -56,28 +54,33 @@ export function createExternalViewFileTool({
       const inputSummary = summarizeValue({ path });
 
       try {
-        const { bytes, mimeType } = await service.readBytesFile(session, path);
+        const capabilities = { supportsImageInput, supportsAudioInput, supportsVideoInput };
+        const inferredMime = resolveMimeType(path, null);
+        // Avoid allocating the entire clip when its extension already tells
+        // us this model cannot use it. Still check the actual MIME if read.
+        const inferredGuidance = fileInputGuidance(inferredMime, capabilities, true);
+        const loaded = inferredGuidance ? null : await service.readBytesFile(session, path);
+        const resolvedMimeType = loaded ? resolveMimeType(path, loaded.mimeType) : inferredMime;
+        const guidance = inferredGuidance ?? fileInputGuidance(resolvedMimeType, capabilities, true);
+        const bytes = guidance ? null : loaded!.bytes;
 
-        if (bytes.byteLength > MAX_FILE_BYTES) {
+        if (bytes && bytes.byteLength > MAX_FILE_BYTES) {
           throw new Error(
             `"${path}" is too large to view inline (${bytes.byteLength} bytes, max ${MAX_FILE_BYTES}).`,
           );
         }
 
-        const resolvedMimeType = resolveMimeType(path, mimeType);
         const text =
           `File "${path}" (${resolvedMimeType}). Use its contents when replying.`;
-        const imageWithoutVision =
-          isImageMimeType(resolvedMimeType) && !supportsImageInput;
 
         const output: ViewFileOutput = {
-          text: imageWithoutVision
-            ? `${text} Your model cannot display images, so ask the user what they see.`
+          text: guidance
+            ? `File "${path}" (${resolvedMimeType}). ${guidance}`
             : text,
           path,
           mimeType: resolvedMimeType,
-          inlineFile: !imageWithoutVision,
-          file: imageWithoutVision ? null : bytes,
+          inlineFile: !guidance,
+          file: bytes,
         };
 
         onRecord?.(

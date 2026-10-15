@@ -4,7 +4,6 @@ import android.media.MediaCodecInfo
 import android.media.MediaFormat
 import android.media.MediaMuxer
 import android.util.Base64
-import java.nio.ByteBuffer
 import java.util.ArrayDeque
 
 /** Negotiated AAC track parameters, from the page's audio-config message. */
@@ -21,7 +20,7 @@ internal data class AudioSpec(val sampleRate: Int, val channels: Int)
  * start, which MediaMuxer tolerates as long as each track's own timestamps
  * increase.
  */
-internal class AudioTrackWriter(spec: AudioSpec) {
+internal class AudioTrackWriter(private val spec: AudioSpec) {
   private val format: MediaFormat = aacFormat(spec.sampleRate, spec.channels)
   private val pending: ArrayDeque<Pair<Long, ByteArray>> = ArrayDeque()
   private var trackIndex = -1
@@ -30,6 +29,10 @@ internal class AudioTrackWriter(spec: AudioSpec) {
   /** Number of audio samples actually muxed. Drives the `hasAudio` result. */
   var samplesWritten = 0L
     private set
+
+  /** Last audio timestamp muxed, in microseconds. Drives coverage checks. */
+  val audioDurationUs: Long
+    get() = if (samplesWritten == 0L) 0L else lastPtsUs + 1024L * 1_000_000 / spec.sampleRate
 
   fun addTrack(muxer: MediaMuxer): Int {
     trackIndex = muxer.addTrack(format)
@@ -69,7 +72,7 @@ internal class AudioTrackWriter(spec: AudioSpec) {
     lastPtsUs = pts
     val info = android.media.MediaCodec.BufferInfo()
     info.set(0, bytes.size, pts, 0)
-    muxer.writeSampleData(trackIndex, ByteBuffer.wrap(bytes), info)
+    muxer.writeSampleData(trackIndex, directWrap(bytes), info)
     samplesWritten += 1
   }
 
@@ -107,7 +110,7 @@ internal class AudioTrackWriter(spec: AudioSpec) {
       format.setInteger(MediaFormat.KEY_BIT_RATE, 128_000)
       format.setByteBuffer(
         "csd-0",
-        ByteBuffer.wrap(aacAudioSpecificConfig(sampleRate, channels)),
+        directWrap(aacAudioSpecificConfig(sampleRate, channels)),
       )
       return format
     }

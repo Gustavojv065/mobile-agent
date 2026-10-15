@@ -23,7 +23,7 @@ function fakeModule() {
     setAudioPcmFormat: vi.fn(async () => {}),
     pushAudioChunk: vi.fn(async () => {}),
     pushPcmChunk: vi.fn(async () => {}),
-    finish: vi.fn(async () => ({ uri: "file:///cache/video.mp4", sizeBytes: 1234, hasAudio: false })),
+    finish: vi.fn(async () => ({ uri: "file:///cache/video.mp4", sizeBytes: 1234, hasAudio: false, audioDurationUs: 0 })),
     cancel: vi.fn(async () => {}),
   } as unknown as HtmlVideoExportNativeModule;
 }
@@ -80,7 +80,7 @@ describe("VideoExportController — H.264 (GPU) path", () => {
     expect(module.pushH264Chunk).toHaveBeenNthCalledWith(2, false, 166666, "AAAAAe8=");
     expect(module.finish).toHaveBeenCalledTimes(1);
     expect(onFinishing).toHaveBeenCalledTimes(1);
-    expect(onResult).toHaveBeenCalledWith({ uri: "file:///cache/video.mp4", sizeBytes: 1234, hasAudio: false, audioWarnings: [] });
+    expect(onResult).toHaveBeenCalledWith({ uri: "file:///cache/video.mp4", sizeBytes: 1234, hasAudio: false, audioDurationUs: 0, audioWarnings: [] });
     expect(onError).not.toHaveBeenCalled();
     expect(onProgress).toHaveBeenCalled();
   });
@@ -112,6 +112,38 @@ describe("VideoExportController — JPEG fallback path", () => {
     expect(module.pushJpegFrame).toHaveBeenNthCalledWith(1, 0, "/9j/4AAQ==");
     expect(module.finish).toHaveBeenCalledTimes(1);
     expect(onError).not.toHaveBeenCalled();
+  });
+
+  it("acknowledges a frame only after native consumes it", async () => {
+    const module = fakeModule();
+    let consume!: () => void;
+    vi.mocked(module.pushJpegFrame).mockImplementation(() => new Promise<void>((resolve) => { consume = resolve; }));
+    const onConsumed = vi.fn();
+    const controller = new VideoExportController({
+      outputPath: "file:///cache/video.mp4", module,
+      onProgress: vi.fn(), onFinishing: vi.fn(), onResult: vi.fn(), onError: vi.fn(), onConsumed,
+    });
+    post(controller, { type: "mobileAgentVideoConfig", width: 640, height: 360, fps: 24, frameCount: 1, duration: 1 });
+    post(controller, { type: "mobileAgentVideoFrame", index: 0, frameCount: 1, base64: "/9j/4AAQ==", requestId: 7 });
+    await vi.waitFor(() => expect(module.pushJpegFrame).toHaveBeenCalledOnce());
+    expect(onConsumed).not.toHaveBeenCalled();
+    consume();
+    await controller.whenIdle();
+    expect(onConsumed).toHaveBeenCalledExactlyOnceWith(7);
+  });
+
+  it("does not drop frames when the controller queue exceeds the old limit", async () => {
+    const module = fakeModule();
+    const controller = new VideoExportController({
+      outputPath: "file:///cache/video.mp4", module,
+      onProgress: vi.fn(), onFinishing: vi.fn(), onResult: vi.fn(), onError: vi.fn(),
+    });
+    post(controller, { type: "mobileAgentVideoConfig", width: 640, height: 360, fps: 24, frameCount: 40, duration: 2 });
+    for (let index = 0; index < 40; index += 1) {
+      post(controller, { type: "mobileAgentVideoFrame", index, frameCount: 40, base64: "/9j/4AAQ==" });
+    }
+    await controller.whenIdle();
+    expect(module.pushJpegFrame).toHaveBeenCalledTimes(40);
   });
 });
 
@@ -155,6 +187,7 @@ describe("VideoExportController — audio track", () => {
       uri: "file:///cache/video.mp4",
       sizeBytes: 999,
       hasAudio: true,
+      audioDurationUs: 9_500_000,
     });
     const onResult = vi.fn();
     const controller = audioController(module, onResult);
@@ -178,7 +211,36 @@ describe("VideoExportController — audio track", () => {
       uri: "file:///cache/video.mp4",
       sizeBytes: 999,
       hasAudio: true,
+      audioDurationUs: 9_500_000,
       audioWarnings: [],
+    });
+  });
+
+  it("warns when the captured soundtrack stops early", async () => {
+    const module = fakeModule();
+    (module.finish as ReturnType<typeof vi.fn>).mockResolvedValue({
+      uri: "file:///cache/video.mp4",
+      sizeBytes: 999,
+      hasAudio: true,
+      audioDurationUs: 6_000_000,
+    });
+    const onResult = vi.fn();
+    const controller = audioController(module, onResult);
+
+    post(controller, { type: "mobileAgentVideoConfig", width: 1280, height: 720, fps: 30, frameCount: 300, duration: 10 });
+    post(controller, { type: "mobileAgentVideoAudioConfig", sampleRate: 48000, channels: 2 });
+    post(controller, { type: "mobileAgentVideoCsd", spsHex: "6742001f96", ppsHex: "68ce3c80" });
+    post(controller, { type: "mobileAgentVideoEncodedChunk", index: 0, frameCount: 300, keyFrame: true, timestamp: 0, base64: "AAAAAf8=" });
+    post(controller, { type: "mobileAgentVideoDone", emitted: 1 });
+
+    await controller.whenIdle();
+
+    expect(onResult).toHaveBeenCalledWith({
+      uri: "file:///cache/video.mp4",
+      sizeBytes: 999,
+      hasAudio: true,
+      audioDurationUs: 6_000_000,
+      audioWarnings: [expect.stringContaining("Only 6.0s of audio was captured")],
     });
   });
 
@@ -209,6 +271,7 @@ describe("VideoExportController — audio track", () => {
       uri: "file:///cache/video.mp4",
       sizeBytes: 1234,
       hasAudio: false,
+      audioDurationUs: 0,
       audioWarnings: ["no encoder", "cue skipped"],
     });
   });

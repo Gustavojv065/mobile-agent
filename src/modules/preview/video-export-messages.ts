@@ -27,7 +27,7 @@ export type VideoExportMessage =
       timestamp: number;
       base64: string;
     }
-  | { type: "mobileAgentVideoFrame"; index: number; frameCount: number; base64: string }
+  | { type: "mobileAgentVideoFrame"; index: number; frameCount: number; base64: string; requestId?: number }
   | {
       type: "mobileAgentVideoAudioConfig";
       sampleRate: number;
@@ -35,7 +35,7 @@ export type VideoExportMessage =
       encoding?: "aac" | "pcm16";
     }
   | { type: "mobileAgentVideoAudioChunk"; pts: number; base64: string }
-  | { type: "mobileAgentVideoAudioPcmChunk"; pts: number; base64: string }
+  | { type: "mobileAgentVideoAudioPcmChunk"; pts: number; base64: string; requestId?: number }
   | { type: "mobileAgentVideoAudioUnsupported"; reason?: string }
   | { type: "mobileAgentVideoAudioWarning"; reason?: string }
   | { type: "mobileAgentVideoDone"; emitted?: number }
@@ -47,6 +47,8 @@ export type VideoExportResult = {
   sizeBytes: number;
   /** True when the muxer wrote at least one audio sample. */
   hasAudio: boolean;
+  /** Last muxed audio timestamp in microseconds (0 when silent). */
+  audioDurationUs: number;
   /** Non-fatal audio notes (skipped cues, blocked playback, ...). */
   audioWarnings: string[];
 };
@@ -65,6 +67,8 @@ export type VideoExportControllerOptions = {
   onResult: (result: VideoExportResult) => void | Promise<void>;
   onError: (message: string, kind?: "unsupported") => void;
   onConfig?: (config: VideoExportConfigMessage) => void;
+  /** Releases the page's bounded producer only after native consumed the data. */
+  onConsumed?: (requestId: number) => void;
 };
 
 type VideoExportSession = "idle" | "recording" | "finishing" | "done" | "failed";
@@ -74,8 +78,8 @@ type VideoExportSession = "idle" | "recording" | "finishing" | "done" | "failed"
  *
  * Messages are processed through a promise chain so ordering is preserved even
  * when the native calls overlap the WebView's postMessage stream. The chain
- * also acts as backpressure for the JPEG fallback: when it falls too far
- * behind real time, frames are dropped rather than buffered forever.
+ * acknowledges data only after native has consumed it. The page waits for
+ * these acknowledgements, so no frames need to be dropped under load.
  */
 export class VideoExportController {
   private chain: Promise<void> = Promise.resolve();
@@ -97,6 +101,7 @@ export class VideoExportController {
   private readonly onResult: VideoExportControllerOptions["onResult"];
   private readonly onError: VideoExportControllerOptions["onError"];
   private readonly onConfig?: (config: VideoExportConfigMessage) => void;
+  private readonly onConsumed?: (requestId: number) => void;
 
   constructor(options: VideoExportControllerOptions) {
     this.module = options.module;
@@ -106,6 +111,7 @@ export class VideoExportController {
     this.onResult = options.onResult;
     this.onError = options.onError;
     this.onConfig = options.onConfig;
+    this.onConsumed = options.onConsumed;
   }
 
   /** True once the page posted its export config (recorder started). */
@@ -214,13 +220,9 @@ export class VideoExportController {
           );
           this.session = "recording";
         }
-        if (this.queued > 24) {
-          // The native encoder cannot keep up; drop rather than buffer forever.
-          this.reportProgress(message.index, message.frameCount);
-          return;
-        }
         await this.module.pushJpegFrame(message.index, message.base64);
-        this.reportProgress(message.index, message.frameCount);
+        this.reportProgress(message.index + 1, message.frameCount);
+        if (message.requestId !== undefined) this.onConsumed?.(message.requestId);
         return;
       }
       case "mobileAgentVideoDone": {
@@ -229,7 +231,28 @@ export class VideoExportController {
         this.onFinishing();
         const result = await this.module.finish();
         this.session = "done";
-        await this.onResult({ ...result, audioWarnings: this.audioWarnings });
+        const audioDurationUs = Number(result.audioDurationUs) || 0;
+        // A partial soundtrack is a silent-ish failure: the MP4 plays short
+        // on sound with no other signal, so say so explicitly.
+        if (
+          this.audioFormat &&
+          result.hasAudio &&
+          this.config &&
+          audioDurationUs > 0 &&
+          audioDurationUs < this.config.duration * 1_000_000 * 0.9
+        ) {
+          const captured = (audioDurationUs / 1_000_000).toFixed(1);
+          const reason =
+            `Only ${captured}s of audio was captured for a ${this.config.duration}s video. ` +
+            `The soundtrack stops early; re-render to try again.`;
+          this.audioWarnings.push(reason);
+          console.warn(`[video-export] ${reason}`);
+        }
+        await this.onResult({
+          ...result,
+          audioDurationUs,
+          audioWarnings: this.audioWarnings,
+        });
         return;
       }
       case "mobileAgentVideoAudioConfig": {
@@ -276,6 +299,7 @@ export class VideoExportController {
           throw new Error("PCM audio arrived on an AAC audio track.");
         }
         await this.module.pushPcmChunk(Math.round(message.pts), message.base64);
+        if (message.requestId !== undefined) this.onConsumed?.(message.requestId);
         return;
       }
       case "mobileAgentVideoAudioUnsupported":

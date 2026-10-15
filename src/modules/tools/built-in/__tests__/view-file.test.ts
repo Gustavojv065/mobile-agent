@@ -20,11 +20,13 @@ const { createViewFileTool } = await import(
   "@/modules/tools/built-in/view-file"
 );
 
-function makeTool(supportsImageInput = true) {
+function makeTool(supportsImageInput = true, supportsAudioInput = false, supportsVideoInput = false) {
   return createViewFileTool({
     repository: { getById: mocks.getById } as never,
     onRecord: mocks.onRecord,
     supportsImageInput,
+    supportsAudioInput,
+    supportsVideoInput,
   });
 }
 
@@ -69,7 +71,7 @@ describe("viewFile (workspace)", () => {
     };
     const modelOutput = tool.toModelOutput({
       output,
-    }) as { type: string; value: Array<Record<string, unknown>> };
+    }) as { type: string; value: Record<string, unknown>[] };
 
     expect(modelOutput.type).toBe("content");
     expect(modelOutput.value[1]).toMatchObject({
@@ -133,5 +135,26 @@ describe("viewFile (workspace)", () => {
     await expect(execute(makeTool(true), { fileId: "img-3" })).rejects.toThrow(
       /no longer available/,
     );
+  });
+
+  it.each(["video/mp4", "audio/mpeg"])("does not read or send unsupported %s", async (mimeType) => {
+    mocks.getById.mockResolvedValue({ id: "media", displayName: "clip", mimeType, relativePath: "clip" });
+    const tool = makeTool();
+    const output = await execute(tool, { fileId: "media" }) as any;
+    expect(output.inlineFile).toBe(false);
+    expect(output.file).toBeNull();
+    expect(mocks.bytes).not.toHaveBeenCalled();
+    expect(output.text).toContain("Do not retry viewFile");
+    expect(output.text).toContain("transcribeAudio");
+    if (mimeType.startsWith("video/")) expect(output.text).toContain("getVideoFrame");
+    expect((tool as any).toModelOutput({ output })).toEqual({ type: "text", value: output.text });
+  });
+
+  it.each(["video/mp4", "audio/mpeg"])("passes supported %s without relying on image support", async (mimeType) => {
+    mocks.getById.mockResolvedValue({ id: "media", displayName: "clip", mimeType, relativePath: "clip" });
+    mocks.bytes.mockResolvedValue(new Uint8Array([3]));
+    const output = await execute(makeTool(false, true, true), { fileId: "media" }) as any;
+    expect(output.inlineFile).toBe(true);
+    expect(output.file).toEqual(new Uint8Array([3]));
   });
 });

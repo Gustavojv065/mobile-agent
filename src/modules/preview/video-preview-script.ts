@@ -163,6 +163,9 @@ export const VIDEO_PREVIEW_SCRIPT = `(function () {
     if (running) return;
     running = true;
     cancelled = false;
+    // Acknowledge before waiting for media so the native host can distinguish
+    // a page that never loaded from one stuck rendering a frame.
+    post({ type: 'mobileAgentPreviewStarted' });
     var cfg = config();
     var contract = window.MOBILE_AGENT_VIDEO;
     if (!contract || typeof contract.render !== 'function') {
@@ -210,6 +213,9 @@ export const VIDEO_PREVIEW_SCRIPT = `(function () {
         post({ type: 'mobileAgentPreviewDone', warnings: warnings });
         return null;
       });
+    }).catch(function (error) {
+      running = false;
+      if (!cancelled) post({ type: 'mobileAgentPreviewError', message: 'Scene preview failed: ' + String((error && error.message) || error) });
     });
   };
 

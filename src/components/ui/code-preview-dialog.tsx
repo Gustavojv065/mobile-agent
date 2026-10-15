@@ -10,6 +10,7 @@ import {
   View,
 } from "react-native";
 import { File, Paths } from "expo-file-system";
+import { useSQLiteContext } from "expo-sqlite";
 import { captureRef } from "react-native-view-shot";
 import { WebView, type WebViewMessageEvent } from "react-native-webview";
 
@@ -19,10 +20,19 @@ import {
   DrawerContent,
   DrawerTitle,
 } from "@/components/ui/drawer";
+import { createDrizzleDb } from "@/core/db/repositories/shared";
+import { createWorkspaceRepository } from "@/core/db/repositories/workspace-repository";
+import {
+  hasWorkspaceRefs,
+  inlineAudioAssets,
+  inlineImageAssets,
+  inlineVideoAssets,
+} from "@/modules/preview/video-assets";
 import { useTheme } from "@/hooks/use-theme";
 import { downloadFile, downloadText } from "@/core/services/download-service";
 import { buildCodeDocument } from "@/modules/preview/code-document";
 import { withDesktopPreviewViewport } from "@/modules/preview/html-document";
+import { createSceneDocument } from "@/modules/preview/scene-document";
 import {
   buildScenePlayerScript,
   formatPlayerTime,
@@ -61,6 +71,8 @@ export type CodePreviewDialogProps = {
   language: string;
   /** Which mode the dialog opens in. Defaults to "preview" when `html` is present. */
   initialMode?: ViewMode;
+  /** Base name for manual video exports (a .mp4 extension is added if missing). */
+  exportFileName?: string;
   onDismiss: () => void;
 };
 
@@ -75,6 +87,7 @@ export function CodePreviewDialog({
   code,
   language,
   initialMode,
+  exportFileName,
   onDismiss,
 }: CodePreviewDialogProps) {
   return (
@@ -93,6 +106,7 @@ export function CodePreviewDialog({
           html={html}
           initialMode={initialMode}
           language={language}
+          exportFileName={exportFileName}
           onDismiss={onDismiss}
         />
       </DrawerContent>
@@ -110,6 +124,7 @@ export function CodePreviewContent({
   code,
   language,
   initialMode,
+  exportFileName,
   onDismiss,
 }: CodePreviewDialogProps) {
   const theme = useTheme();
@@ -132,13 +147,6 @@ export function CodePreviewContent({
     desktop && frame && frame.width > 0
       ? frame.width / DESKTOP_VIEWPORT_WIDTH
       : 1;
-  const previewHtml = useMemo(
-    () =>
-      desktop
-        ? withDesktopPreviewViewport(html, DESKTOP_VIEWPORT_WIDTH, scale)
-        : html,
-    [desktop, html, scale],
-  );
   const codeHtml = useMemo(
     () => mode === "code" ? buildCodeDocument(code, language, theme) : "",
     [code, language, mode, theme],
@@ -153,12 +161,101 @@ export function CodePreviewContent({
   // keeps today's UI (viewport toggle, download) untouched.
   const sceneDuration = useMemo(() => getSceneDuration(html), [html]);
   const isVideoScene = sceneDuration != null;
+  const sqlite = useSQLiteContext();
+  const workspaceRepository = useMemo(
+    () => createWorkspaceRepository(createDrizzleDb(sqlite)),
+    [sqlite],
+  );
+  // The export records the page as loaded: workspace:// refs must be inlined
+  // first (audio, images, clips — same order as the renderVideo tool), or the
+  // media silently goes missing from the MP4. The preview page loads the
+  // inlined document so what you see is what the export records.
+  const sceneNeedsAssets = isVideoScene && hasWorkspaceRefs(html);
+  const [inlinedSceneHtml, setInlinedSceneHtml] = useState<string | null>(null);
+  const [sceneAssetsError, setSceneAssetsError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!sceneNeedsAssets) {
+      setInlinedSceneHtml(null);
+      setSceneAssetsError(null);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const { html: audioHtml } = await inlineAudioAssets(html, workspaceRepository);
+        const { html: imageHtml } = await inlineImageAssets(audioHtml, workspaceRepository);
+        const { html: sceneHtml } = await inlineVideoAssets(imageHtml, workspaceRepository);
+        if (!cancelled) {
+          setInlinedSceneHtml(sceneHtml);
+          setSceneAssetsError(null);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setInlinedSceneHtml(null);
+          setSceneAssetsError(
+            error instanceof Error ? error.message : String(error),
+          );
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [html, sceneNeedsAssets, workspaceRepository]);
+  const exportHtml = inlinedSceneHtml ?? html;
+  const sceneAssetsPending =
+    sceneNeedsAssets && inlinedSceneHtml === null && sceneAssetsError === null;
+  const previewHtml = useMemo(
+    () =>
+      desktop
+        ? withDesktopPreviewViewport(exportHtml, DESKTOP_VIEWPORT_WIDTH, scale)
+        : exportHtml,
+    [desktop, exportHtml, scale],
+  );
   const [playerTime, setPlayerTime] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [playerError, setPlayerError] = useState<string | null>(null);
   const webViewRef = useRef<WebView>(null);
   const exportControllerRef = useRef<VideoExportController | null>(null);
   const exportFileRef = useRef<File | null>(null);
+  // File-backed preview document: multi-MB inlined scenes exceed what
+  // `source={{ html }}` can load, so the page reads from cache like the
+  // hidden render/preview hosts do.
+  const documentRef = useRef<ReturnType<typeof createSceneDocument> | null>(null);
+  const [documentUri, setDocumentUri] = useState<string | null>(null);
+  useEffect(() => {
+    if (mode !== "preview" || !canPreview || sceneAssetsPending) {
+      return;
+    }
+    let document: ReturnType<typeof createSceneDocument> | null = null;
+    try {
+      document = createSceneDocument(buildVideoExportDocument(previewHtml));
+    } catch (error) {
+      setPlayerError(
+        error instanceof Error ? error.message : String(error),
+      );
+      return;
+    }
+    documentRef.current?.dispose();
+    documentRef.current = document;
+    setDocumentUri(document.uri);
+    return () => {
+      if (documentRef.current === document) {
+        documentRef.current?.dispose();
+        documentRef.current = null;
+      }
+    };
+  }, [canPreview, mode, previewHtml, sceneAssetsPending]);
+  useEffect(() => {
+    return () => {
+      documentRef.current?.dispose();
+      documentRef.current = null;
+    };
+  }, []);
+  // Set once the export page answers (first progress/finish/result/error).
+  // Start retries keep firing until then: an inlined scene document can take
+  // seconds to parse, long past a fixed small retry budget.
+  const exportStartedRef = useRef(false);
   const canExportVideo = Platform.OS === "android" && getHtmlVideoExportModule() !== null;
 
   const playerCommand = useCallback((command: string) => {
@@ -251,6 +348,14 @@ export function CodePreviewContent({
 
   const handleExportVideo = useCallback(() => {
     if (videoExport || mode !== "preview") return;
+    if (hasWorkspaceRefs(exportHtml)) {
+      Alert.alert(
+        "Video export unavailable",
+        sceneAssetsError ??
+          "This scene references workspace files that could not be loaded here. Ask the agent to render it with renderVideo instead.",
+      );
+      return;
+    }
     // The recorder drives its own frames: stop the player first so the two
     // loops never fight over the canvas.
     pausePlayer();
@@ -265,7 +370,7 @@ export function CodePreviewContent({
     const finishExport = async (result: VideoExportResult) => {
       setVideoExport({ progress: 1, status: "finishing" });
       try {
-        const saved = await downloadFile(result.uri, `video-${Date.now()}.mp4`, "video/mp4");
+        const saved = await downloadFile(result.uri, exportVideoName(exportFileName), "video/mp4");
         if (!saved) throw new Error("The video could not be saved to Downloads.");
         Alert.alert("Video saved", `${saved.name} has been saved to Downloads${result.hasAudio ? " with audio" : ""}.`, [
           { text: "Share", onPress: () => void shareVideo(file) },
@@ -280,17 +385,29 @@ export function CodePreviewContent({
     };
 
     const controller = new VideoExportController({
+      onConsumed: (id) => webViewRef.current?.injectJavaScript(
+        `window.__mobileAgentExportConsumed?.(${id}); true;`,
+      ),
       outputPath: file.uri,
       module,
-      onProgress: (progress) => setVideoExport({ progress, status: "recording" }),
-      onFinishing: () => setVideoExport({ progress: 1, status: "finishing" }),
+      onConfig: () => { exportStartedRef.current = true; },
+      onProgress: (progress) => {
+        exportStartedRef.current = true;
+        setVideoExport({ progress, status: "recording" });
+      },
+      onFinishing: () => {
+        exportStartedRef.current = true;
+        setVideoExport({ progress: 1, status: "finishing" });
+      },
       onResult: (result) => {
+        exportStartedRef.current = true;
         void finishExport(result).finally(() => {
           exportControllerRef.current = null;
           setVideoExport(null);
         });
       },
       onError: (message) => {
+        exportStartedRef.current = true;
         exportControllerRef.current = null;
         setVideoExport(null);
         cleanupExportFile();
@@ -298,21 +415,35 @@ export function CodePreviewContent({
       },
     });
     exportControllerRef.current = controller;
+    exportStartedRef.current = false;
     setVideoExport({ progress: 0, status: "recording" });
 
     // The recorder script ships inside the document, so injectJavaScript may
-    // run before the page evaluated it. Retrying is safe: `start` ignores
-    // calls while an export is already running.
+    // run before the page evaluated it — especially with an inlined multi-MB
+    // scene that needs seconds to parse. Retrying is safe: `start` ignores
+    // calls while an export is already running. Retries stop once the page
+    // answers, when the user stops, or after ~15 s with a loud failure
+    // instead of a silent hang at 0%.
     const attemptStart = (triesLeft: number) => {
+      if (exportControllerRef.current !== controller) return;
+      if (exportStartedRef.current) return;
       webViewRef.current?.injectJavaScript(
         "window.__startMobileAgentVideoExport ? (window.__startMobileAgentVideoExport(), true) : false;",
       );
       if (triesLeft > 0) {
         setTimeout(() => attemptStart(triesLeft - 1), 200);
+      } else {
+        exportControllerRef.current = null;
+        setVideoExport(null);
+        cleanupExportFile();
+        Alert.alert(
+          "Video export failed",
+          "The export page did not start. Close the preview and try again, or ask the agent to render it with renderVideo.",
+        );
       }
     };
-    attemptStart(8);
-  }, [cleanupExportFile, mode, pausePlayer, shareVideo, videoExport]);
+    attemptStart(75);
+  }, [cleanupExportFile, exportFileName, exportHtml, mode, pausePlayer, sceneAssetsError, shareVideo, videoExport]);
 
   const handleMessage = useCallback((event: WebViewMessageEvent) => {
     try {
@@ -529,14 +660,15 @@ export function CodePreviewContent({
                 <WebView
                   key={viewport}
                   ref={webViewRef}
+                  allowFileAccess
                   allowsInlineMediaPlayback
-                  originWhitelist={["http://*", "https://*"]}
+                  originWhitelist={["file://*", "http://*", "https://*"]}
                   scrollEnabled
                   setSupportMultipleWindows={false}
                   injectedJavaScript={PREVIEW_DOWNLOAD_HOOK}
                   onLoadEnd={installPlayer}
                   onMessage={handleMessage}
-                  source={{ html: buildVideoExportDocument(previewHtml) }}
+                  source={documentUri ? { uri: documentUri } : undefined}
                   style={{ backgroundColor: theme.backgroundElement, flex: 1 }}
                 />
               </View>
@@ -588,6 +720,19 @@ export function CodePreviewContent({
         ) : null}
     </>
   );
+}
+
+/**
+ * Names a manual export after the scene when possible so it can be found in
+ * Downloads; otherwise falls back to the old timestamped name.
+ */
+function exportVideoName(exportFileName: string | undefined): string {
+  const base = (exportFileName ?? "")
+    .replace(/[/\\?%*:|"<>]/g, "_")
+    .trim()
+    .replace(/\.mp4$/i, "");
+  const safe = base || `video-${Date.now()}`;
+  return `${safe}.mp4`;
 }
 
 /**

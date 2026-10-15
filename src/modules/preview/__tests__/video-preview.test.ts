@@ -3,6 +3,11 @@ import { describe, expect, it, vi } from "vitest";
 import {
   hasScenePreviewHost,
   requestScenePreview,
+  SCENE_PREVIEW_JOB_TIMEOUT_MS,
+  SCENE_PREVIEW_START_TIMEOUT_MS,
+  describeScenePreviewJob,
+  scenePreviewJobTimeoutError,
+  scenePreviewStartTimeoutError,
   subscribeScenePreview,
   type ScenePreviewJob,
 } from "@/modules/preview/video-preview";
@@ -84,5 +89,41 @@ describe("requestScenePreview", () => {
     } finally {
       unsubscribe();
     }
+  });
+});
+
+describe("preview timeout diagnostics", () => {
+  const job = { html: HTML, times: [0.7, 9, 23] };
+
+  it("bounds jobs well under the run inactivity timeout", () => {
+    expect(SCENE_PREVIEW_START_TIMEOUT_MS).toBeGreaterThan(0);
+    expect(SCENE_PREVIEW_JOB_TIMEOUT_MS).toBeGreaterThan(
+      SCENE_PREVIEW_START_TIMEOUT_MS,
+    );
+    // 5 min run inactivity timeout must not be the first thing to fire.
+    expect(SCENE_PREVIEW_JOB_TIMEOUT_MS).toBeLessThan(5 * 60_000);
+  });
+
+  it("describes the job for error messages", () => {
+    expect(describeScenePreviewJob(job)).toBe(
+      `3 timestamps, ${HTML.length}-char document`,
+    );
+    expect(
+      describeScenePreviewJob({ html: HTML, times: [0] }),
+    ).toBe(`1 timestamp, ${HTML.length}-char document`);
+  });
+
+  it("reports a start timeout with job details", () => {
+    const error = scenePreviewStartTimeoutError(job);
+    expect(error.message).toContain("did not start within 15s");
+    expect(error.message).toContain("3 timestamps");
+    expect(error.message).toContain("fewer timestamps");
+  });
+
+  it("reports a job timeout with captured progress", () => {
+    const error = scenePreviewJobTimeoutError(job, 2);
+    expect(error.message).toContain("timed out after 60s");
+    expect(error.message).toContain("2/3 frames captured");
+    expect(error.message).toContain("3 timestamps");
   });
 });

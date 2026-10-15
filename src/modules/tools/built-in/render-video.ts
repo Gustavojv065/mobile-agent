@@ -3,14 +3,10 @@ import { tool } from "ai";
 import { z } from "zod";
 
 import type { WorkspaceRepository } from "@/core/db/database";
-import { createWorkspaceFileService, resolveWorkspaceFile } from "@/core/services/workspace-file-service";
+import { createWorkspaceFileService } from "@/core/services/workspace-file-service";
+import { readContractDuration } from "@/modules/preview/video-audio";
 import {
-  assertAudioFileUsable,
-  buildAudioDataUri,
-  extractWorkspaceAudioIds,
-  readContractDuration,
-} from "@/modules/preview/video-audio";
-import {
+  inlineAudioAssets,
   inlineImageAssets,
   inlineVideoAssets,
 } from "@/modules/preview/video-assets";
@@ -227,47 +223,4 @@ function normalizeName(name: string | undefined) {
 /** `clip.mp4` -> `clip.source.html`: the revisable render source. */
 function sourceName(outputName: string) {
   return `${outputName.replace(/\.mp4$/i, "")}.source.html`;
-}
-
-/**
- * Replaces every `workspace://<id>` audio reference in the document with a
- * data URI the hidden render WebView can fetch. The recorder script only ever
- * sees data URIs or synth cues; the workspace itself stays unreadable to it.
- */
-export async function inlineAudioAssets(
-  html: string,
-  repository: WorkspaceRepository,
-): Promise<{ html: string; audioFiles: string[] }> {
-  const ids = extractWorkspaceAudioIds(html);
-  if (ids.length === 0) {
-    return { html, audioFiles: [] };
-  }
-
-  const audioFiles: string[] = [];
-  let next = html;
-  for (const id of ids) {
-    const record = await repository.getById(id);
-    if (!record) {
-      throw new Error(
-        `No workspace audio file found with id ${id}. Save the audio to the workspace first, or remove its track from the audio schedule.`,
-      );
-    }
-    const file = resolveWorkspaceFile(record.relativePath);
-    if (!file.exists) {
-      throw new Error(
-        `Audio file "${record.displayName}" is no longer available locally.`,
-      );
-    }
-    const bytes = await file.bytes();
-    const mimeType = assertAudioFileUsable(
-      record.displayName,
-      record.mimeType,
-      bytes.length,
-    );
-    audioFiles.push(record.displayName);
-    next = next
-      .split(`workspace://${id}`)
-      .join(buildAudioDataUri(mimeType, bytes));
-  }
-  return { html: next, audioFiles };
 }

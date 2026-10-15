@@ -2,24 +2,19 @@ package expo.modules.htmlvideoexport
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import android.graphics.Canvas
-import android.graphics.Color
-import android.graphics.Rect
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
 import android.media.MediaMuxer
-import android.os.Build
+import android.os.SystemClock
 import android.util.Base64
-import android.view.Surface
 import java.io.File
 
 /**
- * Fallback recorder for WebViews without WebCodecs: JPEG frames posted from
- * the page are decoded and drawn onto the hardware encoder's input surface
- * (GPU-accelerated when available via `lockHardwareCanvas`), then muxed into
- * an MP4. Presentation timestamps come from the frame index, so the timeline
- * stays deterministic even if frames are dropped under load.
+ * Native export: one JPEG at a time becomes a flexible YUV420 input image.
+ * MediaCodec owns codec configuration and access-unit framing. Input PTS is
+ * frame-index based, so exports may run slower than realtime without changing
+ * their playback timing. No input frames are silently discarded.
  */
 internal class JpegFrameRecorder(
   private val outputPath: String,
@@ -32,16 +27,19 @@ internal class JpegFrameRecorder(
   /** `MediaMuxer`/`File` need a raw path; the page hands us a `file://` URI. */
   private val filePath = fileUriToPath(outputPath)
   private var codec: MediaCodec? = null
-  private var surface: Surface? = null
   private var muxer: MediaMuxer? = null
   private var muxerStarted = false
   private var trackIndex = -1
   private var audio: AudioTrackWriter? = null
   private var finished = false
   private val bufferInfo = MediaCodec.BufferInfo()
-  private var pendingTimestampUs = 0L
+  private var submittedFrames = 0
+  private var writtenFrames = 0
+  private var eosReceived = false
+  private val pixels = IntArray(width * height)
 
   fun begin() {
+    android.util.Log.d("HtmlVideoExport", "beginFrames ${width}x${height}@${fps} build=native-yuv-v1")
     val file = File(filePath)
     file.parentFile?.mkdirs()
     if (file.exists()) file.delete()
@@ -52,16 +50,16 @@ internal class JpegFrameRecorder(
     format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
     format.setInteger(
       MediaFormat.KEY_COLOR_FORMAT,
-      MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface,
+      MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible,
     )
+    // No frame reordering: one submitted image maps to one output access unit.
+    format.setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline)
 
     val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
     codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-    val surface = codec.createInputSurface()
     codec.start()
 
     this.codec = codec
-    this.surface = surface
     if (audioSpec != null) {
       val writer = AudioTrackWriter(audioSpec)
       for ((pts, bytes) in bufferedAudio) {
@@ -75,10 +73,8 @@ internal class JpegFrameRecorder(
   @Synchronized
   fun pushFrame(index: Int, base64: String) {
     val codec = this.codec ?: throw IllegalStateException("The encoder has not started.")
-    val surface = this.surface ?: throw IllegalStateException("The input surface is not ready.")
-    if (finished) return
-
-    pendingTimestampUs = index * 1_000_000L / fps
+    check(!finished) { "The video encoder has stopped." }
+    require(index == submittedFrames) { "Expected frame $submittedFrames, received $index." }
 
     val bytes = Base64.decode(base64, Base64.DEFAULT)
     val decoded = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
@@ -89,15 +85,33 @@ internal class JpegFrameRecorder(
       Bitmap.createScaledBitmap(decoded, width, height, true)
     }
 
-    val canvas = lockCanvas(surface)
-    canvas.drawColor(Color.BLACK)
-    canvas.drawBitmap(source, null, Rect(0, 0, width, height), null)
-    surface.unlockCanvasAndPost(canvas)
-
-    if (source !== decoded) source.recycle()
-    decoded.recycle()
-
-    drain(false)
+    try {
+      val deadline = SystemClock.elapsedRealtime() + 15_000
+      var input = codec.dequeueInputBuffer(10_000)
+      while (input < 0 && SystemClock.elapsedRealtime() < deadline) {
+        drain(false)
+        input = codec.dequeueInputBuffer(10_000)
+      }
+      check(input >= 0) { "Timed out waiting for a video input buffer." }
+      val size = codec.getInputBuffer(input)?.capacity() ?: error("Missing AVC input buffer.")
+      val image = codec.getInputImage(input)
+        ?: error("This AVC encoder does not expose flexible YUV input images.")
+      try {
+        writeYuv(source, image)
+      } finally {
+        image.close()
+      }
+      codec.queueInputBuffer(input, 0, size, index * 1_000_000L / fps, 0)
+      submittedFrames += 1
+      // The codec now owns this input buffer; release the page to render the
+      // next image. Some encoders need multiple inputs before emitting output.
+      // Waiting for output here would deadlock those encoders. Input-buffer
+      // availability above supplies the bounded native backpressure instead.
+      drain(false)
+    } finally {
+      if (source !== decoded) source.recycle()
+      decoded.recycle()
+    }
   }
 
   @Synchronized
@@ -109,16 +123,21 @@ internal class JpegFrameRecorder(
   }
 
   @Synchronized
-  override fun finish(): Triple<String, Long, Boolean> {
-    if (finished) return Triple(outputPath, File(filePath).length(), (audio?.samplesWritten ?: 0) > 0)
+  override fun finish(): ExportResult {
+    if (finished) return ExportResult(outputPath, File(filePath).length(), (audio?.samplesWritten ?: 0) > 0, audio?.audioDurationUs ?: 0L)
     finished = true
     try {
-      codec?.signalEndOfInputStream()
-    } catch (_: Exception) {
+      val codec = this.codec ?: error("The video encoder has stopped.")
+      val input = codec.dequeueInputBuffer(1_000_000)
+      check(input >= 0) { "Timed out submitting video end-of-stream." }
+      codec.queueInputBuffer(input, 0, 0, submittedFrames * 1_000_000L / fps, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+      drainUntilDone()
+      check(eosReceived) { "Timed out finishing the video encoder." }
+      check(writtenFrames == submittedFrames && writtenFrames > 0) { "Video encoder did not write every frame." }
+    } finally {
+      release(finalizing = true)
     }
-    drainUntilDone()
-    release()
-    return Triple(outputPath, File(filePath).length(), (audio?.samplesWritten ?: 0) > 0)
+    return ExportResult(outputPath, File(filePath).length(), (audio?.samplesWritten ?: 0) > 0, audio?.audioDurationUs ?: 0L)
   }
 
   @Synchronized
@@ -128,22 +147,41 @@ internal class JpegFrameRecorder(
     File(filePath).delete()
   }
 
-  private fun lockCanvas(surface: Surface): Canvas {
-    if (Build.VERSION.SDK_INT >= 26) {
-      try {
-        return surface.lockHardwareCanvas()
-      } catch (_: Exception) {
-        // Fall back to the software canvas on devices without HW canvas support.
+  /** Respect each vendor's row/pixel strides; never assume I420 or NV12. */
+  private fun writeYuv(bitmap: Bitmap, image: android.media.Image) {
+    bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
+    val planes = image.planes
+    val origins = planes.map { it.buffer.position() }
+    for (y in 0 until height) {
+      for (x in 0 until width) {
+        val color = pixels[y * width + x]
+        val r = (color shr 16) and 255
+        val g = (color shr 8) and 255
+        val b = color and 255
+        val luma = (((66 * r + 129 * g + 25 * b + 128) shr 8) + 16).coerceIn(0, 255)
+        planes[0].buffer.put(origins[0] + y * planes[0].rowStride + x * planes[0].pixelStride, luma.toByte())
+        if (x % 2 == 0 && y % 2 == 0) {
+          // Average chroma across the 2x2 block rather than subsampling one pixel.
+          var rr = 0; var gg = 0; var bb = 0
+          for (dy in 0..1) for (dx in 0..1) {
+            val c = pixels[(y + dy) * width + x + dx]
+            rr += (c shr 16) and 255; gg += (c shr 8) and 255; bb += c and 255
+          }
+          rr /= 4; gg /= 4; bb /= 4
+          val u = (((-38 * rr - 74 * gg + 112 * bb + 128) shr 8) + 128).coerceIn(0, 255)
+          val v = (((112 * rr - 94 * gg - 18 * bb + 128) shr 8) + 128).coerceIn(0, 255)
+          planes[1].buffer.put(origins[1] + (y / 2) * planes[1].rowStride + (x / 2) * planes[1].pixelStride, u.toByte())
+          planes[2].buffer.put(origins[2] + (y / 2) * planes[2].rowStride + (x / 2) * planes[2].pixelStride, v.toByte())
+        }
       }
     }
-    return surface.lockCanvas(null)
   }
 
   private fun drain(blocking: Boolean) {
     val codec = this.codec ?: return
     val muxer = this.muxer ?: return
     while (true) {
-      val outIndex = codec.dequeueOutputBuffer(bufferInfo, if (blocking) 5_000L else 0L)
+      val outIndex = codec.dequeueOutputBuffer(bufferInfo, if (blocking) 5_000L else 1_000L)
       when {
         outIndex == MediaCodec.INFO_TRY_AGAIN_LATER -> if (!blocking) return
         outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
@@ -192,16 +230,17 @@ internal class JpegFrameRecorder(
     val endOfStream = bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0
     val isCodecConfig = bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0
     if (!isCodecConfig && bufferInfo.size > 0 && muxerStarted) {
-      bufferInfo.presentationTimeUs = pendingTimestampUs
       buffer.position(bufferInfo.offset)
       buffer.limit(bufferInfo.offset + bufferInfo.size)
       muxer.writeSampleData(trackIndex, buffer, bufferInfo)
+      writtenFrames += 1
     }
     codec.releaseOutputBuffer(outIndex, false)
+    if (endOfStream) eosReceived = true
     return endOfStream
   }
 
-  private fun release() {
+  private fun release(finalizing: Boolean = false) {
     try {
       codec?.stop()
     } catch (_: Exception) {
@@ -211,14 +250,11 @@ internal class JpegFrameRecorder(
     } catch (_: Exception) {
     }
     codec = null
-    try {
-      surface?.release()
-    } catch (_: Exception) {
-    }
-    surface = null
+    var muxerError: Exception? = null
     try {
       if (muxerStarted) muxer?.stop()
-    } catch (_: Exception) {
+    } catch (error: Exception) {
+      muxerError = error
     }
     try {
       muxer?.release()
@@ -226,5 +262,7 @@ internal class JpegFrameRecorder(
     }
     muxer = null
     muxerStarted = false
+    if (finalizing && muxerError != null) throw muxerError
+    if (finalizing) android.util.Log.d("HtmlVideoExport", "finishFrames submitted=$submittedFrames written=$writtenFrames")
   }
 }

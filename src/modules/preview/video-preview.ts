@@ -61,6 +61,55 @@ export function hasScenePreviewHost(): boolean {
 }
 
 /**
+ * Bounds for a single preview job, owned by the host (`ScenePreviewHost`).
+ * The in-page script settles media in ~10s and captures each timestamp in
+ * ~0.4s, so a healthy preview finishes in seconds. Without these the job
+ * hangs until the run-level inactivity timeout (5 min) aborts the whole
+ * agent run — and the abort was then recorded as "Run completed".
+ */
+export const SCENE_PREVIEW_START_TIMEOUT_MS = 15_000;
+export const SCENE_PREVIEW_JOB_TIMEOUT_MS = 60_000;
+
+/** One-line diagnostics captured into timeout/load error messages. */
+export function describeScenePreviewJob(job: {
+  html: string;
+  times: number[];
+}): string {
+  const chars = job.html.length;
+  const count = job.times.length;
+  return `${count} timestamp${count === 1 ? "" : "s"}, ${chars}-char document`;
+}
+
+/** The preview page never posted back (load failed or bridge never started). */
+export function scenePreviewStartTimeoutError(job: {
+  html: string;
+  times: number[];
+}): Error {
+  const seconds = Math.round(
+    SCENE_PREVIEW_START_TIMEOUT_MS / 1000,
+  );
+  return new Error(
+    `Scene preview failed: the preview page did not start within ${seconds}s ` +
+      `(${describeScenePreviewJob(job)}). The WebView may have failed to load — ` +
+      `try a smaller document or fewer timestamps.`,
+  );
+}
+
+/** The page started but never finished all timestamps. */
+export function scenePreviewJobTimeoutError(
+  job: { html: string; times: number[] },
+  framesCaptured: number,
+): Error {
+  const seconds = Math.round(SCENE_PREVIEW_JOB_TIMEOUT_MS / 1000);
+  return new Error(
+    `Scene preview timed out after ${seconds}s ` +
+      `(${framesCaptured}/${job.times.length} frames captured, ` +
+      `${describeScenePreviewJob(job)}). ` +
+      `Try fewer timestamps or a smaller document.`,
+  );
+}
+
+/**
  * Captures stills of a self-contained HTML document that implements the
  * `window.MOBILE_AGENT_VIDEO` contract, one per requested timestamp.
  */

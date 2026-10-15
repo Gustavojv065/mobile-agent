@@ -14,16 +14,14 @@ import { VIDEO_CHROMA_KEY_SCRIPT } from "@/modules/preview/video-chroma-key";
  * from the `transcribeAudio` tool) is normalized the same way and passed as the
  * fifth argument, mirrored on `window.MOBILE_AGENT_VIDEO_SPEECH`:
  *
- *  - GPU path: `new VideoFrame(canvas)` is fed to WebCodecs `VideoEncoder`
- *    (hardware H.264), whose Annex-B chunks are posted to the native
- *    `html-video-export` module for muxing into an MP4.
- *  - Fallback path (no WebCodecs): each frame is posted as a JPEG and
- *    re-encoded on the native hardware encoder.
+ *  - Video: each frame is posted as a JPEG and encoded by native MediaCodec.
+ *    The producer waits for native acknowledgement; slower devices take longer
+ *    to export rather than silently dropping frames.
  *  - Audio path (optional `audio` schedule): file cues (data-URI audio, inlined
  *    by the renderVideo tool) and synthesized cues are mixed in a WebAudio
- *    graph, captured, AAC-encoded (WebCodecs or native PCM fallback), and muxed
- *    as a second track. Missing audio
- *    APIs degrade to a silent video with a warning, never a failure.
+ *    OfflineAudioContext, sent as continuous PCM16, AAC-encoded natively, and
+ *    muxed as a second track. Requested soundtracks fail explicitly if audio
+ *    cannot be rendered, rather than producing a silently incomplete export.
  *
  * `audio` is always an object (never undefined): when there is no analyzable
  * file audio, `audio.ready` is false and every lookup returns 0, so a page can
@@ -36,8 +34,7 @@ import { VIDEO_CHROMA_KEY_SCRIPT } from "@/modules/preview/video-chroma-key";
  * `requestAnimationFrame`-driven state, since the recorder samples the canvas
  * on its own clock.
  *
- * The byte-level helpers in this string are mirrored by the Node-testable
- * functions in h264-nals.ts — keep both copies in sync.
+ * Scenes with custom source-video timelines may provide async prepareFrame(t).
  */
 export const VIDEO_EXPORT_SCRIPT = `(function () {
   if (window.__mobileAgentVideoExportScript) return;
@@ -46,15 +43,38 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
   var running = false;
   var cancelled = true;
   var timers = [];
-  var activeEncoder = null;
   var stage = null;
   var hijackedCanvas = null;
   var saved = null;
   var activeAudio = null;
-  var activeAudioSchedule = null;
   var activeAudioApi = null;
   var activeSpeechApi = null;
   var analysis = (typeof window !== 'undefined' && window.__mobileAgentAudioAnalysis) || null;
+  var consumeId = 0;
+  var pendingConsume = null;
+
+  window.__mobileAgentExportConsumed = function (id) {
+    var pending = pendingConsume;
+    if (!pending || pending.id !== id) return;
+    pendingConsume = null;
+    clearTimeout(pending.timer);
+    pending.resolve();
+  };
+
+  function postAndWait(payload) {
+    return new Promise(function (resolve, reject) {
+      if (cancelled) { reject(new Error('Video export cancelled.')); return; }
+      var id = ++consumeId;
+      payload.requestId = id;
+      var timer = setTimeout(function () {
+        if (!pendingConsume || pendingConsume.id !== id) return;
+        pendingConsume = null;
+        reject(new Error('Native encoder did not acknowledge the export data within 30 seconds.'));
+      }, 30000);
+      pendingConsume = { id: id, timer: timer, resolve: resolve, reject: reject };
+      post(payload);
+    });
+  }
 
   function post(payload) {
     try {
@@ -310,14 +330,6 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
     };
   }
 
-  function bitrateFor(width, height) {
-    var pixels = width * height;
-    if (pixels <= 640 * 360) return 3000000;
-    if (pixels <= 1280 * 720) return 10000000;
-    if (pixels <= 1920 * 1080) return 16000000;
-    return 20000000;
-  }
-
   function readContract() {
     var contract = window.MOBILE_AGENT_VIDEO;
     if (!contract || typeof contract.render !== 'function') return null;
@@ -393,20 +405,21 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
   }
 
   function teardown() {
-    try {
-      if (activeEncoder) activeEncoder.close();
-    } catch (_) {}
-    activeEncoder = null;
     var audio = activeAudio;
     activeAudio = null;
-    activeAudioSchedule = null;
     activeAudioApi = null;
     activeSpeechApi = null;
     try { window.MOBILE_AGENT_VIDEO_AUDIO = null; } catch (_) {}
     try { window.MOBILE_AGENT_VIDEO_SPEECH = null; } catch (_) {}
-    if (audio) teardownAudioCapture(audio);
+    if (audio) releaseAudio(audio);
     timers.forEach(function (timer) { clearTimeout(timer); });
     timers = [];
+    if (pendingConsume) {
+      var pending = pendingConsume;
+      pendingConsume = null;
+      clearTimeout(pending.timer);
+      pending.reject(new Error('Video export stopped.'));
+    }
     restoreCanvas();
     running = false;
     try { window.MOBILE_AGENT_VIDEO_RECORDING = false; } catch (_) {}
@@ -425,44 +438,10 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
     teardown();
   }
 
-  function supportsH264Encoder(width, height, fps) {
-    if (!window.VideoEncoder || !window.VideoFrame) return Promise.resolve(false);
-    var config = {
-      codec: 'avc1.42001F',
-      width: width,
-      height: height,
-      bitrate: bitrateFor(width, height),
-      framerate: fps,
-      hardwareAcceleration: 'prefer-hardware'
-    };
-    return VideoEncoder.isConfigSupported(config)
-      .then(function (info) { return !!(info && info.supported); })
-      .catch(function () { return false; });
-  }
-
-  function teardownAudioCapture(handle) {
+  function releaseAudio(handle) {
     if (!handle) return;
-    try {
-      if (handle.autoplayTimer) clearTimeout(handle.autoplayTimer);
-    } catch (_) {}
-    handle.autoplayTimer = null;
-    try {
-      if (handle.reader) handle.reader.cancel().catch(function () {});
-    } catch (_) {}
-    handle.reader = null;
-    stopLegacyPcmCapture(handle);
-    try {
-      if (handle.encoder) handle.encoder.close();
-    } catch (_) {}
-    handle.encoder = null;
-    try {
-      if (handle.context) handle.context.close().catch(function () {});
-    } catch (_) {}
     handle.context = null;
-    handle.pendingPts = [];
-    handle.pcmParts = [];
-    handle.pcmByteLength = 0;
-    handle.pcmFirstPts = null;
+    handle.offlineBuffer = null;
   }
 
   function postAudioWarning(reason) {
@@ -830,334 +809,6 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
     scheduleSynthCue(handle, cue, startAt, endAt, gain);
   }
 
-  function onAudioChunk(handle, chunk) {
-    if (cancelled || !handle || activeAudio !== handle) return;
-    var pts = handle.pendingPts.length > 0 ? handle.pendingPts.shift() : 0;
-    var bytes = new Uint8Array(chunk.byteLength);
-    try {
-      chunk.copyTo(bytes);
-    } catch (_) {
-      return;
-    }
-    if (bytes.byteLength === 0) return;
-    post({ type: 'mobileAgentVideoAudioChunk', pts: pts, base64: bytesToBase64(bytes) });
-  }
-
-  function audioDataToS16(data, expectedChannels) {
-    var channels = data ? (data.numberOfChannels | 0) : 0;
-    var frames = data ? (data.numberOfFrames | 0) : 0;
-    if (!(channels >= 1 && channels <= 2) || !(frames > 0)) return null;
-    var format = String((data && data.format) || '');
-    var isPlanar = format.indexOf('planar') >= 0;
-    var out = new Int16Array(frames * channels);
-    var ch = 0;
-    var f = 0;
-    var i = 0;
-    var v = 0;
-    try {
-      if (format.indexOf('s16') === 0) {
-        if (!isPlanar) {
-          var size = data.allocationSize({ planeIndex: 0, format: 's16' });
-          var buf = new ArrayBuffer(size);
-          data.copyTo(buf, { planeIndex: 0, format: 's16' });
-          var s16 = new Int16Array(buf);
-          if (s16.length < frames * channels) return null;
-          if (channels === expectedChannels || expectedChannels == null) {
-            return { bytes: new Uint8Array(buf, 0, frames * channels * 2), channels: channels, frames: frames };
-          }
-          out.set(s16.subarray(0, frames * channels));
-        } else {
-          for (ch = 0; ch < channels; ch += 1) {
-            var psize = data.allocationSize({ planeIndex: ch, format: 's16-planar' });
-            var pbuf = new ArrayBuffer(psize);
-            data.copyTo(pbuf, { planeIndex: ch, format: 's16-planar' });
-            var pin = new Int16Array(pbuf);
-            for (f = 0; f < frames; f += 1) out[f * channels + ch] = pin[f];
-          }
-        }
-      } else if (format.indexOf('f32') === 0) {
-        if (!isPlanar) {
-          var fsize = data.allocationSize({ planeIndex: 0, format: 'f32' });
-          var fbuf = new ArrayBuffer(fsize);
-          data.copyTo(fbuf, { planeIndex: 0, format: 'f32' });
-          var fin = new Float32Array(fbuf);
-          for (i = 0; i < frames * channels; i += 1) {
-            v = fin[i];
-            if (v > 1) v = 1;
-            else if (v < -1) v = -1;
-            out[i] = Math.round(v * 32767);
-          }
-        } else {
-          for (ch = 0; ch < channels; ch += 1) {
-            var qsize = data.allocationSize({ planeIndex: ch, format: 'f32-planar' });
-            var qbuf = new ArrayBuffer(qsize);
-            data.copyTo(qbuf, { planeIndex: ch, format: 'f32-planar' });
-            var qin = new Float32Array(qbuf);
-            for (f = 0; f < frames; f += 1) {
-              v = qin[f];
-              if (v > 1) v = 1;
-              else if (v < -1) v = -1;
-              out[f * channels + ch] = Math.round(v * 32767);
-            }
-          }
-        }
-      } else {
-        return null;
-      }
-    } catch (_) {
-      return null;
-    }
-    if (channels === 1 && expectedChannels === 2) {
-      var stereo = new Int16Array(frames * 2);
-      for (f = 0; f < frames; f += 1) {
-        stereo[f * 2] = out[f];
-        stereo[f * 2 + 1] = out[f];
-      }
-      return { bytes: new Uint8Array(stereo.buffer), channels: 2, frames: frames };
-    }
-    if (channels !== expectedChannels && expectedChannels != null) return null;
-    return { bytes: new Uint8Array(out.buffer), channels: channels, frames: frames };
-  }
-
-  function flushPcmBatch(handle) {
-    if (!handle || !handle.pcmMode) return;
-    if (!handle.pcmParts || handle.pcmByteLength <= 0 || handle.pcmFirstPts == null) {
-      handle.pcmParts = [];
-      handle.pcmByteLength = 0;
-      handle.pcmFirstPts = null;
-      return;
-    }
-    var merged = new Uint8Array(handle.pcmByteLength);
-    var offset = 0;
-    for (var i = 0; i < handle.pcmParts.length; i += 1) {
-      merged.set(handle.pcmParts[i], offset);
-      offset += handle.pcmParts[i].length;
-    }
-    var pts = handle.pcmFirstPts;
-    handle.pcmParts = [];
-    handle.pcmByteLength = 0;
-    handle.pcmFirstPts = null;
-    if (merged.length === 0) return;
-    post({ type: 'mobileAgentVideoAudioPcmChunk', pts: pts, base64: bytesToBase64(merged) });
-  }
-
-  function accumulatePcm(handle, pcm, pts) {
-    if (!handle || !pcm || !pcm.bytes || pcm.bytes.length === 0) return;
-    handle.pcmBytesCaptured = (handle.pcmBytesCaptured || 0) + pcm.bytes.length;
-    if (handle.pcmFirstPts == null) handle.pcmFirstPts = pts;
-    handle.pcmParts.push(pcm.bytes);
-    handle.pcmByteLength += pcm.bytes.length;
-    if (handle.pcmByteLength >= 16384) flushPcmBatch(handle);
-  }
-
-  function stopLegacyPcmCapture(handle) {
-    if (!handle || !handle.pcmProcessor) return;
-    handle.pcmProcessor.onaudioprocess = null;
-    try { handle.master.disconnect(handle.pcmProcessor); } catch (_) {}
-    try { handle.pcmProcessor.disconnect(); } catch (_) {}
-    try { handle.pcmSink.disconnect(); } catch (_) {}
-    handle.pcmProcessor = null;
-    handle.pcmSink = null;
-  }
-
-  // Compatibility only: some WebViews expose TrackProcessor but reject audio
-  // tracks. ScriptProcessor is deprecated, but works without secure-context
-  // AudioWorklet support on the existing inline HTML/about:blank renderer.
-  function startLegacyPcmCapture(handle) {
-    var ctx = handle.context;
-    var channels = handle.pcmChannels;
-    var processor = ctx.createScriptProcessor(4096, channels, channels);
-    var sink = ctx.createGain();
-    sink.gain.value = 0;
-    handle.pcmProcessor = processor;
-    handle.pcmSink = sink;
-    var capturedFrames = 0;
-    processor.onaudioprocess = function (event) {
-      if (cancelled || activeAudio !== handle) return;
-      var input = event.inputBuffer;
-      var frames = input.length;
-      var pcm = new Int16Array(frames * channels);
-      for (var ch = 0; ch < channels; ch += 1) {
-        var samples = input.getChannelData(Math.min(ch, input.numberOfChannels - 1));
-        for (var f = 0; f < frames; f += 1) {
-          pcm[f * channels + ch] = Math.round(clamp(samples[f], -1, 1) * 32767);
-        }
-      }
-      var pts = Math.max(0, Math.round(capturedFrames * 1000000 / ctx.sampleRate - handle.leadUs));
-      capturedFrames += frames;
-      accumulatePcm(handle, { bytes: new Uint8Array(pcm.buffer) }, pts);
-    };
-    handle.master.connect(processor);
-    processor.connect(sink);
-    sink.connect(ctx.destination);
-  }
-
-  function pumpAudio(handle) {
-    var reader = handle.reader;
-    if (!reader) return;
-    reader.read().then(function (result) {
-      if (cancelled || activeAudio !== handle || !result || result.done) return;
-      var data = result.value;
-      if (handle.stopping) {
-        try { data.close(); } catch (_) {}
-        return;
-      }
-      try {
-        if (handle.firstTs < 0) handle.firstTs = data.timestamp;
-        var pts = Math.round(data.timestamp - handle.firstTs - handle.leadUs);
-        if (pts < 0 || isNaN(pts)) pts = 0;
-        if (handle.pcmMode) {
-          var pcm = audioDataToS16(data, handle.pcmChannels || 2);
-          if (!pcm) {
-            postAudioWarning('Audio samples could not be read; continuing silent.');
-            teardownAudioCapture(handle);
-            if (activeAudio === handle) activeAudio = null;
-            return;
-          }
-          accumulatePcm(handle, pcm, pts);
-        } else {
-          handle.pendingPts.push(pts);
-          handle.encoder.encode(data);
-        }
-      } catch (error) {
-        postAudioWarning('Audio sample processing failed; continuing silent.');
-        teardownAudioCapture(handle);
-        if (activeAudio === handle) activeAudio = null;
-      } finally {
-        try { data.close(); } catch (_) {}
-      }
-      pumpAudio(handle);
-    }).catch(function () {
-      // Reader was cancelled during teardown.
-    });
-  }
-
-  function startAudioReader(handle) {
-    var track = null;
-    try {
-      var stream = handle.dest.stream;
-      track = stream && stream.getAudioTracks ? stream.getAudioTracks()[0] : null;
-      if (!track) throw new Error('no audio track');
-      var processor = new MediaStreamTrackProcessor({ track: track });
-      handle.reader = processor.readable.getReader();
-    } catch (error) {
-      if (handle.pcmMode && typeof handle.context.createScriptProcessor === 'function') {
-        try {
-          startLegacyPcmCapture(handle);
-          return;
-        } catch (_) {
-          stopLegacyPcmCapture(handle);
-        }
-      }
-      postAudioWarning('Audio capture is unavailable on this device; continuing silent.');
-      teardownAudioCapture(handle);
-      if (activeAudio === handle) activeAudio = null;
-      return;
-    }
-    pumpAudio(handle);
-  }
-
-  function beginAudioCapture() {
-    var handle = activeAudio;
-    var schedule = activeAudioSchedule;
-    if (!handle || !schedule || handle.started) return;
-    handle.started = true;
-    handle.context.resume().catch(function () {}).then(function () {
-      if (cancelled || activeAudio !== handle) return;
-      var t0 = handle.context.currentTime + 0.03;
-      try {
-        for (var i = 0; i < schedule.cues.length; i += 1) {
-          scheduleAudioCue(handle, schedule.cues[i], t0);
-        }
-        if (handle.voiceOverflow) {
-          postAudioWarning('Too many simultaneous sounds were scheduled; some were skipped to protect playback.');
-        }
-        for (var c = 0; c < schedule.cues.length; c += 1) {
-          var skipCue = schedule.cues[c];
-          if (skipCue.kind === 'synth' && skipCue.synth.kind === 'drums' && skipCue.synth.capped) {
-            postAudioWarning('Drum steps past 512 hits were skipped; shorten the pattern or split it across tracks.');
-            break;
-          }
-        }
-      } catch (error) {
-        postAudioWarning('Audio scheduling failed; continuing silent.');
-        teardownAudioCapture(handle);
-        activeAudio = null;
-        return;
-      }
-      startAudioReader(handle);
-      handle.autoplayTimer = setTimeout(function () {
-        handle.autoplayTimer = null;
-        if (cancelled || activeAudio !== handle) return;
-        try {
-          if (handle.context && handle.context.state !== 'running') {
-            postAudioWarning('Audio playback was blocked; continuing silent.');
-            teardownAudioCapture(handle);
-            activeAudio = null;
-          }
-        } catch (_) {}
-      }, 800);
-      timers.push(handle.autoplayTimer);
-    });
-  }
-
-  function flushAudioCapture() {
-    var handle = activeAudio;
-    if (!handle) return Promise.resolve();
-    handle.stopping = true;
-    if (handle.autoplayTimer) {
-      try { clearTimeout(handle.autoplayTimer); } catch (_) {}
-      handle.autoplayTimer = null;
-    }
-    try {
-      if (handle.reader) handle.reader.cancel().catch(function () {});
-    } catch (_) {}
-    handle.reader = null;
-    stopLegacyPcmCapture(handle);
-    flushPcmBatch(handle);
-    if (handle.pcmMode && !handle.pcmBytesCaptured) {
-      postAudioWarning('The audio capture produced no samples; this video is silent.');
-    }
-    var enc = handle.encoder;
-    handle.encoder = null;
-    if (!enc) return Promise.resolve();
-    return enc.flush().then(function () {
-      try { enc.close(); } catch (_) {}
-    }).catch(function () {
-      try { enc.close(); } catch (_) {}
-    });
-  }
-
-  // Mixes the schedule's file cues into a mono buffer (honoring start/offset/
-  // duration/loop/volume/fades and master gain) and extracts the feature track
-  // the page reacts to. Returns null when there is nothing analyzable; callers
-  // still receive a stable "not ready" audio object.
-  function collectFileClips(schedule, decoded) {
-    var clips = [];
-    for (var i = 0; i < decoded.length; i += 1) {
-      var entry = decoded[i];
-      var cue = entry && entry.cue;
-      var buffer = entry && entry.buffer;
-      if (!cue || cue.kind !== 'file' || !buffer) continue;
-      var channels = [];
-      var count = Math.min(buffer.numberOfChannels, 2);
-      for (var c = 0; c < count; c += 1) channels.push(buffer.getChannelData(c));
-      if (channels.length === 0) continue;
-      clips.push({
-        channels: channels,
-        sampleRate: buffer.sampleRate,
-        start: cue.start,
-        offset: cue.offset,
-        duration: cue.duration,
-        loop: cue.loop,
-        volume: cue.volume,
-        fadeIn: cue.fadeIn,
-        fadeOut: cue.fadeOut
-      });
-    }
-    return clips;
-  }
-
   function analyzeMixedClips(clips, duration, sampleRate, masterLevel) {
     if (!analysis || clips.length === 0 || !(sampleRate > 0)) return null;
     try {
@@ -1208,214 +859,82 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
     return buses;
   }
 
-  // Renders generated (synth/drums) cues through an offline context so the
-  // visualizer sees them like file audio. Reuses the exact schedule path —
-  // file cues find no decoded entry and skip themselves — with t0 = 0 so the
-  // stem stays glued to video time. Cue volumes, fades, ducking, and wet
-  // sends are baked in; the schedule master is left for the mixer.
-  function renderSynthStems(schedule, duration, sampleRate) {
-    var hasSynth = false;
-    var i;
-    for (i = 0; i < schedule.cues.length; i += 1) {
-      if (schedule.cues[i].kind === 'synth') { hasSynth = true; break; }
-    }
-    if (!hasSynth) return Promise.resolve(null);
-    if (typeof OfflineAudioContext === 'undefined') {
-      postAudioWarning('Generated sounds cannot feed the visualizer on this device.');
-      return Promise.resolve(null);
-    }
-    var offline = null;
-    try {
-      offline = new OfflineAudioContext(2, Math.max(1, Math.ceil(sampleRate * duration)), sampleRate);
-    } catch (_) {
-      return Promise.resolve(null);
-    }
-    try {
-      var master = offline.createGain();
-      master.gain.value = 1;
-      master.connect(offline.destination);
-      var buses = buildFxBuses(offline, master, schedule.fx);
-      var stemHandle = {
-        context: offline, master: master, decoded: [],
-        voices: 0, voiceOverflow: false,
-        fxReverb: buses.fxReverb, fxDelay: buses.fxDelay
-      };
-      for (i = 0; i < schedule.cues.length; i += 1) {
-        var cue = schedule.cues[i];
-        if (cue.kind !== 'synth') continue;
-        scheduleAudioCue(stemHandle, cue, 0);
+  // Export sound in sample time, not wall time. Rendering a frame may take
+  // seconds without dropping an audio callback or stretching AAC timestamps.
+  function prepareOfflineAudio(schedule, duration) {
+    var Offline = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+    if (!Offline) return Promise.reject(new Error('Offline audio rendering is unavailable on this device.'));
+    var context = new Offline(2, Math.ceil(duration * 48000), 48000);
+    var master = context.createGain();
+    master.gain.value = schedule.master;
+    master.connect(context.destination);
+    var buses = buildFxBuses(context, master, schedule.fx);
+    var handle = {
+      context: context, master: master, decoded: [],
+      fxReverb: buses.fxReverb, fxDelay: buses.fxDelay,
+      voices: 0, voiceOverflow: false, offlineBuffer: null, features: null
+    };
+    var chain = Promise.resolve();
+    schedule.cues.forEach(function (cue) {
+      if (cue.kind !== 'file') return;
+      chain = chain.then(function () {
+        if (cancelled) throw new Error('Video export cancelled.');
+        return fetch(cue.src).then(function (response) {
+          if (!response.ok) throw new Error('Could not load an audio asset.');
+          return response.arrayBuffer();
+        }).then(function (bytes) { return context.decodeAudioData(bytes); })
+          .then(function (buffer) { handle.decoded.push({ cue: cue, buffer: buffer }); });
+      });
+    });
+    return chain.then(function () {
+      if (cancelled) throw new Error('Video export cancelled.');
+      schedule.cues.forEach(function (cue) { scheduleAudioCue(handle, cue, 0); });
+      if (handle.voiceOverflow) throw new Error('The soundtrack exceeds the supported simultaneous voice limit.');
+      if (schedule.cues.some(function (cue) { return cue.kind === 'synth' && cue.synth.kind === 'drums' && cue.synth.capped; })) {
+        postAudioWarning('Drum steps past 512 hits were skipped; shorten the pattern or split it across tracks.');
       }
-      return offline.startRendering();
-    } catch (_) {
-      return Promise.resolve(null);
-    }
-  }
-
-  function analyzeScheduleAudioAsync(schedule, decoded, duration, sampleRate) {
-    if (!analysis || !schedule || !(sampleRate > 0)) return Promise.resolve(null);
-    var clips = [];
-    try {
-      clips = collectFileClips(schedule, decoded);
-    } catch (_) {
-      clips = [];
-    }
-    return renderSynthStems(schedule, duration, sampleRate).then(function (stem) {
-      if (stem) {
-        try {
-          var channels = [];
-          var count = Math.min(stem.numberOfChannels, 2);
-          for (var c = 0; c < count; c += 1) channels.push(stem.getChannelData(c));
-          if (channels.length > 0) {
-            clips.push({
-              channels: channels,
-              sampleRate: sampleRate,
-              start: 0,
-              offset: 0,
-              duration: duration,
-              loop: false,
-              volume: 1,
-              fadeIn: 0,
-              fadeOut: 0
-            });
-          }
-        } catch (_) {}
-      }
-      return analyzeMixedClips(clips, duration, sampleRate, schedule.master);
-    }, function () {
-      return analyzeMixedClips(clips, duration, sampleRate, schedule.master);
+      return context.startRendering();
+    }).then(function (buffer) {
+      if (cancelled) throw new Error('Video export cancelled.');
+      handle.offlineBuffer = buffer;
+      var channels = [buffer.getChannelData(0), buffer.getChannelData(1)];
+      handle.features = analyzeMixedClips([{
+        channels: channels, sampleRate: 48000, start: 0, offset: 0,
+        duration: duration, loop: false, volume: 1, fadeIn: 0, fadeOut: 0
+      }], duration, 48000, 1);
+      // Release source buffers and the offline graph after mixing. Only the
+      // bounded final soundtrack (at most 45 seconds) remains during export.
+      handle.decoded = [];
+      handle.context = null;
+      handle.master = null;
+      handle.fxReverb = null;
+      handle.fxDelay = null;
+      post({ type: 'mobileAgentVideoAudioConfig', sampleRate: 48000, channels: 2, encoding: 'pcm16' });
+      return handle;
     });
   }
 
-  function prepareAudioCapture(schedule, duration) {
-    var AC = window.AudioContext || window.webkitAudioContext;
-    if (!AC) {
-      post({ type: 'mobileAgentVideoAudioUnsupported', reason: 'This WebView does not support Web Audio.' });
-      return Promise.resolve(null);
-    }
-    var ctx = null;
-    try {
-      // Force a standard rate so the AAC track's AudioSpecificConfig is always
-      // expressible (48 kHz is universally supported by the native muxer).
-      ctx = new AC({ sampleRate: 48000 });
-    } catch (error) {
-      try {
-        ctx = new AC();
-      } catch (fallbackError) {
-        post({ type: 'mobileAgentVideoAudioUnsupported', reason: 'Audio could not start.' });
-        return Promise.resolve(null);
+  function sendOfflineAudio() {
+    var buffer = activeAudio && activeAudio.offlineBuffer;
+    if (!buffer) return Promise.resolve();
+    var left = buffer.getChannelData(0);
+    var right = buffer.getChannelData(1);
+    var offset = 0;
+    function next() {
+      if (cancelled) return Promise.reject(new Error('Video export cancelled.'));
+      if (offset >= buffer.length) return Promise.resolve();
+      var count = Math.min(4096, buffer.length - offset);
+      var bytes = new Uint8Array(count * 4);
+      var view = new DataView(bytes.buffer);
+      for (var i = 0; i < count; i += 1) {
+        view.setInt16(i * 4, Math.round(clamp(left[offset + i], -1, 1) * 32767), true);
+        view.setInt16(i * 4 + 2, Math.round(clamp(right[offset + i], -1, 1) * 32767), true);
       }
+      var pts = Math.round(offset * 1000000 / 48000);
+      offset += count;
+      return postAndWait({ type: 'mobileAgentVideoAudioPcmChunk', pts: pts, base64: bytesToBase64(bytes) }).then(next);
     }
-    var context = ctx;
-    var decoded = [];
-    var standardRates = [96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000];
-    if (standardRates.indexOf(context.sampleRate) < 0) {
-      try { context.close().catch(function () {}); } catch (_) {}
-      post({
-        type: 'mobileAgentVideoAudioUnsupported',
-        reason: 'Unsupported audio sample rate: ' + context.sampleRate + ' Hz.'
-      });
-      return Promise.resolve(null);
-    }
-    return context.suspend().catch(function () {}).then(function () {
-      var chain = Promise.resolve();
-      schedule.cues.forEach(function (cue) {
-        if (cue.kind !== 'file') return;
-        chain = chain.then(function () {
-          return fetch(cue.src).then(function (res) {
-            if (!res.ok) throw new Error('fetch failed');
-            return res.arrayBuffer();
-          }).then(function (buf) {
-            return context.decodeAudioData(buf);
-          }).then(function (audioBuf) {
-            decoded.push({ cue: cue, buffer: audioBuf });
-          }).catch(function () {
-            postAudioWarning('An audio file could not be decoded and was skipped.');
-          });
-        });
-      });
-      return chain;
-    }).then(function () {
-      // The stem render is async; everything below waits on it so generated
-      // beds are part of the features before the first frame records.
-      return analyzeScheduleAudioAsync(schedule, decoded, duration, context.sampleRate).then(function (features) {
-      var master = context.createGain();
-      master.gain.value = schedule.master;
-      var dest = context.createMediaStreamDestination();
-      try { dest.channelCount = 2; } catch (_) {}
-      master.connect(dest);
-      var buses = buildFxBuses(context, master, schedule.fx);
-      var fxReverb = buses.fxReverb;
-      var fxDelay = buses.fxDelay;
-      var pcmChannels = dest.channelCount || 2;
-      if (pcmChannels !== 1 && pcmChannels !== 2) pcmChannels = 2;
-      var aacConfig = {
-        codec: 'mp4a.40.2',
-        sampleRate: context.sampleRate,
-        numberOfChannels: 2,
-        bitrate: 128000
-      };
-      var aacPossible = null;
-      if (!window.AudioEncoder || !window.MediaStreamTrackProcessor) {
-        aacPossible = Promise.resolve(false);
-      } else if (window.AudioEncoder.isConfigSupported) {
-        try {
-          aacPossible = window.AudioEncoder.isConfigSupported(aacConfig).then(function (info) {
-            return !!(info && info.supported);
-          }).catch(function () {
-            return false;
-          });
-        } catch (_) {
-          aacPossible = Promise.resolve(false);
-        }
-      } else {
-        aacPossible = Promise.resolve(true);
-      }
-      return aacPossible.then(function (ok) {
-        var handle = {
-          context: context, encoder: null, master: master, dest: dest,
-          decoded: decoded, started: false, firstTs: -1, pendingPts: [],
-          reader: null, autoplayTimer: null, leadUs: 30000,
-          pcmMode: !ok, pcmChannels: pcmChannels,
-          pcmParts: [], pcmByteLength: 0, pcmFirstPts: null,
-          features: features, voices: 0, voiceOverflow: false,
-          fxReverb: fxReverb, fxDelay: fxDelay
-        };
-        if (ok) {
-          try {
-            var encoder = new AudioEncoder({
-              output: function (chunk) { onAudioChunk(handle, chunk); },
-              error: function () {
-                postAudioWarning('Audio encoding failed; continuing silent.');
-                if (activeAudio === handle) {
-                  teardownAudioCapture(handle);
-                  activeAudio = null;
-                } else {
-                  teardownAudioCapture(handle);
-                }
-              }
-            });
-            encoder.configure(aacConfig);
-            handle.encoder = encoder;
-            handle.pcmMode = false;
-            post({ type: 'mobileAgentVideoAudioConfig', sampleRate: context.sampleRate, channels: 2, encoding: 'aac' });
-          } catch (_) {
-            try { if (encoder) encoder.close(); } catch (closeError) {}
-            handle.encoder = null;
-            handle.pcmMode = true;
-            post({ type: 'mobileAgentVideoAudioConfig', sampleRate: context.sampleRate, channels: pcmChannels, encoding: 'pcm16' });
-          }
-        } else {
-          post({ type: 'mobileAgentVideoAudioConfig', sampleRate: context.sampleRate, channels: pcmChannels, encoding: 'pcm16' });
-        }
-        return handle;
-      });
-      });
-    }).catch(function (error) {
-      try { context.close().catch(function () {}); } catch (_) {}
-      var detail = error && error.message ? ' ' + error.message : '';
-      post({ type: 'mobileAgentVideoAudioUnsupported', reason: 'Audio could not start on this device.' + detail });
-      return null;
-    });
+    return next();
   }
 
   function start() {
@@ -1461,23 +980,20 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
     try { window.MOBILE_AGENT_VIDEO_RECORDING = true; } catch (_) {}
 
     var schedule = readAudioSchedule(contract, duration);
-    activeAudioSchedule = schedule;
-    var audioReady = schedule ? prepareAudioCapture(schedule, duration) : Promise.resolve(null);
-    var videoReady = supportsH264Encoder(width, height, fps);
-    Promise.all([audioReady, videoReady]).then(function (results) {
+    var audioReady = schedule ? prepareOfflineAudio(schedule, duration) : Promise.resolve(null);
+    audioReady.then(function (audio) {
       if (cancelled) {
-        if (results[0]) teardownAudioCapture(results[0]);
+        if (audio) releaseAudio(audio);
         return;
       }
-      activeAudio = results[0];
+      activeAudio = audio;
       activeAudioApi = analysis ? analysis.createAudioApi(activeAudio ? activeAudio.features : null) : null;
       try { window.MOBILE_AGENT_VIDEO_AUDIO = activeAudioApi; } catch (_) {}
       activeSpeechApi = (analysis && analysis.createSpeechApi)
         ? analysis.createSpeechApi(contract.speech, duration)
         : null;
       try { window.MOBILE_AGENT_VIDEO_SPEECH = activeSpeechApi; } catch (_) {}
-      if (results[1]) runH264(contract, canvas, ctx, width, height, fps, frameCount);
-      else runJpeg(contract, canvas, ctx, width, height, fps, frameCount);
+      runNativeFrames(contract, canvas, ctx, fps, frameCount);
     }).catch(function (error) {
       // Rejections (decode failure, synth render failure) fail loud.
       // Never-settling promises still hang until the run aborts — no timer
@@ -1486,252 +1002,112 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
     });
   }
 
-  function runH264(contract, canvas, ctx, width, height, fps, frameCount) {
-    var encoder = null;
-    var csdSent = false;
-    var spsHex = null;
-    var ppsHex = null;
-    var emitted = 0;
-    var index = 0;
-    var stepMs = 1000 / fps;
-    var nextAt = performance.now();
-
-    function onChunk(chunk) {
-      var bytes = new Uint8Array(chunk.byteLength);
-      chunk.copyTo(bytes);
-      var annexb = toAnnexB(bytes);
-      if (!csdSent) {
-        if (chunk.type !== 'key') return;
-        var meta = extractCsd(annexb);
-        if (!meta) {
-          fail('The H.264 encoder did not provide codec configuration (SPS/PPS).');
-          return;
-        }
-        spsHex = meta.spsHex;
-        ppsHex = meta.ppsHex;
-        post({ type: 'mobileAgentVideoCsd', spsHex: spsHex, ppsHex: ppsHex });
-        csdSent = true;
-      }
-      var payload = stripCsd(annexb);
-      if (payload.byteLength > 0) {
-        post({
-          type: 'mobileAgentVideoEncodedChunk',
-          index: emitted,
-          frameCount: frameCount,
-          keyFrame: chunk.type === 'key',
-          timestamp: Math.round(chunk.timestamp),
-          base64: bytesToBase64(payload)
-        });
-        emitted += 1;
-      }
+  // Source video decoding is asynchronous. Never draw the previous decoded
+  // frame immediately after assigning currentTime. Scenes with custom media
+  // timelines can implement async prepareFrame(t) to map their own offsets.
+  function prepareSourceFrame(contract, t, fps) {
+    if (typeof contract.prepareFrame === 'function') {
+      return Promise.resolve().then(function () { return contract.prepareFrame(t); });
     }
-
-    function onError(error) {
-      fail('Video encoder error: ' + String((error && error.message) || error));
+    var videos = document.querySelectorAll('video');
+    var waits = [];
+    for (var i = 0; i < videos.length; i += 1) {
+      // Test doubles and non-media elements do not implement pause().
+      if (typeof videos[i].pause !== 'function') continue;
+      waits.push(seekSourceVideo(videos[i], t, fps));
     }
-
-    encoder = new VideoEncoder({ output: onChunk, error: onError });
-    activeEncoder = encoder;
-
-    function tick() {
-      if (cancelled) { teardown(); return; }
-      if (index >= frameCount) { finishH264(); return; }
-      var t = index / fps;
-      if (!renderFrame(contract, canvas, ctx, t)) return;
-      var frame = null;
-      try {
-        frame = new VideoFrame(canvas, { timestamp: Math.round(t * 1e6) });
-      } catch (error) {
-        fail('Frame capture failed: ' + String((error && error.message) || error));
-        return;
-      }
-      try {
-        encoder.encode(frame, { keyFrame: index % (fps * 2) === 0 });
-      } catch (error) {
-        onError(error);
-        return;
-      } finally {
-        frame.close();
-      }
-      index += 1;
-      pace();
-    }
-
-    function pace() {
-      if (cancelled) return;
-      waitForEncoder(encoder).then(function () {
-        if (cancelled) return;
-        nextAt += stepMs;
-        timers.push(setTimeout(tick, Math.max(0, nextAt - performance.now())));
-      });
-    }
-
-    function finishH264() {
-      if (cancelled) { teardown(); return; }
-      var enc = encoder;
-      encoder = null;
-      activeEncoder = null;
-      if (!enc) { teardown(); return; }
-      enc.flush().then(function () {
-        try { enc.close(); } catch (_) {}
-        if (cancelled) return;
-        flushAudioCapture().then(function () {
-          if (cancelled) return;
-          post({ type: 'mobileAgentVideoDone', emitted: emitted });
-          teardown();
-        });
-      }).catch(function (error) {
-        try { enc.close(); } catch (_) {}
-        if (cancelled) return;
-        fail('Encoder finish failed: ' + String((error && error.message) || error));
-      });
-    }
-
-    try {
-      encoder.configure({
-        codec: 'avc1.42001F',
-        width: width,
-        height: height,
-        bitrate: bitrateFor(width, height),
-        framerate: fps,
-        hardwareAcceleration: 'prefer-hardware'
-      });
-    } catch (error) {
-      onError(error);
-      return;
-    }
-    beginAudioCapture();
-    tick();
+    return Promise.all(waits);
   }
 
-  function runJpeg(contract, canvas, ctx, width, height, fps, frameCount) {
+  function seekSourceVideo(video, t, fps) {
+    return new Promise(function (resolve, reject) {
+      var target = null;
+      var timer = setTimeout(function () { finish(new Error('Timed out decoding a source video frame.')); }, 15000);
+      function finish(error) {
+        clearTimeout(timer);
+        video.removeEventListener('loadedmetadata', seek);
+        video.removeEventListener('seeked', ready);
+        video.removeEventListener('loadeddata', ready);
+        video.removeEventListener('error', failed);
+        if (error) reject(error); else resolve();
+      }
+      function failed() { finish(new Error('A source video could not be decoded.')); }
+      function ready() {
+        if (cancelled) { finish(new Error('Video export cancelled.')); return; }
+        if (!video.seeking && video.readyState >= 2) finish();
+      }
+      function seek() {
+        if (cancelled) { finish(new Error('Video export cancelled.')); return; }
+        video.pause();
+        if (!(video.duration > 0) || !isFinite(video.duration)) { failed(); return; }
+        target = video.loop ? t % video.duration : Math.min(t, Math.max(0, video.duration - 1 / fps));
+        try {
+          if (Math.abs(video.currentTime - target) > 0.0001) video.currentTime = target;
+          ready();
+        } catch (error) { finish(error); }
+      }
+      video.addEventListener('loadedmetadata', seek);
+      video.addEventListener('seeked', ready);
+      video.addEventListener('loadeddata', ready);
+      video.addEventListener('error', failed);
+      if (video.readyState >= 1) seek();
+    });
+  }
+
+  function pauseSourceVideos() {
+    var videos = document.querySelectorAll('video');
+    for (var i = 0; i < videos.length; i += 1) {
+      try { videos[i].pause(); } catch (_) {}
+    }
+  }
+
+  function runNativeFrames(contract, canvas, ctx, fps, frameCount) {
     var index = 0;
     var emitted = 0;
-    var stepMs = 1000 / fps;
-    var nextAt = performance.now();
 
     function tick() {
       if (cancelled) { teardown(); return; }
       if (index >= frameCount) {
-        flushAudioCapture().then(function () {
+        sendOfflineAudio().then(function () {
           if (cancelled) { teardown(); return; }
           post({ type: 'mobileAgentVideoDone', emitted: emitted });
           teardown();
+        }).catch(function (error) {
+          fail('Soundtrack export failed: ' + String((error && error.message) || error));
         });
         return;
       }
       var t = index / fps;
-      if (!renderFrame(contract, canvas, ctx, t)) return;
-      var dataUrl = null;
-      try {
-        dataUrl = canvas.toDataURL('image/jpeg', 0.92);
-      } catch (error) {
-        fail('Frame capture failed: ' + String((error && error.message) || error));
-        return;
-      }
-      var comma = dataUrl.indexOf(',');
-      var base64 = comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl;
-      post({ type: 'mobileAgentVideoFrame', index: emitted, frameCount: frameCount, base64: base64 });
-      emitted += 1;
-      index += 1;
-      nextAt += stepMs;
-      timers.push(setTimeout(tick, Math.max(0, nextAt - performance.now())));
+      prepareSourceFrame(contract, t, fps).then(function () {
+        if (cancelled) return;
+        if (!renderFrame(contract, canvas, ctx, t)) return;
+        // Legacy scenes may call play() inside render(). Export is clocked by
+        // frame index instead, so do not let playback advance between frames.
+        pauseSourceVideos();
+        var dataUrl = null;
+        try {
+          dataUrl = canvas.toDataURL('image/jpeg', 0.92);
+        } catch (error) {
+          fail('Frame capture failed: ' + String((error && error.message) || error));
+          return;
+        }
+        var comma = dataUrl.indexOf(',');
+        var base64 = comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl;
+        postAndWait({ type: 'mobileAgentVideoFrame', index: emitted, frameCount: frameCount, base64: base64 }).then(function () {
+          emitted += 1;
+          index += 1;
+          // Yield between frames. Timeline position depends only on the index,
+          // not rendering speed, and only one JPEG crosses the bridge at a time.
+          timers.push(setTimeout(tick, 0));
+        }).catch(function (error) {
+          fail('Frame export failed: ' + String((error && error.message) || error));
+        });
+      }).catch(function (error) {
+        fail('Source video preparation failed: ' + String((error && error.message) || error));
+      });
     }
 
-    beginAudioCapture();
     tick();
-  }
-
-  function readStartCode(bytes, offset) {
-    if (offset + 3 < bytes.length && bytes[offset] === 0 && bytes[offset + 1] === 0 && bytes[offset + 2] === 0 && bytes[offset + 3] === 1) return 4;
-    if (offset + 2 < bytes.length && bytes[offset] === 0 && bytes[offset + 1] === 0 && bytes[offset + 2] === 1) return 3;
-    return 0;
-  }
-
-  function splitNals(annexb) {
-    var nals = [];
-    var i = 0;
-    while (i < annexb.length) {
-      var startCode = readStartCode(annexb, i);
-      if (startCode === 0) { i += 1; continue; }
-      var start = i + startCode;
-      var end = start;
-      while (end < annexb.length && readStartCode(annexb, end) === 0) end += 1;
-      if (end > start) nals.push(annexb.subarray(start, end));
-      i = end;
-    }
-    return nals;
-  }
-
-  function toAnnexB(bytes) {
-    if (readStartCode(bytes, 0) > 0) return bytes;
-    var parts = [];
-    var i = 0;
-    while (i + 4 <= bytes.length) {
-      var length = (bytes[i] << 24) | (bytes[i + 1] << 16) | (bytes[i + 2] << 8) | bytes[i + 3];
-      if (length <= 0 || i + 4 + length > bytes.length) break;
-      parts.push(new Uint8Array([0, 0, 0, 1]));
-      parts.push(bytes.subarray(i + 4, i + 4 + length));
-      i += 4 + length;
-    }
-    if (parts.length === 0) return bytes;
-    var total = 0;
-    for (var p = 0; p < parts.length; p += 1) total += parts[p].length;
-    var out = new Uint8Array(total);
-    var offset = 0;
-    for (var q = 0; q < parts.length; q += 1) {
-      out.set(parts[q], offset);
-      offset += parts[q].length;
-    }
-    return out;
-  }
-
-  function nalType(bytes) {
-    return bytes.length > 0 ? bytes[0] & 0x1f : 0;
-  }
-
-  function extractCsd(annexb) {
-    var nals = splitNals(annexb);
-    var sps = null;
-    var pps = null;
-    for (var i = 0; i < nals.length; i += 1) {
-      var type = nalType(nals[i]);
-      if (type === 7 && !sps) sps = nals[i];
-      else if (type === 8 && !pps) pps = nals[i];
-    }
-    if (!sps || !pps) return null;
-    return { spsHex: bytesToHex(sps), ppsHex: bytesToHex(pps) };
-  }
-
-  function stripCsd(annexb) {
-    var nals = splitNals(annexb);
-    var kept = [];
-    for (var i = 0; i < nals.length; i += 1) {
-      var type = nalType(nals[i]);
-      if (type === 7 || type === 8) continue;
-      kept.push(nals[i]);
-    }
-    var total = 0;
-    for (var k = 0; k < kept.length; k += 1) total += kept[k].length + 4;
-    var out = new Uint8Array(total);
-    var offset = 0;
-    for (var j = 0; j < kept.length; j += 1) {
-      out[offset] = 0; out[offset + 1] = 0; out[offset + 2] = 0; out[offset + 3] = 1;
-      offset += 4;
-      out.set(kept[j], offset);
-      offset += kept[j].length;
-    }
-    return out;
-  }
-
-  function bytesToHex(bytes) {
-    var out = '';
-    for (var i = 0; i < bytes.length; i += 1) {
-      var hex = bytes[i].toString(16);
-      if (hex.length === 1) hex = '0' + hex;
-      out += hex;
-    }
-    return out;
   }
 
   function bytesToBase64(bytes) {
@@ -1741,13 +1117,6 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
       parts.push(String.fromCharCode.apply(null, bytes.subarray(i, Math.min(i + CHUNK, bytes.length))));
     }
     return btoa(parts.join(''));
-  }
-
-  function waitForEncoder(encoder) {
-    if (!encoder || !encoder.encodeQueueSize || encoder.encodeQueueSize <= 6) return Promise.resolve();
-    return new Promise(function (resolve) { setTimeout(resolve, 5); }).then(function () {
-      return waitForEncoder(encoder);
-    });
   }
 
   window.__startMobileAgentVideoExport = start;

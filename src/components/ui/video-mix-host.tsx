@@ -4,6 +4,7 @@ import WebView, { type WebViewMessageEvent } from "react-native-webview";
 
 import { VIDEO_EXPORT_SCRIPT } from "@/modules/preview/video-recorder";
 import { VIDEO_MIX_SCRIPT } from "@/modules/preview/video-mix-script";
+import { createSceneDocument } from "@/modules/preview/scene-document";
 import {
   subscribeMixCheck,
   type MixCheckJob,
@@ -12,6 +13,7 @@ import {
 
 const START_ATTEMPTS = 8;
 const START_RETRY_MS = 200;
+const MIX_JOB_TIMEOUT_MS = 60_000;
 
 type MixMessage =
   | { type: "mobileAgentMixDone"; stats?: MixCheckStats | null; warnings?: string[] }
@@ -32,9 +34,11 @@ export function MixCheckHost() {
 
   const [pending, setPending] = useState<MixCheckJob[]>([]);
   const [active, setActive] = useState(false);
-  const [documentHtml, setDocumentHtml] = useState<string | null>(null);
+  const [documentUri, setDocumentUri] = useState<string | null>(null);
 
   const webViewRef = useRef<WebView>(null);
+  const documentRef = useRef<ReturnType<typeof createSceneDocument> | null>(null);
+  const deadlineRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const jobRef = useRef<MixCheckJob | null>(null);
   const warningsRef = useRef<string[]>([]);
   const settledRef = useRef<WeakSet<MixCheckJob>>(new WeakSet());
@@ -43,6 +47,10 @@ export function MixCheckHost() {
   const startedRef = useRef(false);
 
   const clearRetries = useCallback(() => {
+    if (deadlineRef.current) {
+      clearTimeout(deadlineRef.current);
+      deadlineRef.current = null;
+    }
     if (retryTimerRef.current) {
       clearTimeout(retryTimerRef.current);
       retryTimerRef.current = null;
@@ -68,13 +76,15 @@ export function MixCheckHost() {
   );
 
   const finishJob = useCallback(() => {
+    documentRef.current?.dispose();
+    documentRef.current = null;
     abortCleanupRef.current?.();
     abortCleanupRef.current = null;
     jobRef.current = null;
     warningsRef.current = [];
     startedRef.current = false;
     clearRetries();
-    setDocumentHtml(null);
+    setDocumentUri(null);
     setActive(false);
   }, [clearRetries]);
 
@@ -105,7 +115,21 @@ export function MixCheckHost() {
           job.signal?.removeEventListener("abort", onAbort);
       }
 
-      setDocumentHtml(job.html);
+      deadlineRef.current = setTimeout(() => {
+        if (jobRef.current === job) stopActive(new Error(
+          `Mix check timed out after 60s (${job.html.length}-char document). Try a smaller audio schedule.`,
+        ));
+      }, MIX_JOB_TIMEOUT_MS);
+      try {
+        const document = createSceneDocument(
+          `${job.html}\n<script>${VIDEO_EXPORT_SCRIPT}</script>\n<script>${VIDEO_MIX_SCRIPT}</script>\n`,
+        );
+        documentRef.current = document;
+        setDocumentUri(document.uri);
+      } catch (error) {
+        stopActive(error instanceof Error ? error : new Error(String(error)));
+        return;
+      }
       setActive(true);
     },
     [clearRetries, stopActive],
@@ -139,6 +163,8 @@ export function MixCheckHost() {
     return () => {
       abortCleanupRef.current?.();
       abortCleanupRef.current = null;
+      documentRef.current?.dispose();
+      documentRef.current = null;
       const inFlight = jobRef.current;
       if (inFlight) {
         settle(inFlight, {
@@ -229,7 +255,7 @@ export function MixCheckHost() {
 
   if (!canCheck) return null;
 
-  return documentHtml ? (
+  return documentUri ? (
     <View
       pointerEvents="none"
       style={{
@@ -246,15 +272,14 @@ export function MixCheckHost() {
         ref={webViewRef}
         allowsInlineMediaPlayback
         mediaPlaybackRequiresUserAction={false}
-        originWhitelist={["http://*", "https://*"]}
+        allowFileAccess
+        originWhitelist={["file://*", "http://*", "https://*"]}
         onLoadEnd={() => attemptStart(START_ATTEMPTS)}
         onMessage={handleMessage}
         onError={handleWebViewError}
         onHttpError={handleWebViewError}
         onRenderProcessGone={handleRenderProcessGone}
-        source={{
-          html: `${documentHtml}\n<script>${VIDEO_EXPORT_SCRIPT}</script>\n<script>${VIDEO_MIX_SCRIPT}</script>\n`,
-        }}
+        source={{ uri: documentUri }}
         style={{ backgroundColor: "transparent", flex: 1 }}
       />
     </View>

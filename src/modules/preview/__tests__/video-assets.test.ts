@@ -16,6 +16,8 @@ const {
   assertVideoFileUsable,
   extractWorkspaceImageIds,
   extractWorkspaceVideoIds,
+  hasWorkspaceRefs,
+  inlineAudioAssets,
   inlineImageAssets,
   inlineVideoAssets,
   resolveImageMimeType,
@@ -200,5 +202,65 @@ describe("inlineVideoAssets", () => {
     await expect(
       inlineVideoAssets(`<video src="workspace://vid-1">`, repository()),
     ).rejects.toThrow(/not a supported video/);
+  });
+});
+
+describe("inlineAudioAssets", () => {
+  const schedule = (id: string) =>
+    `<script>window.MOBILE_AGENT_VIDEO = { audio: { tracks: [{ file: "workspace://${id}" }] } };</script>`;
+
+  it("replaces audio-track references with data URIs", async () => {
+    workspaceFile("song.mp3", "audio/mpeg");
+
+    const { html: out, audioFiles } = await inlineAudioAssets(
+      schedule("song-1"),
+      repository(),
+    );
+
+    expect(audioFiles).toEqual(["song.mp3"]);
+    expect(out).not.toContain("workspace://");
+    expect(out).toContain("data:audio/mpeg;base64,");
+  });
+
+  it("returns the document untouched when there are no audio tracks", async () => {
+    const { html: out, audioFiles } = await inlineAudioAssets(
+      "<p>silent</p>",
+      repository(),
+    );
+
+    expect(out).toBe("<p>silent</p>");
+    expect(audioFiles).toEqual([]);
+    expect(mocks.getById).not.toHaveBeenCalled();
+  });
+
+  it("fails clearly for missing or unavailable files", async () => {
+    mocks.getById.mockResolvedValue(null);
+    await expect(
+      inlineAudioAssets(schedule("gone"), repository()),
+    ).rejects.toThrow(/No workspace audio file found/);
+
+    workspaceFile("gone.mp3", "audio/mpeg");
+    mocks.exists = false;
+    await expect(
+      inlineAudioAssets(schedule("gone"), repository()),
+    ).rejects.toThrow(/no longer available/);
+  });
+});
+
+describe("hasWorkspaceRefs", () => {
+  it("detects image, clip, and audio-track references", () => {
+    expect(hasWorkspaceRefs("<p>silent</p>")).toBe(false);
+    expect(hasWorkspaceRefs(`<img src="workspace://pic-1">`)).toBe(true);
+    expect(
+      hasWorkspaceRefs(`<video src="workspace://clip-1"></video>`),
+    ).toBe(true);
+    expect(
+      hasWorkspaceRefs(
+        `<script>var s = { file: "workspace://song-1" };</script>`,
+      ),
+    ).toBe(true);
+    expect(hasWorkspaceRefs(`<img src="https://example.com/x.png">`)).toBe(
+      false,
+    );
   });
 });

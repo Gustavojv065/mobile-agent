@@ -23,11 +23,13 @@ const SESSION = {
   grantedAt: new Date().toISOString(),
 } as never;
 
-function makeTool(supportsImageInput = true) {
+function makeTool(supportsImageInput = true, supportsAudioInput = false, supportsVideoInput = false) {
   return createExternalViewFileTool({
     session: SESSION,
     onRecord: mocks.onRecord,
     supportsImageInput,
+    supportsAudioInput,
+    supportsVideoInput,
   });
 }
 
@@ -70,7 +72,7 @@ describe("viewFile (external folder)", () => {
     };
     const modelOutput = tool.toModelOutput({ output }) as {
       type: string;
-      value: Array<Record<string, unknown>>;
+      value: Record<string, unknown>[];
     };
 
     expect(modelOutput.type).toBe("content");
@@ -103,5 +105,30 @@ describe("viewFile (external folder)", () => {
     await expect(
       execute(makeTool(true), { path: "big.jpg" }),
     ).rejects.toThrow(/too large/);
+  });
+
+  it.each(["clips/a.mp4", "audio/a.mp3"])("does not read unsupported media at %s", async (path) => {
+    const tool = makeTool();
+    const output = await execute(tool, { path }) as any;
+    expect(output.inlineFile).toBe(false);
+    expect(output.file).toBeNull();
+    expect(mocks.readBytesFile).not.toHaveBeenCalled();
+    expect(output.text).toContain("importFolderFileToWorkspace");
+    expect(output.text).toContain("Do not retry viewFile");
+    expect((tool as any).toModelOutput({ output }).type).toBe("text");
+  });
+
+  it("checks the actual MIME even when the filename hides the video type", async () => {
+    mocks.readBytesFile.mockResolvedValue({ bytes: new Uint8Array([1]), mimeType: "video/mp4" });
+    const output = await execute(makeTool(), { path: "clip.bin" }) as any;
+    expect(output.file).toBeNull();
+    expect(output.text).toContain("getVideoFrame");
+  });
+
+  it.each(["video/mp4", "audio/mpeg"])("passes supported %s inline", async (mimeType) => {
+    mocks.readBytesFile.mockResolvedValue({ bytes: new Uint8Array([9]), mimeType });
+    const output = await execute(makeTool(false, true, true), { path: "clip.bin" }) as any;
+    expect(output.inlineFile).toBe(true);
+    expect(output.file).toEqual(new Uint8Array([9]));
   });
 });

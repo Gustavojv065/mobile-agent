@@ -1,6 +1,10 @@
 import type { WorkspaceRepository } from "@/core/db/database";
 import { resolveWorkspaceFile } from "@/core/services/workspace-file-service";
-import { buildAudioDataUri } from "@/modules/preview/video-audio";
+import {
+  assertAudioFileUsable,
+  buildAudioDataUri,
+  extractWorkspaceAudioIds,
+} from "@/modules/preview/video-audio";
 
 /**
  * Image/clip helpers for video scenes with user visuals.
@@ -71,6 +75,19 @@ export function extractWorkspaceImageIds(html: string): string[] {
 /** Ids referenced by `<video>`/`<source src="workspace://<id>">`. */
 export function extractWorkspaceVideoIds(html: string): string[] {
   return extractScopedIds(html, VIDEO_SRC_PATTERN);
+}
+
+/**
+ * True when any workspace reference (image, clip, or audio-track) remains.
+ * The export/preview WebViews cannot resolve `workspace://` themselves, so
+ * a document that still has refs after inlining would record missing media.
+ */
+export function hasWorkspaceRefs(html: string): boolean {
+  return (
+    extractWorkspaceImageIds(html).length > 0 ||
+    extractWorkspaceVideoIds(html).length > 0 ||
+    extractWorkspaceAudioIds(html).length > 0
+  );
 }
 
 export function resolveImageMimeType(
@@ -152,7 +169,7 @@ async function inlineAssetUris(
   html: string,
   repository: WorkspaceRepository,
   ids: string[],
-  kind: "image" | "clip",
+  kind: "image" | "clip" | "audio",
   assertUsable: (
     displayName: string,
     mimeType: string | null | undefined,
@@ -186,7 +203,7 @@ async function inlineAssetUris(
 
 /**
  * Inlines `<img>`-referenced workspace files as data URIs. Pure apart from
- * the workspace read, mirroring the audio inliner in render-video.ts.
+ * the workspace read, mirroring the audio inliner below.
  */
 export function inlineImageAssets(
   html: string,
@@ -216,5 +233,23 @@ export function inlineVideoAssets(
   }
   return inlineAssetUris(html, repository, ids, "clip", assertVideoFileUsable).then(
     ({ html: inlined, files }) => ({ html: inlined, videoFiles: files }),
+  );
+}
+
+/**
+ * Replaces every `workspace://<id>` audio-track reference with a data URI the
+ * export/preview WebViews can fetch. Shared by the `renderVideo` tool and the
+ * manual export button so both produce the same soundtrack.
+ */
+export function inlineAudioAssets(
+  html: string,
+  repository: WorkspaceRepository,
+): Promise<{ html: string; audioFiles: string[] }> {
+  const ids = extractWorkspaceAudioIds(html);
+  if (ids.length === 0) {
+    return Promise.resolve({ html, audioFiles: [] });
+  }
+  return inlineAssetUris(html, repository, ids, "audio", assertAudioFileUsable).then(
+    ({ html: inlined, files }) => ({ html: inlined, audioFiles: files }),
   );
 }

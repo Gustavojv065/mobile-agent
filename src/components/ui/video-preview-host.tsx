@@ -3,7 +3,13 @@ import { Platform, View } from "react-native";
 import WebView, { type WebViewMessageEvent } from "react-native-webview";
 
 import { buildScenePreviewDocument } from "@/modules/preview/video-preview-script";
+import { createSceneDocument } from "@/modules/preview/scene-document";
 import {
+  SCENE_PREVIEW_JOB_TIMEOUT_MS,
+  SCENE_PREVIEW_START_TIMEOUT_MS,
+  describeScenePreviewJob,
+  scenePreviewJobTimeoutError,
+  scenePreviewStartTimeoutError,
   subscribeScenePreview,
   type ScenePreviewFrame,
   type ScenePreviewJob,
@@ -15,6 +21,7 @@ const START_ATTEMPTS = 8;
 const START_RETRY_MS = 200;
 
 type PreviewMessage =
+  | { type: "mobileAgentPreviewStarted" }
   | { type: "mobileAgentPreviewFrame"; frame: ScenePreviewFrame }
   | { type: "mobileAgentPreviewDone"; warnings?: string[] }
   | { type: "mobileAgentPreviewError"; message?: string };
@@ -36,20 +43,31 @@ export function ScenePreviewHost() {
 
   const [pending, setPending] = useState<ScenePreviewJob[]>([]);
   const [active, setActive] = useState(false);
-  const [documentHtml, setDocumentHtml] = useState<string | null>(null);
+  const [documentUri, setDocumentUri] = useState<string | null>(null);
 
   const webViewRef = useRef<WebView>(null);
+  const documentRef = useRef<ReturnType<typeof createSceneDocument> | null>(null);
   const jobRef = useRef<ScenePreviewJob | null>(null);
   const framesRef = useRef<ScenePreviewFrame[]>([]);
   const settledRef = useRef<WeakSet<ScenePreviewJob>>(new WeakSet());
   const abortCleanupRef = useRef<(() => void) | null>(null);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const startTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const jobTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const startedRef = useRef(false);
 
-  const clearRetries = useCallback(() => {
+  const clearTimers = useCallback(() => {
     if (retryTimerRef.current) {
       clearTimeout(retryTimerRef.current);
       retryTimerRef.current = null;
+    }
+    if (startTimerRef.current) {
+      clearTimeout(startTimerRef.current);
+      startTimerRef.current = null;
+    }
+    if (jobTimerRef.current) {
+      clearTimeout(jobTimerRef.current);
+      jobTimerRef.current = null;
     }
   }, []);
 
@@ -72,15 +90,17 @@ export function ScenePreviewHost() {
   );
 
   const finishJob = useCallback(() => {
+    documentRef.current?.dispose();
+    documentRef.current = null;
     abortCleanupRef.current?.();
     abortCleanupRef.current = null;
     jobRef.current = null;
     framesRef.current = [];
     startedRef.current = false;
-    clearRetries();
-    setDocumentHtml(null);
+    clearTimers();
+    setDocumentUri(null);
     setActive(false);
-  }, [clearRetries]);
+  }, [clearTimers]);
 
   const stopActive = useCallback(
     (error: Error) => {
@@ -99,7 +119,7 @@ export function ScenePreviewHost() {
       jobRef.current = job;
       framesRef.current = [];
       startedRef.current = false;
-      clearRetries();
+      clearTimers();
 
       if (job.signal) {
         const onAbort = () =>
@@ -109,10 +129,34 @@ export function ScenePreviewHost() {
           job.signal?.removeEventListener("abort", onAbort);
       }
 
-      setDocumentHtml(job.html);
+      // Fail fast instead of hanging until the run-level inactivity timeout:
+      // no message from the page means the WebView never loaded the document.
+      startTimerRef.current = setTimeout(() => {
+        if (jobRef.current === job && !startedRef.current) {
+          stopActive(scenePreviewStartTimeoutError(job));
+        }
+      }, SCENE_PREVIEW_START_TIMEOUT_MS);
+      // The page started but stalled mid-storyboard (heavy media, a render
+      // that never settles). Report progress so far instead of hanging.
+      jobTimerRef.current = setTimeout(() => {
+        if (jobRef.current === job) {
+          stopActive(
+            scenePreviewJobTimeoutError(job, framesRef.current.length),
+          );
+        }
+      }, SCENE_PREVIEW_JOB_TIMEOUT_MS);
+
+      try {
+        const document = createSceneDocument(buildScenePreviewDocument(job.html));
+        documentRef.current = document;
+        setDocumentUri(document.uri);
+      } catch (error) {
+        stopActive(error instanceof Error ? error : new Error(String(error)));
+        return;
+      }
       setActive(true);
     },
-    [clearRetries, stopActive],
+    [clearTimers, stopActive],
   );
 
   // Drain the queue one preview at a time.
@@ -143,6 +187,8 @@ export function ScenePreviewHost() {
     return () => {
       abortCleanupRef.current?.();
       abortCleanupRef.current = null;
+      documentRef.current?.dispose();
+      documentRef.current = null;
       const inFlight = jobRef.current;
       if (inFlight) {
         settle(inFlight, {
@@ -150,9 +196,9 @@ export function ScenePreviewHost() {
           error: new Error("Scene preview was interrupted."),
         });
       }
-      clearRetries();
+      clearTimers();
     };
-  }, [clearRetries, settle]);
+  }, [clearTimers, settle]);
 
   const attemptStart = useCallback((triesLeft: number) => {
     const job = jobRef.current;
@@ -188,7 +234,7 @@ export function ScenePreviewHost() {
     if (!job || startedRef.current) return;
     stopActive(
       new Error(
-        "Scene preview failed: the page could not load. Try a smaller document.",
+        `Scene preview failed: the page could not load (${describeScenePreviewJob(job)}). Try a smaller document.`,
       ),
     );
   }, [stopActive]);
@@ -204,11 +250,16 @@ export function ScenePreviewHost() {
         return;
       }
       if (
+        message.type === "mobileAgentPreviewStarted" ||
         message.type === "mobileAgentPreviewFrame" ||
         message.type === "mobileAgentPreviewDone" ||
         message.type === "mobileAgentPreviewError"
       ) {
         startedRef.current = true;
+        if (startTimerRef.current) clearTimeout(startTimerRef.current);
+        startTimerRef.current = null;
+        if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
+        retryTimerRef.current = null;
       }
       if (message.type === "mobileAgentPreviewFrame" && message.frame) {
         framesRef.current.push(message.frame);
@@ -237,7 +288,7 @@ export function ScenePreviewHost() {
 
   if (!canPreview) return null;
 
-  return documentHtml ? (
+  return documentUri ? (
     <View
       pointerEvents="none"
       style={{
@@ -254,13 +305,14 @@ export function ScenePreviewHost() {
         ref={webViewRef}
         allowsInlineMediaPlayback
         mediaPlaybackRequiresUserAction={false}
-        originWhitelist={["http://*", "https://*"]}
+        allowFileAccess
+        originWhitelist={["file://*", "http://*", "https://*"]}
         onLoadEnd={() => attemptStart(START_ATTEMPTS)}
         onMessage={handleMessage}
         onError={handleWebViewError}
         onHttpError={handleWebViewError}
         onRenderProcessGone={handleRenderProcessGone}
-        source={{ html: buildScenePreviewDocument(documentHtml) }}
+        source={{ uri: documentUri }}
         style={{ backgroundColor: "transparent", flex: 1 }}
       />
     </View>

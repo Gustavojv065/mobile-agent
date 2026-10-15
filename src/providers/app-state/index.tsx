@@ -672,9 +672,19 @@ export function AppStateProvider({ children }: AppStateProviderProps) {
     );
     const externalFolderServiceRef = useRef(createExternalFolderService());
     const runRegistryRef = useRef(createRunControllerRegistry());
-    if (runRegistryRef.current.version !== 3) {
+    if (runRegistryRef.current.version !== 4 || runRegistryRef.current.isDisposed()) {
+        runRegistryRef.current.dispose?.();
         runRegistryRef.current = createRunControllerRegistry();
     }
+    useEffect(() => {
+        // Fast Refresh/error-boundary teardown can close SQLite while the
+        // model stream is still running. Its old runs must not persist later.
+        if (runRegistryRef.current.isDisposed()) {
+            runRegistryRef.current = createRunControllerRegistry();
+        }
+        const registry = runRegistryRef.current;
+        return () => registry.dispose();
+    }, [db]);
     const [snapshot, setSnapshot] = useState<AppStateSnapshot>(EMPTY_SNAPSHOT);
     const [pluginActions, setPluginActions] = useState<PluginActionInfo[]>([]);
     const [pluginTools, setPluginTools] = useState<PluginToolInfo[]>([]);
@@ -3898,7 +3908,8 @@ Your output must be:
     }
 
     async function executeAgentRun(runId: string) {
-        if (!runRegistryRef.current.claim(runId)) {
+        const registry = runRegistryRef.current;
+        if (!registry.claim(runId)) {
             return;
         }
         try {
@@ -3911,7 +3922,7 @@ Your output must be:
             const deps: AgentRunDeps = {
                 repositories: repositoriesRef.current,
                 snapshotRef,
-                runRegistry: runRegistryRef.current,
+                runRegistry: registry,
                 workspaceService: workspaceServiceRef.current,
                 updateRunRecord,
                 requestToolApproval,
@@ -3931,6 +3942,7 @@ Your output must be:
                 },
                 retryRun: (retryRunId, delayMs) => {
                     setTimeout(() => {
+                        if (registry.isDisposed()) return;
                         executeAgentRun(retryRunId).catch(() => {});
                     }, delayMs);
                 },
@@ -3944,8 +3956,9 @@ Your output must be:
 
             await executeClaimedAgentRun(runId, deps);
         } catch (error) {
+            if (registry.isDisposed()) return;
             console.error("[executeAgentRun] run threw", { runId, error });
-            runRegistryRef.current.clear(runId);
+            registry.clear(runId);
             const errorMessage =
                 error instanceof Error
                     ? error.message

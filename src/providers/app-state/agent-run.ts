@@ -282,6 +282,7 @@ export async function executeClaimedAgentRun(
   } = deps;
 
   const pluginSnapshot = deps.pluginRuntimeSnapshot;
+  if (runRegistry.isDisposed()) return;
 
   const run =
     snapshotRef.current.agentRuns.find((item) => item.id === runId) ??
@@ -307,6 +308,7 @@ export async function executeClaimedAgentRun(
     safeRunId,
     input,
   ) => {
+    if (runRegistry.isDisposed()) return null;
     try {
       return await updateRunRecord(safeRunId, input);
     } catch (error) {
@@ -479,6 +481,7 @@ export async function executeClaimedAgentRun(
   };
 
   const markActivity = () => {
+    if (runRegistry.isDisposed()) return;
     scheduleInactivityTimeout();
   };
 
@@ -975,6 +978,8 @@ export async function executeClaimedAgentRun(
     }
 
     persistTimeout = setTimeout(() => {
+      persistTimeout = null;
+      if (runRegistry.isDisposed()) return;
       repositories.messageRepository
         .updateContent({
           id: assistantMessage.id,
@@ -992,6 +997,12 @@ export async function executeClaimedAgentRun(
     errorMessage: string | null,
     metadata: MessageMetadata | null,
   ) => {
+    if (runRegistry.isDisposed()) {
+      throw new Error("Run interrupted: its database provider was disposed.");
+    }
+    if (status === "completed" && abortController.signal.aborted) {
+      throw new Error(requestTimedOut ? "Request timed out. Please try again." : "Generation stopped.");
+    }
     if (persistTimeout) {
       clearTimeout(persistTimeout);
       persistTimeout = null;
@@ -1012,6 +1023,7 @@ export async function executeClaimedAgentRun(
   };
 
   refreshAssistantState = () => {
+    if (runRegistry.isDisposed()) return;
     schedulePersist("streaming");
     scheduleSnapshot("streaming");
   };
@@ -1077,6 +1089,7 @@ export async function executeClaimedAgentRun(
   };
 
   const handleToolExecutionRecord = (record: ToolExecutionRecord) => {
+    if (runRegistry.isDisposed()) return;
     if (record.termux && record.id && !termuxRunAnchors.has(record.id)) {
       termuxRunAnchors.set(record.id, assistantText.length);
     }
@@ -1120,6 +1133,7 @@ export async function executeClaimedAgentRun(
   const handleBackgroundTaskComplete = async (
     completion: import("@/modules/mcp/runtime-tools").TermuxBackgroundCompletion,
   ) => {
+    if (runRegistry.isDisposed()) return;
     try {
       const completedRecord = createRecord({
         id: completion.executionId,
@@ -1267,6 +1281,8 @@ export async function executeClaimedAgentRun(
               session: externalFolderSession as ExternalFolderSession,
               onRecord: handleToolExecutionRecord,
               supportsImageInput: resolvedModel.supportsImageInput,
+              supportsAudioInput: resolvedModel.supportsAudioInput,
+              supportsVideoInput: resolvedModel.supportsVideoInput,
             }).tools;
 
             Object.assign(
@@ -1306,6 +1322,8 @@ export async function executeClaimedAgentRun(
               repository: repositories.workspaceRepository,
               onRecord: handleToolExecutionRecord,
               supportsImageInput: resolvedModel.supportsImageInput,
+              supportsAudioInput: resolvedModel.supportsAudioInput,
+              supportsVideoInput: resolvedModel.supportsVideoInput,
             }).tools;
 
             Object.assign(
@@ -1332,6 +1350,8 @@ export async function executeClaimedAgentRun(
               onRecord: handleToolExecutionRecord,
               onProgress: () => markActivity(),
               supportsImageInput: resolvedModel.supportsImageInput,
+              supportsAudioInput: resolvedModel.supportsAudioInput,
+              supportsVideoInput: resolvedModel.supportsVideoInput,
             }).tools;
 
             Object.assign(
@@ -1368,6 +1388,8 @@ export async function executeClaimedAgentRun(
                 session: activeFolderSession,
                 onRecord: handleToolExecutionRecord,
                 supportsImageInput: resolvedModel.supportsImageInput,
+                supportsAudioInput: resolvedModel.supportsAudioInput,
+                supportsVideoInput: resolvedModel.supportsVideoInput,
               }).tools;
 
               Object.assign(
@@ -1892,6 +1914,7 @@ export async function executeClaimedAgentRun(
       messages: runtimeMessages,
       model: resolvedModel,
       onDelta: (delta) => {
+        if (runRegistry.isDisposed()) return;
         markActivity();
         assistantText += delta;
         void pluginSnapshot?.dispatch("message:delta", {
@@ -1903,6 +1926,7 @@ export async function executeClaimedAgentRun(
         scheduleSnapshot("streaming");
       },
       onEvent: (eventName, data) => {
+        if (runRegistry.isDisposed()) return;
         markActivity();
 
         if (
@@ -2039,6 +2063,16 @@ export async function executeClaimedAgentRun(
     void persistArtifacts.catch(() => {});
 
     const runtimeResult = await runtimeResultPromise;
+    // A tool failure after an abort (e.g. a preview cancelled by the
+    // inactivity timeout) resolves the stream with stale text instead of
+    // rejecting. Never record that as a successful run.
+    if (abortController.signal.aborted) {
+      throw new Error(
+        requestTimedOut
+          ? "Request timed out. Please try again."
+          : "Generation stopped.",
+      );
+    }
     await persistArtifacts;
 
     await Promise.allSettled(pendingArtifactWrites);
@@ -2185,6 +2219,10 @@ export async function executeClaimedAgentRun(
       title: conversation.title,
     }).catch(() => {});
   } catch (sendError) {
+    // The provider owns this DB connection. After teardown it may already
+    // be closed; even trying to save a failure would throw again. Startup
+    // recovery handles the interrupted streaming row on the next mount.
+    if (runRegistry.isDisposed()) return;
     const requestAbortedEarly = abortController.signal.aborted;
     const isUserCancel = requestAbortedEarly && !requestTimedOut;
     if (!isUserCancel) {
@@ -2397,6 +2435,8 @@ export async function executeClaimedAgentRun(
       }).catch(() => {});
     }
   } finally {
+    if (persistTimeout) clearTimeout(persistTimeout);
+    if (snapshotTimer) clearTimeout(snapshotTimer);
     dismissApprovalNotification(run.id).catch(() => {});
 
     if (shouldKeepBackgroundAgentAlive()) {

@@ -4,6 +4,7 @@ import { z } from "zod";
 import { createWorkspaceFileService } from "@/core/services/workspace-file-service";
 import { readContractDuration } from "@/modules/preview/video-audio";
 import {
+  inlineAudioAssets,
   inlineImageAssets,
   inlineVideoAssets,
 } from "@/modules/preview/video-assets";
@@ -13,10 +14,7 @@ import {
   summarizeValue,
 } from "@/modules/tools/built-in/shared";
 import type { WorkspaceToolFactoryParams } from "@/modules/tools/built-in/types";
-import {
-  inlineAudioAssets,
-  resolveHtml,
-} from "@/modules/tools/built-in/render-video";
+import { resolveHtml } from "@/modules/tools/built-in/render-video";
 
 function round3(value: number) {
   return Math.round(value * 1000) / 1000;

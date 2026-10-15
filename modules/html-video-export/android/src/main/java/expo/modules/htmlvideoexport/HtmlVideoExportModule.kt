@@ -6,14 +6,8 @@ import expo.modules.kotlin.modules.ModuleDefinition
 /**
  * Turns frames rendered inside the HTML preview WebView into an MP4.
  *
- * Two input modes, chosen by the page depending on whether WebCodecs is
- * available:
- *
- *  - `beginH264`/`pushH264Chunk` remuxes already-compressed H.264 chunks (the
- *    GPU path — the WebView's hardware `VideoEncoder` did the encoding, this
- *    module only writes the MP4 container).
- *  - `beginFrames`/`pushJpegFrame` decodes JPEG frames and re-encodes them on
- *    the hardware MediaCodec encoder via an input surface (fallback path).
+ * `beginFrames`/`pushJpegFrame` sends decoded images through MediaCodec.
+ * MediaCodec owns codec configuration, framing, and presentation timestamps.
  */
 class HtmlVideoExportModule : Module() {
   private var session: ExportSession? = null
@@ -33,25 +27,14 @@ class HtmlVideoExportModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("HtmlVideoExport")
 
-    AsyncFunction("beginH264") { outputPath: String, width: Int, height: Int, fps: Int, frameCount: Int, spsHex: String, ppsHex: String ->
-      require(spsHex.isNotBlank() && ppsHex.isNotBlank()) {
-        "Missing H.264 codec configuration (SPS/PPS)."
-      }
-      synchronized(audioLock) {
-        session?.cancel()
-        session = null
-        val (audioSpec, buffered) = takePendingAudio()
-        val next = H264RemuxSession(outputPath, width, height, fps, spsHex, ppsHex, audioSpec, buffered)
-        next.begin()
-        session = next
-      }
-      mapOf("ok" to true)
+    AsyncFunction("beginH264") { _: String, _: Int, _: Int, _: Int, _: Int, _: String, _: String ->
+      // Keep a rejecting endpoint for old cached documents, never remux their
+      // chunks. A stale WebView must fail safely rather than abort the process.
+      rejectLegacyRemux()
     }
 
-    AsyncFunction("pushH264Chunk") { keyFrame: Boolean, timestampMicros: Long, base64: String ->
-      val active = session as? H264RemuxSession
-        ?: throw IllegalStateException("The H.264 export has not started.")
-      active.pushChunk(keyFrame, timestampMicros, base64)
+    AsyncFunction("pushH264Chunk") { _: Boolean, _: Long, _: String ->
+      rejectLegacyRemux()
     }
 
     AsyncFunction("setAudioFormat") { sampleRate: Int, channels: Int ->
@@ -120,8 +103,13 @@ class HtmlVideoExportModule : Module() {
         try { pcmEncoder?.finish() } finally { pcmEncoder = null }
       }
       session = null
-      val (uri, sizeBytes, hasAudio) = active.finish()
-      mapOf("uri" to uri, "sizeBytes" to sizeBytes, "hasAudio" to hasAudio)
+      val result = active.finish()
+      mapOf(
+        "uri" to result.uri,
+        "sizeBytes" to result.sizeBytes,
+        "hasAudio" to result.hasAudio,
+        "audioDurationUs" to result.audioDurationUs,
+      )
     }
 
     AsyncFunction("cancel") {
@@ -133,6 +121,10 @@ class HtmlVideoExportModule : Module() {
         pendingAudio.clear()
       }
     }
+  }
+
+  private fun rejectLegacyRemux() {
+    throw IllegalStateException("WebCodecs remux export is no longer supported. Reload the scene to use native frame export.")
   }
 
   /** Called under audioLock; AAC may arrive before the video track exists. */
@@ -161,11 +153,20 @@ class HtmlVideoExportModule : Module() {
   }
 }
 
-/** Common teardown surface so the module can switch or abort either recorder. */
+/** Export lifecycle used by the module for finish/cancel. */
 internal interface ExportSession {
-  fun finish(): Triple<String, Long, Boolean>
+  fun finish(): ExportResult
   fun cancel()
 }
+
+/** What a finished session hands back: file, size, and audio coverage. */
+internal data class ExportResult(
+  val uri: String,
+  val sizeBytes: Long,
+  val hasAudio: Boolean,
+  /** Last muxed audio timestamp in microseconds (0 when silent). */
+  val audioDurationUs: Long,
+)
 
 /** Sessions that mux an AAC track implement audio delivery. */
 internal interface AudioCapable {

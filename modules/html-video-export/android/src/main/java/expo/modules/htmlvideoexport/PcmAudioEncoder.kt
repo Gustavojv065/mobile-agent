@@ -13,6 +13,7 @@ internal class PcmAudioEncoder(
   private val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
   private val info = MediaCodec.BufferInfo()
   private var nextPtsUs = 0L
+  private var inputFrames = 0L
   private var closed = false
   private var ended = false
 
@@ -34,7 +35,10 @@ internal class PcmAudioEncoder(
     val frameBytes = spec.channels * 2
     require(bytes.size % frameBytes == 0) { "PCM audio must contain complete interleaved frames." }
     var offset = 0
-    val basePts = maxOf(0L, timestampMicros, nextPtsUs)
+    // Export PCM is a continuous offline mix. Sample count, never bridge
+    // arrival time, is the clock. Reject gaps instead of stretching sound.
+    val basePts = inputFrames * 1_000_000L / spec.sampleRate
+    require(kotlin.math.abs(timestampMicros - basePts) <= 2L) { "Non-contiguous PCM soundtrack." }
     while (offset < bytes.size) {
       val index = inputBuffer()
       val buffer = codec.getInputBuffer(index) ?: error("Missing AAC encoder input buffer.")
@@ -47,7 +51,8 @@ internal class PcmAudioEncoder(
       offset += length
       drain(0L)
     }
-    nextPtsUs = basePts + (bytes.size / frameBytes) * 1_000_000L / spec.sampleRate
+    inputFrames += bytes.size / frameBytes
+    nextPtsUs = inputFrames * 1_000_000L / spec.sampleRate
   }
 
   /** EOS must be drained before the MP4 muxer is stopped. */

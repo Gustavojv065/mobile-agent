@@ -208,8 +208,27 @@ describe("VIDEO_PREVIEW_SCRIPT", () => {
     cancel();
     await new Promise((resolve) => setTimeout(resolve, 60));
 
-    expect(messages).toHaveLength(0);
+    expect(messages).toEqual([{ type: "mobileAgentPreviewStarted" }]);
   }, 10000);
+
+  it("acknowledges startup before media is ready", async () => {
+    const api = installDom({ videos: [{ readyState: 0 }] });
+    api.start([0]);
+    expect(api.messages).toEqual([{ type: "mobileAgentPreviewStarted" }]);
+    await waitForDone(api.messages);
+  });
+
+  it("reports unexpected media setup errors instead of leaving a pending job", async () => {
+    const api = installDom();
+    Object.defineProperty((globalThis as any).document, "images", {
+      get() { throw new Error("media failed"); },
+    });
+    api.start([0]);
+    await vi.waitFor(() => expect(api.messages).toContainEqual({
+      type: "mobileAgentPreviewError",
+      message: "Scene preview failed: media failed",
+    }));
+  });
 });
 
 describe("buildScenePreviewDocument", () => {
