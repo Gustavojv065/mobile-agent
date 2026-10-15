@@ -42,7 +42,7 @@ function isBlockedHostname(hostname: string): boolean {
   return false;
 }
 
-function checkUrl(raw: string): URL {
+export function checkUrl(raw: string): URL {
   let url: URL;
   try {
     url = new URL(raw);

@@ -4,6 +4,7 @@ import { useColorScheme } from "@/hooks/use-color-scheme";
 import { useTheme } from "@/hooks/use-theme";
 import { AudioAnalysisHost } from "@/components/ui/audio-analysis-host";
 import { DismissibleBanner } from "@/components/ui/dismissible-banner";
+import { PageShotHost } from "@/components/ui/page-shot-host";
 import { ScenePreviewHost } from "@/components/ui/video-preview-host";
 import { MixCheckHost } from "@/components/ui/video-mix-host";
 import { VideoRenderHost } from "@/components/ui/video-render-host";
@@ -305,6 +306,7 @@ export default function MainLayout() {
                   <ScenePreviewHost />
                   <MixCheckHost />
                   <AudioAnalysisHost />
+                  <PageShotHost />
                   <Slot />
                 </UpdateProvider>
               </AppStateProvider>
