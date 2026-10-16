@@ -26,6 +26,13 @@ import type { File } from "expo-file-system";
 export const MAX_IMAGE_FILE_BYTES = 15 * 1024 * 1024;
 export const MAX_VIDEO_FILE_BYTES = 15 * 1024 * 1024;
 /**
+ * Served clips bypass the heap entirely (loopback HTTP + range requests),
+ * so the only ceiling is decoder sanity, not memory. Above this, clips
+ * transcode down; the 15 MB figure stays as the data-URI fallback cap
+ * (heap protection on builds without the server).
+ */
+export const MAX_DIRECT_SERVE_BYTES = 200 * 1024 * 1024;
+/**
  * Transcode target: comfortably under the inline cap so the base64
  * inflation (~33%) still leaves headroom in the render document.
  */
@@ -422,9 +429,11 @@ async function inlineClipRefs(
     }
     files.push(record.displayName);
     const statSize = typeof file.size === "number" ? file.size : null;
+    // Served clips bypass the heap: only absurd files (>200 MB) or MOV
+    // transcode. Anything smaller serves at full quality, no warning.
     const convert =
       isTranscodeOnlyVideoMimeType(resolved) ||
-      (statSize != null && statSize > MAX_VIDEO_FILE_BYTES);
+      (statSize != null && statSize > MAX_DIRECT_SERVE_BYTES);
     if (!convert) {
       next = next
         .split(`workspace://${id}`)

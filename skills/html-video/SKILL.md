@@ -246,8 +246,9 @@ Images and video clips in scenes (user-provided visuals):
 - Reference workspace files directly in the scene DOM: images inline
   automatically (JPEG/PNG/WebP/GIF, max 15 MB each — same cap as audio),
   while clips (MP4/WebM/MOV) load from the device over loopback HTTP —
-  no size inflation, seeking works, any length plays. Over-cap clips are
-  auto-compressed and MOV auto-converted to MP4 on-device (audio dropped
+  no size inflation, seeking works, any length plays: files up to 200 MB
+  serve at full quality with no warning. Absurd files compress on-device
+  and MOV auto-converts to MP4 the same way (audio dropped
   since clips play muted) with a warning naming the new size — tell the
   user when it happens instead of hiding it. Never invent a
   `workspace://` id: use a file the user attached or one already in the

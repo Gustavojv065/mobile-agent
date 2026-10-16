@@ -503,8 +503,20 @@ describe("inlineVideoAssets served URLs", () => {
     expect(warnings).toEqual([]);
   });
 
-  it("serves transcoded output for over-cap clips with a warning", async () => {
+  it("serves large clips directly up to 200 MB with no transcode", async () => {
     bigWorkspaceFile("big-clip.mp4", "video/mp4", FIFTY_MB);
+    const { html: out, warnings } = await inlineVideoAssets(
+      `<video src="workspace://vid-1">`,
+      repository(),
+    );
+    expect(nativeMocks.transcodeClip).not.toHaveBeenCalled();
+    expect(out).toContain("http://127.0.0.1:9999/files/vid-1/big-clip.mp4");
+    expect(out).not.toContain("data:video");
+    expect(warnings).toEqual([]);
+  });
+
+  it("serves transcoded output for absurd clips with a warning", async () => {
+    bigWorkspaceFile("huge-clip.mp4", "video/mp4", 250 * 1024 * 1024);
     const { html: out, warnings } = await inlineVideoAssets(
       `<video src="workspace://vid-1">`,
       repository(),
