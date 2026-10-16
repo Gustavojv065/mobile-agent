@@ -23,6 +23,10 @@ function makeCtx(w: number, h: number) {
   return {
     pixels: new Uint8ClampedArray(w * h * 4),
     draws: [] as unknown[],
+    clears: [] as unknown[][],
+    clearRect(...args: unknown[]) {
+      this.clears.push(args);
+    },
     drawImage(src: unknown) {
       this.draws.push(src);
       const canvas = src as {
@@ -60,10 +64,13 @@ function makeCanvas(w: number, h: number) {
       this._h = v;
       this.__ctx = makeCtx(this._w, v);
     },
-    getContext(kind?: string): ReturnType<typeof makeCtx> {
+    getContext(kind?: string, attrs?: unknown): ReturnType<typeof makeCtx> {
       // No WebGL in this harness by default: forces the CPU path. Tests
       // that need the GPU path install a fake via installStubs({ webgl }).
-      if (kind === "webgl") return this.__gl as unknown as ReturnType<typeof makeCtx>;
+      if (kind === "webgl") {
+        (canvas as { __attrs?: unknown }).__attrs = attrs;
+        return this.__gl as unknown as ReturnType<typeof makeCtx>;
+      }
       return this.__ctx;
     },
   };
@@ -97,17 +104,20 @@ function solidFrame(w: number, h: number, r: number, g: number, b: number) {
 function installStubs(opts: FakeGlOptions = {}) {
   const g = globalThis as Record<string, unknown>;
   g.window = {};
+  const canvases: (ReturnType<typeof makeCanvas> & { __attrs?: unknown })[] = [];
   g.document = {
     createElement: (tag: string) => {
       if (tag !== "canvas") throw new Error("unexpected element " + tag);
       const canvas = makeCanvas(300, 150);
+      canvases.push(canvas);
       if (opts.webgl) canvas.__gl = opts.webgl();
       return canvas;
     },
   };
   new Function(VIDEO_CHROMA_KEY_SCRIPT)();
-  return (g.window as { __mobileAgentChromaKey: ChromaKeyApi })
+  const api = (g.window as { __mobileAgentChromaKey: ChromaKeyApi })
     .__mobileAgentChromaKey;
+  return Object.assign(api, { canvases });
 }
 
 const GL_IDS = {
@@ -185,6 +195,9 @@ function makeFakeGl(failUpload = false): FakeGl {
     },
     uniform1f(_loc: unknown, v: unknown) {
       calls.push({ name: "uniform1f", args: [v] });
+    },
+    uniform4f(_loc: unknown, a: unknown, b: unknown, c: unknown, d: unknown) {
+      calls.push({ name: "uniform4f", args: [a, b, c, d] });
     },
     enableVertexAttribArray() {},
     vertexAttribPointer() {},
@@ -391,8 +404,7 @@ describe("VIDEO_CHROMA_KEY_SCRIPT", () => {
     expect(alphaOf(drawn)).toEqual([0, 0, 0, 0]);
   });
 
-  it("caches GL unavailability instead of re-running init", () => {
-    let creations = 0;
+  it("caches GL unavailability instead of re-running init", () => {    let creations = 0;
     const g = globalThis as Record<string, unknown>;
     g.window = {};
     g.document = {
@@ -417,6 +429,129 @@ describe("VIDEO_CHROMA_KEY_SCRIPT", () => {
     // First draw: GL canvas attempt + CPU offscreen = 2. Second draw: zero
     // (GL cached unavailable, CPU offscreen reused).
     expect(creations).toBe(2);
+    expect(api.backend).toBe("cpu");
+  });
+
+  it("bridges the backend once per transition via postMessage", () => {
+    const posted: unknown[] = [];
+    const api = installStubs();
+    (globalThis.window as unknown as Record<string, unknown>).ReactNativeWebView = {
+      postMessage: (data: string) => {
+        posted.push(JSON.parse(data));
+      },
+    };
+    const main = makeCanvas(2, 2);
+    const video = { readyState: 2, __frame: solidFrame(2, 2, 0, 255, 0) };
+    expect(api.drawKeyed(main.getContext(), video, 0, 0, 2, 2, { key: "#00ff00" })).toBe(
+      true,
+    );
+    expect(api.drawKeyed(main.getContext(), video, 0, 0, 2, 2, { key: "#00ff00" })).toBe(
+      true,
+    );
+    expect(posted).toEqual([
+      { type: "mobileAgentVideoChromaBackend", backend: "cpu", reason: "no-webgl-context" },
+    ]);
+  });
+
+  it("keys green-excess on the CPU path with the studio ramp", () => {
+    const api = installStubs();
+    const main = makeCanvas(3, 1);
+    // x=0 pure green (excess 255 -> transparent), x=1 gray (opaque),
+    // x=2 mild excess 20 (mid ramp + green clamp).
+    const video = {
+      readyState: 2,
+      __frame: new Uint8ClampedArray([0, 255, 0, 255, 100, 100, 100, 255, 60, 80, 50, 255]),
+    };
+    expect(api.drawKeyed(main.getContext(), video, 0, 0, 3, 1, { mode: "excess" })).toBe(true);
+    expect(api.backend).toBe("cpu");
+    const px = main.getContext().pixels;
+    expect(px[3]).toBe(0);
+    expect(px[7]).toBe(255);
+    // Replace semantics: the target is cleared before the keyed layer lands.
+    expect(main.getContext().clears).toEqual([[0, 0, 3, 1]]);
+    // excess 20: alpha = round(255 * (1 - 12/25)) = round(132.6) = 133.
+    expect(px[11]).toBe(133);
+    // green clamped to max(r,b)+6 = 66.
+    expect(px[9]).toBe(66);
+    expect(px[8]).toBe(60);
+    expect(px[10]).toBe(50);
+  });
+
+  it("accepts a canvas source and ignores the key color in excess mode", () => {
+    const api = installStubs();
+    const main = makeCanvas(1, 1);
+    const src = makeCanvas(1, 1);
+    src.getContext().pixels.set([0, 255, 0, 255]);
+    expect(api.drawKeyed(main.getContext(), src, 0, 0, 1, 1, { mode: "excess" })).toBe(true);
+    expect(main.getContext().pixels[3]).toBe(0);
+  });
+
+  it("takes the GPU path for excess mode with mode uniform set", () => {
+    let gl: FakeGl | null = null;
+    const api = installStubs({
+      webgl: () => {
+        gl = makeFakeGl();
+        return gl;
+      },
+    });
+    const main = makeCanvas(2, 2);
+    const video = { readyState: 2, __frame: solidFrame(2, 2, 0, 255, 0) };
+    expect(api.drawKeyed(main.getContext(), video, 0, 0, 2, 2, { mode: "excess" })).toBe(true);
+    expect(api.backend).toBe("webgl");
+    expect(gl).not.toBeNull();
+    // Straight-alpha buffer: keyed-out regions must composite as transparent,
+    // not opaque white, when drawn over the scene.
+    expect(api.canvases[0].__attrs).toMatchObject({ premultipliedAlpha: false });
+    const modeUniform = gl!.calls.filter((c) => c.name === "uniform1f").map((c) => c.args[0]);
+    expect(modeUniform).toContain(1);
+    expect(main.getContext().draws).toHaveLength(1);
+    expect(main.getContext().clears).toEqual([[0, 0, 2, 2]]);
+  });
+
+  it("samples the full source by default and crops via srcRect", () => {
+    let gl: FakeGl | null = null;
+    const api = installStubs({
+      webgl: () => {
+        gl = makeFakeGl();
+        return gl;
+      },
+    });
+    const main = makeCanvas(2, 2);
+    const video = {
+      readyState: 2,
+      videoWidth: 100,
+      videoHeight: 50,
+      __frame: solidFrame(2, 2, 0, 255, 0),
+    };
+    expect(api.drawKeyed(main.getContext(), video, 0, 0, 2, 2, { mode: "excess" })).toBe(true);
+    const rects = gl!.calls.filter((c) => c.name === "uniform4f").map((c) => c.args);
+    expect(rects).toEqual([[0, 0, 1, 1]]);
+    expect(
+      api.drawKeyed(main.getContext(), video, 0, 0, 2, 2, {
+        mode: "excess",
+        sx: 10,
+        sy: 5,
+        sw: 80,
+        sh: 40,
+      }),
+    ).toBe(true);
+    const rects2 = gl!.calls.filter((c) => c.name === "uniform4f").map((c) => c.args);
+    expect(rects2[rects2.length - 1]).toEqual([0.1, 0.1, 0.8, 0.8]);
+  });
+
+  it("crops on the CPU fallback path with the source rect", () => {
+    const api = installStubs();
+    const main = makeCanvas(2, 1);
+    const video = { readyState: 2, __frame: solidFrame(4, 1, 0, 255, 0) };
+    expect(
+      api.drawKeyed(main.getContext(), video, 0, 0, 2, 1, {
+        mode: "excess",
+        sx: 0,
+        sy: 0,
+        sw: 4,
+        sh: 1,
+      }),
+    ).toBe(true);
     expect(api.backend).toBe("cpu");
   });
 });

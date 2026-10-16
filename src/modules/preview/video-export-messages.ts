@@ -40,7 +40,17 @@ export type VideoExportMessage =
   | { type: "mobileAgentVideoAudioWarning"; reason?: string }
   | { type: "mobileAgentVideoDone"; emitted?: number }
   | { type: "mobileAgentVideoUnsupported" }
-  | { type: "mobileAgentVideoError"; message: string };
+  | { type: "mobileAgentVideoError"; message: string }
+  | { type: "mobileAgentVideoChromaBackend"; backend?: string; reason?: string }
+  | {
+      type: "mobileAgentVideoStageTimings";
+      frames?: number;
+      seekMs?: number;
+      renderMs?: number;
+      jpegMs?: number;
+      ackMs?: number;
+      final?: boolean;
+    };
 
 export type VideoExportResult = {
   uri: string;
@@ -318,6 +328,27 @@ export class VideoExportController {
       }
       case "mobileAgentVideoError": {
         this.fail(message.message || "Video export failed.");
+        return;
+      }
+      case "mobileAgentVideoChromaBackend": {
+        // Fire-and-forget diagnostic from the chroma-key helper (no ack):
+        // surfaces which raster path the device actually used.
+        const backend = message.backend === "webgl" ? "webgl" : "cpu";
+        console.log(
+          `[chroma-key] backend=${backend}${backend === "cpu" && message.reason ? ` reason=${message.reason}` : ""}`,
+        );
+        return;
+      }
+      case "mobileAgentVideoStageTimings": {
+        // Fire-and-forget bottleneck probe from the recorder (no ack, never
+        // in the pacing chain). Only useful with frames > 0.
+        const frames = Math.round(Number(message.frames) || 0);
+        if (frames <= 0) return;
+        const per = (ms: unknown) => ((Number(ms) || 0) / frames).toFixed(1);
+        console.log(
+          `[video-export] stage ms/frame over ${frames} frames${message.final ? " (final)" : ""}: ` +
+            `seek=${per(message.seekMs)} render=${per(message.renderMs)} jpeg=${per(message.jpegMs)} ack=${per(message.ackMs)}`,
+        );
         return;
       }
     }

@@ -84,6 +84,15 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
     } catch (_) {}
   }
 
+  // Wall-clock probe for GPU/optimization work. Measurement only: the export
+  // timeline stays clocked by frame index, never by these durations.
+  function now() {
+    try {
+      if (typeof performance !== 'undefined' && performance.now) return performance.now();
+    } catch (_) {}
+    return Date.now();
+  }
+
   function clamp(value, min, max) {
     return Math.max(min, Math.min(max, value));
   }
@@ -1183,12 +1192,34 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
     var index = 0;
     var emitted = 0;
     var clockBase = (typeof segOffset === 'number' && segOffset > 0) ? segOffset : 0;
+    var stageN = 0;
+    var seekMs = 0;
+    var renderMs = 0;
+    var jpegMs = 0;
+    var ackMs = 0;
+
+    // Fire-and-forget per-stage averages for bottleneck hunting. No requestId
+    // on purpose: diagnostics must never hold the ack pacing hostage.
+    function reportStages(final) {
+      try {
+        post({
+          type: 'mobileAgentVideoStageTimings',
+          frames: stageN,
+          seekMs: Math.round(seekMs),
+          renderMs: Math.round(renderMs),
+          jpegMs: Math.round(jpegMs),
+          ackMs: Math.round(ackMs),
+          final: final ? true : false
+        });
+      } catch (_) {}
+    }
 
     function tick() {
       if (cancelled) { teardown(); return; }
       if (index >= frameCount) {
         sendOfflineAudio(clockBase).then(function () {
           if (cancelled) { teardown(); return; }
+          reportStages(true);
           post({ type: 'mobileAgentVideoDone', emitted: emitted });
           teardown();
         }).catch(function (error) {
@@ -1197,9 +1228,14 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
         return;
       }
       var t = clockBase + index / fps;
+      var frameStart = now();
       prepareSourceFrame(contract, t, fps).then(function () {
+        var afterSeek = now();
+        seekMs += afterSeek - frameStart;
         if (cancelled) return;
         if (!renderFrame(contract, canvas, ctx, t)) return;
+        var afterRender = now();
+        renderMs += afterRender - afterSeek;
         // Legacy scenes may call play() inside render(). Export is clocked by
         // frame index instead, so do not let playback advance between frames.
         pauseSourceVideos();
@@ -1210,11 +1246,16 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
           fail('Frame capture failed: ' + String((error && error.message) || error));
           return;
         }
+        var afterJpeg = now();
+        jpegMs += afterJpeg - afterRender;
         var comma = dataUrl.indexOf(',');
         var base64 = comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl;
         postAndWait({ type: 'mobileAgentVideoFrame', index: emitted, frameCount: frameCount, base64: base64 }).then(function () {
+          ackMs += now() - afterJpeg;
           emitted += 1;
           index += 1;
+          stageN += 1;
+          if (stageN % 120 === 0) reportStages(false);
           // Yield between frames. Timeline position depends only on the index,
           // not rendering speed, and only one JPEG crosses the bridge at a time.
           timers.push(setTimeout(tick, 0));

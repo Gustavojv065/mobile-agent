@@ -126,6 +126,9 @@ describe("VIDEO_EXPORT_SCRIPT native encoding", () => {
     expect(createVideoEncoder).not.toHaveBeenCalled();
     expect(messages.filter((m) => m.type === "mobileAgentVideoFrame")).toHaveLength(5);
     expect(messages.some((m) => m.type === "mobileAgentVideoCsd")).toBe(false);
+    const timings = messages.filter((m) => m.type === "mobileAgentVideoStageTimings");
+    expect(timings.length).toBeGreaterThanOrEqual(1);
+    expect(timings[timings.length - 1]).toMatchObject({ frames: 5, final: true });
   }, 15000);
 
   it("works when WebCodecs is unavailable", async () => {

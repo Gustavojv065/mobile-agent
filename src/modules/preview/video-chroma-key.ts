@@ -34,6 +34,23 @@ export type ChromaKeyOptions = {
   smoothness?: number;
   /** Ramp width of the despill (green-fringe removal). */
   spill?: number;
+  /**
+   * `'excess'` selects the green-excess key (exact port of the hand-rolled
+   * studio loop, key color ignored): opaque at green-excess <= 8, linear
+   * alpha ramp over 8..33, green capped at max(r,b)+6. Accepts a video
+   * element or a canvas (e.g. a pre-cropped frame) as the source.
+   */
+  mode?: "excess";
+  /**
+   * Optional source crop in source pixels (drawImage-style `sx, sy, sw, sh`).
+   * Keys straight from the video element with no intermediate canvas, so
+   * the key input never passes through an extra resample. Omit for the
+   * full source frame.
+   */
+  sx?: number;
+  sy?: number;
+  sw?: number;
+  sh?: number;
 };
 
 /** Starting points — tune per clip with previewScene stills, never ship blind. */
@@ -47,11 +64,43 @@ export const VIDEO_CHROMA_KEY_SCRIPT = `(function () {
   var offscreen = null;
   var glCanvas = null;
   var glState = null;
+  var loggedBackend = null;
+  var glUnavailableReason = 'uninitialized';
 
+  function noteBackend(value) {
+    if (loggedBackend === value) return;
+    loggedBackend = value;
+    var text = value === 'webgl' ? '[chroma-key] backend=webgl' : '[chroma-key] backend=cpu reason=' + glUnavailableReason;
+    try {
+      if (typeof console !== 'undefined' && console.log) console.log(text);
+    } catch (_) {}
+    // WebView console output is not forwarded to Metro: bridge the one-time
+    // signal so it shows in app logs on every host (export + preview).
+    try {
+      if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
+        window.ReactNativeWebView.postMessage(JSON.stringify(value === 'webgl'
+          ? { type: 'mobileAgentVideoChromaBackend', backend: 'webgl' }
+          : { type: 'mobileAgentVideoChromaBackend', backend: 'cpu', reason: glUnavailableReason }));
+      }
+    } catch (_) {}
+  }
+
+  // premultipliedAlpha:false is load-bearing: the keyed canvas is drawn
+  // over the scene with drawImage, which composites straight alpha. With
+  // the default premultiplied buffer this WebView composites keyed-out
+  // regions as opaque white instead of transparent.
+  var GL_ATTRS = { alpha: true, antialias: false, depth: false, stencil: false, premultipliedAlpha: false };
   // GLSL is whitespace-insensitive, so single-line sources keep the injected
   // string free of backslashes. ES 1.00 builtins only (GL ES 2.0 everywhere).
+  // uMode selects the key math: 0 = UV-distance (OBS port), 1 = green-excess
+  // (exact port of the hand-rolled studio loop: ex = g - max(r,b), opaque at
+  // ex <= 8, linear alpha ramp over 8..33, green capped at max(r,b)+6).
+  // uUvRect is the source crop in top-left-origin normalized coords
+  // (sx/VW, sy/VH, sw/VW, sh/VH); (0,0,1,1) samples the whole source.
+  // The Y flip accounts for UNPACK_FLIP_Y_WEBGL so scenes pass plain
+  // drawImage-style rects.
   var GL_VS = 'attribute vec2 aPos; varying vec2 vUv; void main() { vUv = vec2(aPos.x * 0.5 + 0.5, aPos.y * 0.5 + 0.5); gl_Position = vec4(aPos, 0.0, 1.0); }';
-  var GL_FS = 'precision mediump float; varying vec2 vUv; uniform sampler2D uVideo; uniform vec2 uKeyUv; uniform float uSimilarity; uniform float uSmoothness; uniform float uSpill; void main() { vec4 c = texture2D(uVideo, vUv); float u = c.r * -0.169 + c.g * -0.331 + c.b * 0.5; float v = c.r * 0.5 + c.g * -0.419 + c.b * -0.081; float dist = distance(vec2(u, v), uKeyUv); float base = dist - uSimilarity; float m = clamp(base / max(uSmoothness, 0.0001), 0.0, 1.0); m = m * m * sqrt(m); float s = clamp(base / max(uSpill, 0.0001), 0.0, 1.0); s = s * s * sqrt(s); float luma = c.r * 0.2126 + c.g * 0.7152 + c.b * 0.0722; vec3 rgb = vec3(luma) + (c.rgb - vec3(luma)) * s; gl_FragColor = vec4(rgb, m * c.a); }';
+  var GL_FS = 'precision mediump float; varying vec2 vUv; uniform sampler2D uVideo; uniform vec2 uKeyUv; uniform float uSimilarity; uniform float uSmoothness; uniform float uSpill; uniform float uMode; uniform vec4 uUvRect; void main() { vec2 uv = vec2(uUvRect.x + vUv.x * uUvRect.z, (1.0 - uUvRect.y - uUvRect.w) + vUv.y * uUvRect.w); vec4 c = texture2D(uVideo, uv); if (uMode > 0.5) { float ex = c.g - max(c.r, c.b); float a = 1.0 - clamp((ex - 8.0 / 255.0) * 255.0 / 25.0, 0.0, 1.0); float g = c.g; if (ex > 8.0 / 255.0) { g = min(c.g, max(c.r, c.b) + 6.0 / 255.0); } gl_FragColor = vec4(c.r, g, c.b, a * c.a); } else { float u = c.r * -0.169 + c.g * -0.331 + c.b * 0.5; float v = c.r * 0.5 + c.g * -0.419 + c.b * -0.081; float dist = distance(vec2(u, v), uKeyUv); float base = dist - uSimilarity; float m = clamp(base / max(uSmoothness, 0.0001), 0.0, 1.0); m = m * m * sqrt(m); float s = clamp(base / max(uSpill, 0.0001), 0.0, 1.0); s = s * s * sqrt(s); float luma = c.r * 0.2126 + c.g * 0.7152 + c.b * 0.0722; vec3 rgb = vec3(luma) + (c.rgb - vec3(luma)) * s; gl_FragColor = vec4(rgb, m * c.a); } }';
 
   function clamp01(value) {
     if (!(value > 0)) return 0;
@@ -106,28 +155,30 @@ export const VIDEO_CHROMA_KEY_SCRIPT = `(function () {
   // Lazy one-time GL setup. Returns the state object, or null when the GPU
   // path is unavailable (result cached — a failed init never retries, but a
   // per-frame upload failure falls back to CPU for that draw only).
+  // The reason is kept for the one-time backend log.
   function glContext() {
     if (glState !== null) return glState || null;
     glState = false;
     try {
-      if (typeof document === 'undefined' || !document.createElement) return null;
+      if (typeof document === 'undefined' || !document.createElement) { glUnavailableReason = 'no-document'; return null; }
       glCanvas = document.createElement('canvas');
       if (glCanvas.addEventListener) {
         glCanvas.addEventListener('webglcontextlost', function (e) {
           if (e && e.preventDefault) e.preventDefault();
+          glUnavailableReason = 'context-lost';
           glState = false;
         });
       }
-      var gl = glCanvas.getContext('webgl', { alpha: true, antialias: false, depth: false, stencil: false });
-      if (!gl) return null;
+      var gl = glCanvas.getContext('webgl', GL_ATTRS);
+      if (!gl) { glUnavailableReason = 'no-webgl-context'; return null; }
       var vs = glShader(gl, gl.VERTEX_SHADER, GL_VS);
       var fs = glShader(gl, gl.FRAGMENT_SHADER, GL_FS);
-      if (!vs || !fs) return null;
+      if (!vs || !fs) { glUnavailableReason = 'shader-compile'; return null; }
       var prog = gl.createProgram();
       gl.attachShader(prog, vs);
       gl.attachShader(prog, fs);
       gl.linkProgram(prog);
-      if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) return null;
+      if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) { glUnavailableReason = 'program-link'; return null; }
       gl.useProgram(prog);
       var buf = gl.createBuffer();
       gl.bindBuffer(gl.ARRAY_BUFFER, buf);
@@ -147,16 +198,20 @@ export const VIDEO_CHROMA_KEY_SCRIPT = `(function () {
         keyUv: gl.getUniformLocation(prog, 'uKeyUv'),
         similarity: gl.getUniformLocation(prog, 'uSimilarity'),
         smoothness: gl.getUniformLocation(prog, 'uSmoothness'),
-        spill: gl.getUniformLocation(prog, 'uSpill')
+        spill: gl.getUniformLocation(prog, 'uSpill'),
+        mode: gl.getUniformLocation(prog, 'uMode'),
+        uvRect: gl.getUniformLocation(prog, 'uUvRect')
       };
+      glUnavailableReason = '';
       return glState;
     } catch (_) {
       glState = false;
+      glUnavailableReason = 'exception';
       return null;
     }
   }
 
-  function drawKeyedGL(ctx, video, dx, dy, w, h, keyUv, similarity, smoothness, spill) {
+  function drawKeyedGL(ctx, video, dx, dy, w, h, keyUv, similarity, smoothness, spill, excess, uvRect) {
     var st = glContext();
     if (!st) return false;
     var gl = st.gl;
@@ -168,25 +223,40 @@ export const VIDEO_CHROMA_KEY_SCRIPT = `(function () {
       gl.viewport(0, 0, w, h);
       gl.bindTexture(gl.TEXTURE_2D, st.tex);
       gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, w, h, 0, gl.RGB, gl.UNSIGNED_BYTE, video);
+      // Unsized upload form: the only spec-clean overload for DOM sources
+      // (video/canvas are always exactly w x h at every call site).
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, video);
       gl.uniform1i(st.video, 0);
       gl.uniform2f(st.keyUv, keyUv.u, keyUv.v);
       gl.uniform1f(st.similarity, similarity);
       gl.uniform1f(st.smoothness, smoothness);
       gl.uniform1f(st.spill, spill);
+      gl.uniform1f(st.mode, excess ? 1 : 0);
+      gl.uniform4f(st.uvRect, uvRect[0], uvRect[1], uvRect[2], uvRect[3]);
       gl.bindBuffer(gl.ARRAY_BUFFER, st.buf);
       gl.enableVertexAttribArray(st.pos);
       gl.vertexAttribPointer(st.pos, 2, gl.FLOAT, false, 0, 0);
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+      // Replace semantics: the keyed layer must overwrite the target region,
+      // never composite over previous frames. Compositing over a stale
+      // keyed frame ghosts old edges into the new one (fringe/halo that
+      // builds up frame after frame); compositing over a fresh video blit
+      // shows the unkeyed footage through transparent pixels (green).
       // Same-task composite: safe with preserveDrawingBuffer false.
+      try { ctx.clearRect(dx, dy, w, h); } catch (_) {}
       ctx.drawImage(glCanvas, dx, dy);
-    } catch (_) {
+    } catch (e) {
+      try {
+        glUnavailableReason = 'draw-exception:' + String((e && e.message) || e).slice(0, 120);
+      } catch (_) {
+        glUnavailableReason = 'draw-exception';
+      }
       return false;
     }
     return true;
   }
 
-  function drawKeyedCpu(ctx, video, dx, dy, w, h, key, similarity, smoothness, spill) {
+  function drawKeyedCpu(ctx, video, dx, dy, w, h, key, similarity, smoothness, spill, src) {
     if (!offscreen) {
       if (typeof document === 'undefined' || !document.createElement) return false;
       offscreen = document.createElement('canvas');
@@ -198,7 +268,8 @@ export const VIDEO_CHROMA_KEY_SCRIPT = `(function () {
     var octx = offscreen.getContext('2d');
     if (!octx) return false;
     try {
-      octx.drawImage(video, 0, 0, w, h);
+      if (src) octx.drawImage(video, src[0], src[1], src[2], src[3], 0, 0, w, h);
+      else octx.drawImage(video, 0, 0, w, h);
     } catch (_) {
       return false;
     }
@@ -241,6 +312,62 @@ export const VIDEO_CHROMA_KEY_SCRIPT = `(function () {
       return false;
     }
     try {
+      // Replace, don't accumulate: see drawKeyedGL.
+      try { ctx.clearRect(dx, dy, w, h); } catch (_) {}
+      ctx.drawImage(offscreen, dx, dy);
+    } catch (_) {
+      return false;
+    }
+    return true;
+  }
+
+  // Exact port of the hand-rolled studio loop (green-excess key): opaque at
+  // ex <= 8, linear alpha ramp over 8..33, green capped at max(r,b)+6.
+  // Same offscreen/canvas plumbing as drawKeyedCpu, only the pixel math differs.
+  function drawKeyedCpuExcess(ctx, video, dx, dy, w, h, src) {
+    if (!offscreen) {
+      if (typeof document === 'undefined' || !document.createElement) return false;
+      offscreen = document.createElement('canvas');
+    }
+    if (offscreen.width !== w || offscreen.height !== h) {
+      offscreen.width = w;
+      offscreen.height = h;
+    }
+    var octx = offscreen.getContext('2d');
+    if (!octx) return false;
+    try {
+      if (src) octx.drawImage(video, src[0], src[1], src[2], src[3], 0, 0, w, h);
+      else octx.drawImage(video, 0, 0, w, h);
+    } catch (_) {
+      return false;
+    }
+    var img;
+    try {
+      img = octx.getImageData(0, 0, w, h);
+    } catch (_) {
+      return false;
+    }
+    var data = img.data;
+    var i, r, g, bl, ex, mx;
+    for (i = 0; i < data.length; i += 4) {
+      r = data[i];
+      g = data[i + 1];
+      bl = data[i + 2];
+      mx = r > bl ? r : bl;
+      ex = g - mx;
+      if (ex > 8) {
+        data[i + 3] = Math.round(255 * (1 - Math.min(1, (ex - 8) / 25)));
+        data[i + 1] = Math.min(g, mx + 6);
+      }
+    }
+    try {
+      octx.putImageData(img, 0, 0);
+    } catch (_) {
+      return false;
+    }
+    try {
+      // Replace, don't accumulate: see drawKeyedGL.
+      try { ctx.clearRect(dx, dy, w, h); } catch (_) {}
       ctx.drawImage(offscreen, dx, dy);
     } catch (_) {
       return false;
@@ -251,11 +378,14 @@ export const VIDEO_CHROMA_KEY_SCRIPT = `(function () {
   var api = {
     drawKeyed: function (ctx, video, dx, dy, dw, dh, opts) {
       if (!ctx || !video || !opts) return false;
-      if (video.readyState < 2) return false;
+      if (video.readyState !== undefined && video.readyState < 2) return false;
       var w = Math.floor(dw);
       var h = Math.floor(dh);
       if (!(w > 0) || !(h > 0)) return false;
-      var key = parseKeyColor(opts.key);
+      // Excess mode keys on green dominance directly (no key color needed);
+      // every other mode uses the UV-distance key color contract.
+      var excess = opts.mode === 'excess';
+      var key = excess ? { r: 0, g: 1, b: 0 } : parseKeyColor(opts.key);
       if (!key) return false;
       var similarity = numOr(opts.similarity, ${CHROMA_KEY_DEFAULTS.similarity});
       var smoothness = numOr(opts.smoothness, ${CHROMA_KEY_DEFAULTS.smoothness});
@@ -264,12 +394,27 @@ export const VIDEO_CHROMA_KEY_SCRIPT = `(function () {
       if (smoothness > 1) smoothness = 1;
       if (spill > 1) spill = 1;
       var keyUv = rgbToUv(key.r, key.g, key.b);
-      if (drawKeyedGL(ctx, video, dx, dy, w, h, keyUv, similarity, smoothness, spill)) {
+      // Optional source crop (drawImage-style rect in source pixels).
+      // Lets scenes key straight from the video element: no intermediate
+      // canvas, so the key input never passes through an extra resample.
+      var VW = video.videoWidth || video.width || w;
+      var VH = video.videoHeight || video.height || h;
+      var sx = typeof opts.sx === 'number' && opts.sx > 0 ? opts.sx : 0;
+      var sy = typeof opts.sy === 'number' && opts.sy > 0 ? opts.sy : 0;
+      var sw = typeof opts.sw === 'number' && opts.sw > 0 ? opts.sw : VW;
+      var sh = typeof opts.sh === 'number' && opts.sh > 0 ? opts.sh : VH;
+      var hasCrop = sx > 0 || sy > 0 || sw !== VW || sh !== VH;
+      var src = hasCrop ? [sx, sy, sw, sh] : null;
+      var uvRect = [sx / VW, sy / VH, sw / VW, sh / VH];
+      if (drawKeyedGL(ctx, video, dx, dy, w, h, keyUv, similarity, smoothness, spill, excess, uvRect)) {
         api.backend = 'webgl';
+        noteBackend('webgl');
         return true;
       }
-      if (drawKeyedCpu(ctx, video, dx, dy, w, h, key, similarity, smoothness, spill)) {
+      if (excess ? drawKeyedCpuExcess(ctx, video, dx, dy, w, h, src)
+                 : drawKeyedCpu(ctx, video, dx, dy, w, h, key, similarity, smoothness, spill, src)) {
         api.backend = 'cpu';
+        noteBackend('cpu');
         return true;
       }
       return false;

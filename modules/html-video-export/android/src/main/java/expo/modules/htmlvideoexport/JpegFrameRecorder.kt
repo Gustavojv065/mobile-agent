@@ -37,6 +37,19 @@ internal class JpegFrameRecorder(
   private var writtenFrames = 0
   private var eosReceived = false
   private val pixels = IntArray(width * height)
+  // Reused row scratch so the YUV conversion below issues one bulk put per
+  // plane row instead of ~500k absolute single-byte puts per frame.
+  private val lumaRow = ByteArray(width)
+  private val chromaRowU = ByteArray((width + 1) / 2)
+  private val chromaRowV = ByteArray((width + 1) / 2)
+  // Native-side bottleneck probe (logcat only, zero bridge traffic): splits
+  // each pushFrame into decode / input-wait / YUV convert / drain. Averages
+  // are logged every 100 frames plus a final summary at release.
+  private var timedFrames = 0
+  private var decodeNs = 0L
+  private var waitNs = 0L
+  private var yuvNs = 0L
+  private var drainNs = 0L
 
   fun begin() {
     android.util.Log.d("HtmlVideoExport", "beginFrames ${width}x${height}@${fps} build=native-yuv-v1")
@@ -77,6 +90,7 @@ internal class JpegFrameRecorder(
     require(index == submittedFrames) { "Expected frame $submittedFrames, received $index." }
 
     val bytes = Base64.decode(base64, Base64.DEFAULT)
+    val tDecode = System.nanoTime()
     val decoded = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
       ?: throw IllegalStateException("A frame could not be decoded from the page.")
     val source = if (decoded.width == width && decoded.height == height) {
@@ -84,8 +98,10 @@ internal class JpegFrameRecorder(
     } else {
       Bitmap.createScaledBitmap(decoded, width, height, true)
     }
+    decodeNs += System.nanoTime() - tDecode
 
     try {
+      val tWait = System.nanoTime()
       val deadline = SystemClock.elapsedRealtime() + 15_000
       var input = codec.dequeueInputBuffer(10_000)
       while (input < 0 && SystemClock.elapsedRealtime() < deadline) {
@@ -93,11 +109,14 @@ internal class JpegFrameRecorder(
         input = codec.dequeueInputBuffer(10_000)
       }
       check(input >= 0) { "Timed out waiting for a video input buffer." }
+      waitNs += System.nanoTime() - tWait
       val size = codec.getInputBuffer(input)?.capacity() ?: error("Missing AVC input buffer.")
       val image = codec.getInputImage(input)
         ?: error("This AVC encoder does not expose flexible YUV input images.")
       try {
+        val tYuv = System.nanoTime()
         writeYuv(source, image)
+        yuvNs += System.nanoTime() - tYuv
       } finally {
         image.close()
       }
@@ -107,7 +126,11 @@ internal class JpegFrameRecorder(
       // next image. Some encoders need multiple inputs before emitting output.
       // Waiting for output here would deadlock those encoders. Input-buffer
       // availability above supplies the bounded native backpressure instead.
+      val tDrain = System.nanoTime()
       drain(false)
+      drainNs += System.nanoTime() - tDrain
+      timedFrames += 1
+      if (timedFrames % 100 == 0) logNativeStages(false)
     } finally {
       if (source !== decoded) source.recycle()
       decoded.recycle()
@@ -151,29 +174,84 @@ internal class JpegFrameRecorder(
   private fun writeYuv(bitmap: Bitmap, image: android.media.Image) {
     bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
     val planes = image.planes
-    val origins = planes.map { it.buffer.position() }
-    for (y in 0 until height) {
-      for (x in 0 until width) {
-        val color = pixels[y * width + x]
+    // Bulk writes run on duplicates so the codec-facing buffer positions are
+    // never disturbed (the old code only ever used absolute puts).
+    val yDup = planes[0].buffer.duplicate()
+    val yBase = yDup.position()
+    val yRowStride = planes[0].rowStride
+    val yPixStride = planes[0].pixelStride
+    val uDup = planes[1].buffer.duplicate()
+    val uBase = uDup.position()
+    val uRowStride = planes[1].rowStride
+    val uPixStride = planes[1].pixelStride
+    val vDup = planes[2].buffer.duplicate()
+    val vBase = vDup.position()
+    val vRowStride = planes[2].rowStride
+    val vPixStride = planes[2].pixelStride
+    var y = 0
+    while (y < height) {
+      var x = 0
+      var rowOff = y * width
+      while (x < width) {
+        val color = pixels[rowOff + x]
         val r = (color shr 16) and 255
         val g = (color shr 8) and 255
         val b = color and 255
-        val luma = (((66 * r + 129 * g + 25 * b + 128) shr 8) + 16).coerceIn(0, 255)
-        planes[0].buffer.put(origins[0] + y * planes[0].rowStride + x * planes[0].pixelStride, luma.toByte())
-        if (x % 2 == 0 && y % 2 == 0) {
-          // Average chroma across the 2x2 block rather than subsampling one pixel.
-          var rr = 0; var gg = 0; var bb = 0
-          for (dy in 0..1) for (dx in 0..1) {
-            val c = pixels[(y + dy) * width + x + dx]
-            rr += (c shr 16) and 255; gg += (c shr 8) and 255; bb += c and 255
-          }
-          rr /= 4; gg /= 4; bb /= 4
-          val u = (((-38 * rr - 74 * gg + 112 * bb + 128) shr 8) + 128).coerceIn(0, 255)
-          val v = (((112 * rr - 94 * gg - 18 * bb + 128) shr 8) + 128).coerceIn(0, 255)
-          planes[1].buffer.put(origins[1] + (y / 2) * planes[1].rowStride + (x / 2) * planes[1].pixelStride, u.toByte())
-          planes[2].buffer.put(origins[2] + (y / 2) * planes[2].rowStride + (x / 2) * planes[2].pixelStride, v.toByte())
+        lumaRow[x] = ((((66 * r + 129 * g + 25 * b + 128) shr 8) + 16).coerceIn(0, 255)).toByte()
+        x += 1
+      }
+      if (yPixStride == 1) {
+        yDup.position(yBase + y * yRowStride)
+        yDup.put(lumaRow, 0, width)
+      } else {
+        var xx = 0
+        while (xx < width) {
+          yDup.put(yBase + y * yRowStride + xx * yPixStride, lumaRow[xx])
+          xx += 1
         }
       }
+      // Average chroma across the 2x2 block rather than subsampling one pixel.
+      val y2 = minOf(y + 1, height - 1)
+      var cx = 0
+      x = 0
+      while (x < width) {
+        val x2 = minOf(x + 1, width - 1)
+        val c00 = pixels[rowOff + x]
+        val c01 = pixels[rowOff + x2]
+        val c10 = pixels[y2 * width + x]
+        val c11 = pixels[y2 * width + x2]
+        val rr = (((c00 shr 16) and 255) + ((c01 shr 16) and 255) + ((c10 shr 16) and 255) + ((c11 shr 16) and 255)) / 4
+        val gg = (((c00 shr 8) and 255) + ((c01 shr 8) and 255) + ((c10 shr 8) and 255) + ((c11 shr 8) and 255)) / 4
+        val bb = ((c00 and 255) + (c01 and 255) + (c10 and 255) + (c11 and 255)) / 4
+        chromaRowU[cx] = ((((-38 * rr - 74 * gg + 112 * bb + 128) shr 8) + 128).coerceIn(0, 255)).toByte()
+        chromaRowV[cx] = ((((112 * rr - 94 * gg - 18 * bb + 128) shr 8) + 128).coerceIn(0, 255)).toByte()
+        cx += 1
+        x += 2
+      }
+      if (y % 2 == 0) {
+        val slot = y / 2
+        if (uPixStride == 1) {
+          uDup.position(uBase + slot * uRowStride)
+          uDup.put(chromaRowU, 0, cx)
+        } else {
+          var xx = 0
+          while (xx < cx) {
+            uDup.put(uBase + slot * uRowStride + xx * uPixStride, chromaRowU[xx])
+            xx += 1
+          }
+        }
+        if (vPixStride == 1) {
+          vDup.position(vBase + slot * vRowStride)
+          vDup.put(chromaRowV, 0, cx)
+        } else {
+          var xx = 0
+          while (xx < cx) {
+            vDup.put(vBase + slot * vRowStride + xx * vPixStride, chromaRowV[xx])
+            xx += 1
+          }
+        }
+      }
+      y += 1
     }
   }
 
@@ -221,6 +299,18 @@ internal class JpegFrameRecorder(
     }
   }
 
+  /** Per-100-frame native averages; final=true appends the run total. */
+  private fun logNativeStages(final: Boolean) {
+    val n = timedFrames
+    if (n <= 0) return
+    fun avg(ns: Long): String = "%.1f".format((ns / 1_000_000.0) / n)
+    android.util.Log.d(
+      "HtmlVideoExport",
+      "[video-export-native] stage ms/frame over $n frames${if (final) " (final)" else ""}: " +
+        "decode=${avg(decodeNs)} yuv=${avg(yuvNs)} inputwait=${avg(waitNs)} drain=${avg(drainNs)}",
+    )
+  }
+
   /** Writes one encoded buffer; returns true when it was the end-of-stream marker. */
   private fun writeOutput(codec: MediaCodec, muxer: MediaMuxer, outIndex: Int): Boolean {
     val buffer = codec.getOutputBuffer(outIndex) ?: run {
@@ -263,6 +353,9 @@ internal class JpegFrameRecorder(
     muxer = null
     muxerStarted = false
     if (finalizing && muxerError != null) throw muxerError
-    if (finalizing) android.util.Log.d("HtmlVideoExport", "finishFrames submitted=$submittedFrames written=$writtenFrames")
+    if (finalizing) {
+      logNativeStages(true)
+      android.util.Log.d("HtmlVideoExport", "finishFrames submitted=$submittedFrames written=$writtenFrames")
+    }
   }
 }

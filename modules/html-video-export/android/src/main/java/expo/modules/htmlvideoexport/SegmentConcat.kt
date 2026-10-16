@@ -75,6 +75,7 @@ object SegmentConcat {
           for (sel in selected) {
             extractor.selectTrack(sel.first)
           }
+          val current = slots ?: throw IllegalStateException("Segment track layout differs; cannot concatenate.")
           val buffer = ByteBuffer.allocateDirect(BUFFER_SIZE)
           val info = android.media.MediaCodec.BufferInfo()
           // Track the max end timestamp per slot for the next offset.
