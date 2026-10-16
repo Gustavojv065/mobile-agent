@@ -64,7 +64,7 @@ export function PluginImportDrawer({
       // Land on the installed list so the new plugin is visible at once.
       // (Pushing detail broke the back stack: back landed on the catalog
       // with nothing listed, needing a second back to reach this list.)
-      router.replace("/settings/plugins/connected" as never);
+      router.dismissTo("/settings/plugins/connected");
     } catch (pickError) {
       setError(
         pickError instanceof Error
@@ -90,7 +90,7 @@ export function PluginImportDrawer({
       await importPlugin(source, url.trim());
       setUrl("");
       onOpenChange(false);
-      router.replace("/settings/plugins/connected" as never);
+      router.dismissTo("/settings/plugins/connected");
     } catch (fetchError) {
       setError(
         fetchError instanceof Error

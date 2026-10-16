@@ -94,10 +94,10 @@ export default function PluginCatalogScreen() {
         <Button
           leftIcon={<ChevronLeft color={theme.text} size={16} />}
           onPress={() =>
-            router.replace(
-              (plugins.length > 0
+            router.dismissTo(
+              plugins.length > 0
                 ? "/settings/plugins/connected"
-                : "/settings") as never,
+                : "/settings",
             )
           }
           size="icon-xs"

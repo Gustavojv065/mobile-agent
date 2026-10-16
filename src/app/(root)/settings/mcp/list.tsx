@@ -106,7 +106,7 @@ export default function McpCatalogScreen() {
         url: preset.url,
       });
 
-      router.replace("/settings/mcp/connected" as never);
+      router.dismissTo("/settings/mcp/connected");
     } catch (connectError) {
       if (isMcpOAuthCanceledError(connectError)) return;
       setError(
@@ -216,7 +216,7 @@ export default function McpCatalogScreen() {
             key={setupPresetId ?? "custom"}
             onSaved={() => {
               setSetupDrawerOpen(false);
-              router.replace("/settings/mcp/connected" as never);
+              router.dismissTo("/settings/mcp/connected");
             }}
             presetId={setupPresetId ?? undefined}
             title="Set up MCP server"

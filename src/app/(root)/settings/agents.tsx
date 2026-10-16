@@ -64,7 +64,7 @@ export default function SettingsAgentsScreen() {
   const startChatWithAgent = async (agent: AgentConfig) => {
     try {
       await createConversation({ agentId: agent.id });
-      router.replace("/" as never);
+      router.dismissTo("/");
     } catch (actionError) {
       setError(
         actionError instanceof Error
@@ -83,7 +83,7 @@ export default function SettingsAgentsScreen() {
       <View className="flex-row items-center gap-sp-2">
         <Button
           leftIcon={<ChevronLeft color={theme.text} size={16} />}
-          onPress={() => router.replace("/settings" as never)}
+          onPress={() => router.dismissTo("/settings")}
           size="icon-xs"
           variant="ghost"
         />

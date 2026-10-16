@@ -22,7 +22,7 @@ export default function SettingsToolsScreen() {
         <Button
           leftIcon={<ChevronLeft color={theme.text} size={16} />}
           onPress={() => {
-            router.push("/settings");
+            router.dismissTo("/settings");
           }}
           size="icon-xs"
           variant="ghost"

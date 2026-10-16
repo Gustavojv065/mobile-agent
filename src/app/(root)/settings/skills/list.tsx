@@ -105,10 +105,10 @@ export default function SkillCatalogScreen() {
         <Button
           leftIcon={<ChevronLeft color={theme.text} size={16} />}
           onPress={() =>
-            router.replace(
-              (skills.length > 0
+            router.dismissTo(
+              skills.length > 0
                 ? "/settings/skills/connected"
-                : "/settings") as never,
+                : "/settings",
             )
           }
           size="icon-xs"

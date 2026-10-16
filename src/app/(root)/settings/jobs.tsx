@@ -343,7 +343,7 @@ export default function SettingsJobsScreen() {
       <View className="flex-row items-center gap-sp-2">
         <Button
           leftIcon={<ChevronLeft color={theme.text} size={16} />}
-          onPress={() => router.push("/settings")}
+          onPress={() => router.dismissTo("/settings")}
           size="icon-xs"
           variant="ghost"
         />

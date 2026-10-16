@@ -87,7 +87,7 @@ export function ChatImportDrawer({
       const conversation = await importConversationJson(content);
 
       await selectConversation(conversation.id);
-      router.push("/");
+      router.dismissTo("/");
 
       setContent(null);
       setPreviewTitle(null);

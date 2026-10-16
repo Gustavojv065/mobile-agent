@@ -82,7 +82,7 @@ function NotificationObserver() {
         callbacksRef.current
           .selectConversation(conversationId)
           .then(() => {
-            router.push("/");
+            router.dismissTo("/");
           })
           .catch(console.error);
       }
@@ -184,7 +184,7 @@ function InAppNotificationBanner() {
             if (currentConversation?.id !== inAppNotification.conversationId) {
               selectConversation(inAppNotification.conversationId)
                 .then(() => {
-                  router.push("/");
+                  router.dismissTo("/");
                 })
                 .catch(console.error);
             }

@@ -104,7 +104,7 @@ export function AppSidebar() {
     (conversationId: string) => {
       selectConversation(conversationId)
         .then(() => {
-          router.push("/");
+          router.dismissTo("/");
         })
         .catch(console.error);
     },
@@ -196,7 +196,7 @@ export function AppSidebar() {
                 onPress={() => {
                   createConversation()
                     .then(() => {
-                      router.push("/");
+                      router.dismissTo("/");
                     })
                     .catch(console.error);
                 }}
@@ -227,7 +227,10 @@ export function AppSidebar() {
                       />
                     }
                     onPress={() => {
-                      router.push("/library");
+                      if (pathname !== "/library") {
+                        router.dismissTo("/");
+                        router.push("/library");
+                      }
                     }}
                   >
                     <Text
@@ -255,7 +258,10 @@ export function AppSidebar() {
                       />
                     }
                     onPress={() => {
-                      router.push("/settings/agents");
+                      if (!agentsActive) {
+                        router.dismissTo("/");
+                        router.push("/settings/agents");
+                      }
                     }}
                   >
                     <Text
@@ -324,7 +330,10 @@ export function AppSidebar() {
                   />
                 }
                 onPress={() => {
-                  router.push("/settings");
+                  if (pathname !== "/settings") {
+                    router.dismissTo("/");
+                    router.push("/settings");
+                  }
                 }}
               >
                 Settings
