@@ -16,7 +16,9 @@ import { VIDEO_CHROMA_KEY_SCRIPT } from "@/modules/preview/video-chroma-key";
  *
  *  - Video: each frame is posted as a JPEG and encoded by native MediaCodec.
  *    The producer waits for native acknowledgement; slower devices take longer
- *    to export rather than silently dropping frames.
+ *    to export rather than silently dropping frames. Seeking/rendering the
+ *    next frame overlaps the native encode of the current one (depth-1
+ *    pipeline), but submissions stay strictly ordered.
  *  - Audio path (optional `audio` schedule): file cues (data-URI audio, inlined
  *    by the renderVideo tool) and synthesized cues are mixed in a WebAudio
  *    OfflineAudioContext, sent as continuous PCM16, AAC-encoded natively, and
@@ -82,15 +84,6 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
         window.ReactNativeWebView.postMessage(JSON.stringify(payload));
       }
     } catch (_) {}
-  }
-
-  // Wall-clock probe for GPU/optimization work. Measurement only: the export
-  // timeline stays clocked by frame index, never by these durations.
-  function now() {
-    try {
-      if (typeof performance !== 'undefined' && performance.now) return performance.now();
-    } catch (_) {}
-    return Date.now();
   }
 
   function clamp(value, min, max) {
@@ -1188,54 +1181,71 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
     }
   }
 
+  // Depth-1 export pipeline: while native encodes frame N (bridge wait),
+  // the page already seeks, renders, and captures frame N+1. Submissions
+  // stay strictly ordered (N+1 posts only after N is acknowledged), so the
+  // native order invariant, pacing, and failure behavior are unchanged —
+  // the page-side wait just overlaps the native-side wait instead of
+  // adding to it. At most one extra JPEG is ever held.
   function runNativeFrames(contract, canvas, ctx, fps, frameCount, segOffset) {
-    var index = 0;
+    var index = 0; // next frame to prepare (page work: seek/render/capture)
+    var sendIndex = 0; // next frame to submit (bridge work: postAndWait)
     var emitted = 0;
     var clockBase = (typeof segOffset === 'number' && segOffset > 0) ? segOffset : 0;
-    var stageN = 0;
-    var seekMs = 0;
-    var renderMs = 0;
-    var jpegMs = 0;
-    var ackMs = 0;
+    var ready = {}; // index -> base64 jpeg prepared ahead (at most one entry)
+    var preparing = false; // a single shared video element/canvas: one prepare at a time
+    var sending = false;
 
-    // Fire-and-forget per-stage averages for bottleneck hunting. No requestId
-    // on purpose: diagnostics must never hold the ack pacing hostage.
-    function reportStages(final) {
-      try {
-        post({
-          type: 'mobileAgentVideoStageTimings',
-          frames: stageN,
-          seekMs: Math.round(seekMs),
-          renderMs: Math.round(renderMs),
-          jpegMs: Math.round(jpegMs),
-          ackMs: Math.round(ackMs),
-          final: final ? true : false
-        });
-      } catch (_) {}
+    function finish() {
+      sendOfflineAudio(clockBase).then(function () {
+        if (cancelled) { teardown(); return; }
+        post({ type: 'mobileAgentVideoDone', emitted: emitted });
+        teardown();
+      }).catch(function (error) {
+        fail('Soundtrack export failed: ' + String((error && error.message) || error));
+      });
     }
 
-    function tick() {
-      if (cancelled) { teardown(); return; }
-      if (index >= frameCount) {
-        sendOfflineAudio(clockBase).then(function () {
-          if (cancelled) { teardown(); return; }
-          reportStages(true);
-          post({ type: 'mobileAgentVideoDone', emitted: emitted });
-          teardown();
-        }).catch(function (error) {
-          fail('Soundtrack export failed: ' + String((error && error.message) || error));
-        });
-        return;
-      }
-      var t = clockBase + index / fps;
-      var frameStart = now();
+    function next() {
+      if (cancelled) return;
+      maybeSend();
+      pump();
+    }
+
+    function maybeSend() {
+      if (cancelled || sending) return;
+      if (sendIndex >= frameCount) return;
+      var base64 = ready[sendIndex];
+      if (base64 === undefined) return;
+      sending = true;
+      postAndWait({ type: 'mobileAgentVideoFrame', index: emitted, frameCount: frameCount, base64: base64 }).then(function () {
+        sending = false;
+        delete ready[sendIndex];
+        emitted += 1;
+        sendIndex += 1;
+        if (sendIndex >= frameCount) { finish(); return; }
+        // Yield between frames. Timeline position depends only on the index,
+        // not rendering speed, and only one JPEG crosses the bridge at a time.
+        timers.push(setTimeout(next, 0));
+      }).catch(function (error) {
+        fail('Frame export failed: ' + String((error && error.message) || error));
+      });
+      // Overlap: prepare the next frame while native encodes this one.
+      pump();
+    }
+
+    function pump() {
+      if (cancelled || preparing) return;
+      if (index >= frameCount) return;
+      if (index > sendIndex + 1) return;
+      if (ready[index] !== undefined) return;
+      preparing = true;
+      var myIndex = index;
+      index += 1;
+      var t = clockBase + myIndex / fps;
       prepareSourceFrame(contract, t, fps).then(function () {
-        var afterSeek = now();
-        seekMs += afterSeek - frameStart;
-        if (cancelled) return;
-        if (!renderFrame(contract, canvas, ctx, t)) return;
-        var afterRender = now();
-        renderMs += afterRender - afterSeek;
+        if (cancelled) { preparing = false; return; }
+        if (!renderFrame(contract, canvas, ctx, t)) { preparing = false; return; }
         // Legacy scenes may call play() inside render(). Export is clocked by
         // frame index instead, so do not let playback advance between frames.
         pauseSourceVideos();
@@ -1243,31 +1253,22 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
         try {
           dataUrl = canvas.toDataURL('image/jpeg', 0.92);
         } catch (error) {
+          preparing = false;
           fail('Frame capture failed: ' + String((error && error.message) || error));
           return;
         }
-        var afterJpeg = now();
-        jpegMs += afterJpeg - afterRender;
         var comma = dataUrl.indexOf(',');
-        var base64 = comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl;
-        postAndWait({ type: 'mobileAgentVideoFrame', index: emitted, frameCount: frameCount, base64: base64 }).then(function () {
-          ackMs += now() - afterJpeg;
-          emitted += 1;
-          index += 1;
-          stageN += 1;
-          if (stageN % 120 === 0) reportStages(false);
-          // Yield between frames. Timeline position depends only on the index,
-          // not rendering speed, and only one JPEG crosses the bridge at a time.
-          timers.push(setTimeout(tick, 0));
-        }).catch(function (error) {
-          fail('Frame export failed: ' + String((error && error.message) || error));
-        });
+        ready[myIndex] = comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl;
+        preparing = false;
+        next();
       }).catch(function (error) {
+        preparing = false;
         fail('Source video preparation failed: ' + String((error && error.message) || error));
       });
     }
 
-    tick();
+    if (frameCount <= 0) { finish(); return; }
+    pump();
   }
 
   function bytesToBase64(bytes) {

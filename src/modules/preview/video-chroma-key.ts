@@ -64,26 +64,6 @@ export const VIDEO_CHROMA_KEY_SCRIPT = `(function () {
   var offscreen = null;
   var glCanvas = null;
   var glState = null;
-  var loggedBackend = null;
-  var glUnavailableReason = 'uninitialized';
-
-  function noteBackend(value) {
-    if (loggedBackend === value) return;
-    loggedBackend = value;
-    var text = value === 'webgl' ? '[chroma-key] backend=webgl' : '[chroma-key] backend=cpu reason=' + glUnavailableReason;
-    try {
-      if (typeof console !== 'undefined' && console.log) console.log(text);
-    } catch (_) {}
-    // WebView console output is not forwarded to Metro: bridge the one-time
-    // signal so it shows in app logs on every host (export + preview).
-    try {
-      if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
-        window.ReactNativeWebView.postMessage(JSON.stringify(value === 'webgl'
-          ? { type: 'mobileAgentVideoChromaBackend', backend: 'webgl' }
-          : { type: 'mobileAgentVideoChromaBackend', backend: 'cpu', reason: glUnavailableReason }));
-      }
-    } catch (_) {}
-  }
 
   // premultipliedAlpha:false is load-bearing: the keyed canvas is drawn
   // over the scene with drawImage, which composites straight alpha. With
@@ -155,30 +135,28 @@ export const VIDEO_CHROMA_KEY_SCRIPT = `(function () {
   // Lazy one-time GL setup. Returns the state object, or null when the GPU
   // path is unavailable (result cached — a failed init never retries, but a
   // per-frame upload failure falls back to CPU for that draw only).
-  // The reason is kept for the one-time backend log.
   function glContext() {
     if (glState !== null) return glState || null;
     glState = false;
     try {
-      if (typeof document === 'undefined' || !document.createElement) { glUnavailableReason = 'no-document'; return null; }
+      if (typeof document === 'undefined' || !document.createElement) return null;
       glCanvas = document.createElement('canvas');
       if (glCanvas.addEventListener) {
         glCanvas.addEventListener('webglcontextlost', function (e) {
           if (e && e.preventDefault) e.preventDefault();
-          glUnavailableReason = 'context-lost';
           glState = false;
         });
       }
       var gl = glCanvas.getContext('webgl', GL_ATTRS);
-      if (!gl) { glUnavailableReason = 'no-webgl-context'; return null; }
+      if (!gl) return null;
       var vs = glShader(gl, gl.VERTEX_SHADER, GL_VS);
       var fs = glShader(gl, gl.FRAGMENT_SHADER, GL_FS);
-      if (!vs || !fs) { glUnavailableReason = 'shader-compile'; return null; }
+      if (!vs || !fs) return null;
       var prog = gl.createProgram();
       gl.attachShader(prog, vs);
       gl.attachShader(prog, fs);
       gl.linkProgram(prog);
-      if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) { glUnavailableReason = 'program-link'; return null; }
+      if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) return null;
       gl.useProgram(prog);
       var buf = gl.createBuffer();
       gl.bindBuffer(gl.ARRAY_BUFFER, buf);
@@ -202,11 +180,9 @@ export const VIDEO_CHROMA_KEY_SCRIPT = `(function () {
         mode: gl.getUniformLocation(prog, 'uMode'),
         uvRect: gl.getUniformLocation(prog, 'uUvRect')
       };
-      glUnavailableReason = '';
       return glState;
     } catch (_) {
       glState = false;
-      glUnavailableReason = 'exception';
       return null;
     }
   }
@@ -245,12 +221,7 @@ export const VIDEO_CHROMA_KEY_SCRIPT = `(function () {
       // Same-task composite: safe with preserveDrawingBuffer false.
       try { ctx.clearRect(dx, dy, w, h); } catch (_) {}
       ctx.drawImage(glCanvas, dx, dy);
-    } catch (e) {
-      try {
-        glUnavailableReason = 'draw-exception:' + String((e && e.message) || e).slice(0, 120);
-      } catch (_) {
-        glUnavailableReason = 'draw-exception';
-      }
+    } catch (_) {
       return false;
     }
     return true;
@@ -408,13 +379,11 @@ export const VIDEO_CHROMA_KEY_SCRIPT = `(function () {
       var uvRect = [sx / VW, sy / VH, sw / VW, sh / VH];
       if (drawKeyedGL(ctx, video, dx, dy, w, h, keyUv, similarity, smoothness, spill, excess, uvRect)) {
         api.backend = 'webgl';
-        noteBackend('webgl');
         return true;
       }
       if (excess ? drawKeyedCpuExcess(ctx, video, dx, dy, w, h, src)
                  : drawKeyedCpu(ctx, video, dx, dy, w, h, key, similarity, smoothness, spill, src)) {
         api.backend = 'cpu';
-        noteBackend('cpu');
         return true;
       }
       return false;

@@ -42,14 +42,6 @@ internal class JpegFrameRecorder(
   private val lumaRow = ByteArray(width)
   private val chromaRowU = ByteArray((width + 1) / 2)
   private val chromaRowV = ByteArray((width + 1) / 2)
-  // Native-side bottleneck probe (logcat only, zero bridge traffic): splits
-  // each pushFrame into decode / input-wait / YUV convert / drain. Averages
-  // are logged every 100 frames plus a final summary at release.
-  private var timedFrames = 0
-  private var decodeNs = 0L
-  private var waitNs = 0L
-  private var yuvNs = 0L
-  private var drainNs = 0L
 
   fun begin() {
     android.util.Log.d("HtmlVideoExport", "beginFrames ${width}x${height}@${fps} build=native-yuv-v1")
@@ -90,7 +82,6 @@ internal class JpegFrameRecorder(
     require(index == submittedFrames) { "Expected frame $submittedFrames, received $index." }
 
     val bytes = Base64.decode(base64, Base64.DEFAULT)
-    val tDecode = System.nanoTime()
     val decoded = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
       ?: throw IllegalStateException("A frame could not be decoded from the page.")
     val source = if (decoded.width == width && decoded.height == height) {
@@ -98,10 +89,8 @@ internal class JpegFrameRecorder(
     } else {
       Bitmap.createScaledBitmap(decoded, width, height, true)
     }
-    decodeNs += System.nanoTime() - tDecode
 
     try {
-      val tWait = System.nanoTime()
       val deadline = SystemClock.elapsedRealtime() + 15_000
       var input = codec.dequeueInputBuffer(10_000)
       while (input < 0 && SystemClock.elapsedRealtime() < deadline) {
@@ -109,14 +98,11 @@ internal class JpegFrameRecorder(
         input = codec.dequeueInputBuffer(10_000)
       }
       check(input >= 0) { "Timed out waiting for a video input buffer." }
-      waitNs += System.nanoTime() - tWait
       val size = codec.getInputBuffer(input)?.capacity() ?: error("Missing AVC input buffer.")
       val image = codec.getInputImage(input)
         ?: error("This AVC encoder does not expose flexible YUV input images.")
       try {
-        val tYuv = System.nanoTime()
         writeYuv(source, image)
-        yuvNs += System.nanoTime() - tYuv
       } finally {
         image.close()
       }
@@ -126,11 +112,7 @@ internal class JpegFrameRecorder(
       // next image. Some encoders need multiple inputs before emitting output.
       // Waiting for output here would deadlock those encoders. Input-buffer
       // availability above supplies the bounded native backpressure instead.
-      val tDrain = System.nanoTime()
       drain(false)
-      drainNs += System.nanoTime() - tDrain
-      timedFrames += 1
-      if (timedFrames % 100 == 0) logNativeStages(false)
     } finally {
       if (source !== decoded) source.recycle()
       decoded.recycle()
@@ -299,18 +281,6 @@ internal class JpegFrameRecorder(
     }
   }
 
-  /** Per-100-frame native averages; final=true appends the run total. */
-  private fun logNativeStages(final: Boolean) {
-    val n = timedFrames
-    if (n <= 0) return
-    fun avg(ns: Long): String = "%.1f".format((ns / 1_000_000.0) / n)
-    android.util.Log.d(
-      "HtmlVideoExport",
-      "[video-export-native] stage ms/frame over $n frames${if (final) " (final)" else ""}: " +
-        "decode=${avg(decodeNs)} yuv=${avg(yuvNs)} inputwait=${avg(waitNs)} drain=${avg(drainNs)}",
-    )
-  }
-
   /** Writes one encoded buffer; returns true when it was the end-of-stream marker. */
   private fun writeOutput(codec: MediaCodec, muxer: MediaMuxer, outIndex: Int): Boolean {
     val buffer = codec.getOutputBuffer(outIndex) ?: run {
@@ -353,9 +323,6 @@ internal class JpegFrameRecorder(
     muxer = null
     muxerStarted = false
     if (finalizing && muxerError != null) throw muxerError
-    if (finalizing) {
-      logNativeStages(true)
-      android.util.Log.d("HtmlVideoExport", "finishFrames submitted=$submittedFrames written=$writtenFrames")
-    }
+    if (finalizing) android.util.Log.d("HtmlVideoExport", "finishFrames submitted=$submittedFrames written=$writtenFrames")
   }
 }

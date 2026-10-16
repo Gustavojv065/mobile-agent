@@ -432,27 +432,6 @@ describe("VIDEO_CHROMA_KEY_SCRIPT", () => {
     expect(api.backend).toBe("cpu");
   });
 
-  it("bridges the backend once per transition via postMessage", () => {
-    const posted: unknown[] = [];
-    const api = installStubs();
-    (globalThis.window as unknown as Record<string, unknown>).ReactNativeWebView = {
-      postMessage: (data: string) => {
-        posted.push(JSON.parse(data));
-      },
-    };
-    const main = makeCanvas(2, 2);
-    const video = { readyState: 2, __frame: solidFrame(2, 2, 0, 255, 0) };
-    expect(api.drawKeyed(main.getContext(), video, 0, 0, 2, 2, { key: "#00ff00" })).toBe(
-      true,
-    );
-    expect(api.drawKeyed(main.getContext(), video, 0, 0, 2, 2, { key: "#00ff00" })).toBe(
-      true,
-    );
-    expect(posted).toEqual([
-      { type: "mobileAgentVideoChromaBackend", backend: "cpu", reason: "no-webgl-context" },
-    ]);
-  });
-
   it("keys green-excess on the CPU path with the studio ramp", () => {
     const api = installStubs();
     const main = makeCanvas(3, 1);

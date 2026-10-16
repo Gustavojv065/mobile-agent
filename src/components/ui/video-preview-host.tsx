@@ -273,18 +273,6 @@ export function ScenePreviewHost() {
       } catch {
         return;
       }
-      // Fire-and-forget chroma-key diagnostic (not part of the preview
-      // protocol): surfaces the raster path without touching job state.
-      if (
-        (message as { type?: unknown }).type === "mobileAgentVideoChromaBackend"
-      ) {
-        const detail = message as unknown as { backend?: unknown; reason?: unknown };
-        const backend = detail.backend === "webgl" ? "webgl" : "cpu";
-        console.log(
-          `[chroma-key] backend=${backend}${backend === "cpu" && typeof detail.reason === "string" && detail.reason ? ` reason=${detail.reason}` : ""}`,
-        );
-        return;
-      }
       if (
         message.type === "mobileAgentPreviewStarted" ||
         message.type === "mobileAgentPreviewFrame" ||

@@ -86,60 +86,6 @@ describe("VideoExportController — H.264 (GPU) path", () => {
   });
 });
 
-describe("VideoExportController — chroma-key backend diagnostic", () => {
-  it("logs the backend signal without disturbing the export", async () => {
-    const module = fakeModule();
-    const onError = vi.fn();
-    const onResult = vi.fn();
-    const controller = new VideoExportController({
-      outputPath: "file:///cache/video.mp4",
-      module,
-      onProgress: vi.fn(),
-      onFinishing: vi.fn(),
-      onResult,
-      onError,
-    });
-
-    post(controller, { type: "mobileAgentVideoConfig", width: 640, height: 360, fps: 24, frameCount: 1, duration: 1 });
-    post(controller, { type: "mobileAgentVideoChromaBackend", backend: "webgl" });
-    post(controller, { type: "mobileAgentVideoFrame", index: 0, frameCount: 1, base64: "/9j/4AAQ==" });
-    post(controller, { type: "mobileAgentVideoChromaBackend", backend: "cpu", reason: "no-webgl-context" });
-    post(controller, { type: "mobileAgentVideoDone", emitted: 1 });
-    await controller.whenIdle();
-
-    expect(module.pushJpegFrame).toHaveBeenCalledTimes(1);
-    expect(module.finish).toHaveBeenCalledTimes(1);
-    expect(onResult).toHaveBeenCalledTimes(1);
-    expect(onError).not.toHaveBeenCalled();
-  });
-
-  it("logs stage timings without disturbing the export", async () => {
-    const module = fakeModule();
-    const onError = vi.fn();
-    const onResult = vi.fn();
-    const controller = new VideoExportController({
-      outputPath: "file:///cache/video.mp4",
-      module,
-      onProgress: vi.fn(),
-      onFinishing: vi.fn(),
-      onResult,
-      onError,
-    });
-
-    post(controller, { type: "mobileAgentVideoConfig", width: 640, height: 360, fps: 24, frameCount: 1, duration: 1 });
-    post(controller, { type: "mobileAgentVideoStageTimings", frames: 120, seekMs: 600, renderMs: 1200, jpegMs: 2400, ackMs: 6000 });
-    post(controller, { type: "mobileAgentVideoFrame", index: 0, frameCount: 1, base64: "/9j/4AAQ==" });
-    post(controller, { type: "mobileAgentVideoStageTimings", frames: 0 });
-    post(controller, { type: "mobileAgentVideoDone", emitted: 1 });
-    await controller.whenIdle();
-
-    expect(module.pushJpegFrame).toHaveBeenCalledTimes(1);
-    expect(module.finish).toHaveBeenCalledTimes(1);
-    expect(onResult).toHaveBeenCalledTimes(1);
-    expect(onError).not.toHaveBeenCalled();
-  });
-});
-
 describe("VideoExportController — JPEG fallback path", () => {
   it("lazily starts the frame encoder and pushes decoded frames", async () => {
     const module = fakeModule();

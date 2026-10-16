@@ -280,26 +280,42 @@ Images and video clips in scenes (user-provided visuals):
   (poster at a few timestamps) so framing and motion match the footage.
 - Chroma key (green/blue screen): a clip shot against a flat screen is
   keyed at draw time through the in-page helper (present in every render
-  and preview page — no tool call):
+  and preview page — no tool call). Never hand-roll a `getImageData`
+  chroma loop: the helper keys on the GPU (WebGL shader, zero pixel
+  readback, ~4 ms/frame at 720p) and falls back to an exact CPU loop per
+  draw where WebGL is missing — same call, same pixels either way:
   `window.__mobileAgentChromaKey.drawKeyed(ctx, video, dx, dy, dw, dh,
-  { key, similarity, smoothness, spill })`. It paints the keyed frame onto
-  the scene canvas and returns true; on false (video not ready, bad key
-  color) fall back to a plain `drawImage` so the scene never blanks.
-  The helper keys on the GPU (WebGL shader, zero pixel readback) and falls
-  back to a CPU pixel loop per draw where WebGL is missing — same call,
-  same params either way. `key` is strict `#rrggbb` (`#00ff00` green, `#0000ff` blue — anything
-  else is rejected); `similarity` (default 0.35) is the UV-distance cut
-  threshold, `smoothness` (default 0.1) the edge ramp, `spill` (default
-  0.15) the green-fringe removal. Defaults are starting points, not
-  answers: sample the screen color with `getVideoFrame`, set `key` to it,
-  render `previewScene` stills, then adjust (raised `similarity` eats
-  screen shadows, raised `smoothness` softens halos, raised `spill` kills
-  fringe on hair/edges) and re-check after every change. Limits:
-  wrinkled/shadowed screens key unevenly, heavy compression fringes (push
-  `spill` up), and a subject wearing the screen color is unkeyable —
-  detect it from the stills and say so instead of shipping holes. One
-  keyed clip per scene unless a device measurement clears more (measure
-  GPU vs CPU via sustained-frame cost on a real render, not a still).
+  opts)` paints the keyed frame onto the scene canvas and returns true;
+  on false (video not ready, bad key color) fall back to a plain
+  `drawImage` so the scene never blanks. `window.__mobileAgentChromaKey.backend`
+  (`'webgl'` | `'cpu'`) tells you which path the last draw took. Two modes:
+  - UV-distance (default): `key` strict `#rrggbb` (`#00ff00` green,
+    `#0000ff` blue — anything else is rejected); `similarity` (default
+    0.35) is the UV-distance cut threshold, `smoothness` (default 0.1)
+    the edge ramp, `spill` (default 0.15) the green-fringe removal.
+  - Green-excess (`mode: "excess"`, key color ignored): opaque at
+    green-excess <= 8 with a linear alpha ramp over 8..33 and green
+    capped at max(r,b)+6 — the standard hand-rolled studio loop,
+    pixel-identical on the CPU path and GPU-accelerated. Prefer it when
+    the footage keys by green dominance rather than a precise screen
+    color.
+  Key straight from the video element with a source rect (`sx, sy, sw,
+  sh` in source pixels, e.g. `{ mode: "excess", sx: 0, sy: 0, sw: 1660,
+  sh: 1000 }`) — never pre-blit the frame into a temp canvas first: an
+  extra canvas generation resamples edge pixels and the key input
+  silently changes (fringe/halo no parameter can fix). The helper
+  replaces the target region (it clears before drawing), so never draw
+  the raw video into that target canvas first — the raw frame would show
+  through transparent pixels. Tune from stills: sample the screen color
+  with `getVideoFrame`, render `previewScene` stills, then adjust
+  (raised `similarity` eats screen shadows, raised `smoothness` softens
+  halos, raised `spill` kills fringe on hair/edges) and re-check after
+  every change. Limits: wrinkled/shadowed screens key unevenly, heavy
+  compression fringes (push `spill` up), and a subject wearing the screen
+  color is unkeyable — detect it from the stills and say so instead of
+  shipping holes. One keyed clip per scene unless a device measurement
+  clears more (measure GPU vs CPU via sustained-frame cost on a real
+  render, not a still).
 
 Synth cues (`synth.kind`):
 
@@ -632,8 +648,10 @@ inside one canvas scene.
       property from `level`/`lowAt`/`beatPulse`/`beats` instead of ignoring the
       soundtrack (for generated synth/drums beds the live `audio` argument
       already reflects them — no tool call needed)
-- [ ] if the scene keys a green/blue screen: sampled the screen color with
-      `getVideoFrame`, tuned `similarity`/`smoothness`/`spill` from
+- [ ] if the scene keys a green/blue screen: used `drawKeyed` (never a
+      hand-rolled `getImageData` loop, never a temp-canvas pre-blit —
+      key straight from the video with a source rect), sampled the
+      screen color with `getVideoFrame`, tuned params from
       `previewScene` stills (no eaten subject, no glowing fringe), one keyed
       clip max unless a device measurement cleared more
 - [ ] if the render failed: read the error cause (renderer crash means

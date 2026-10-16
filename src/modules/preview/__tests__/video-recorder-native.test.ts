@@ -126,9 +126,6 @@ describe("VIDEO_EXPORT_SCRIPT native encoding", () => {
     expect(createVideoEncoder).not.toHaveBeenCalled();
     expect(messages.filter((m) => m.type === "mobileAgentVideoFrame")).toHaveLength(5);
     expect(messages.some((m) => m.type === "mobileAgentVideoCsd")).toBe(false);
-    const timings = messages.filter((m) => m.type === "mobileAgentVideoStageTimings");
-    expect(timings.length).toBeGreaterThanOrEqual(1);
-    expect(timings[timings.length - 1]).toMatchObject({ frames: 5, final: true });
   }, 15000);
 
   it("works when WebCodecs is unavailable", async () => {
@@ -206,5 +203,40 @@ describe("VIDEO_EXPORT_SCRIPT native encoding", () => {
     await vi.waitFor(() => expect(messages.filter((m) => m.type === "mobileAgentVideoFrame")).toHaveLength(1));
     cancel();
     finishSeek?.(); // Release any second-frame seek started before cancellation.
+  });
+
+  it("prepares the next frame while the current one awaits native ack", async () => {
+    const events = new Map<string, () => void>();
+    const seeks: number[] = [];
+    let time = 0.5;
+    let finishSeek: (() => void) | undefined;
+    const video = {
+      duration: 1, readyState: 2, seeking: false, loop: false,
+      pause() {},
+      get currentTime() { return time; },
+      set currentTime(value: number) {
+        time = value;
+        seeks.push(value);
+        video.seeking = true;
+        finishSeek = () => { video.seeking = false; events.get("seeked")?.(); };
+      },
+      addEventListener(name: string, listener: () => void) { events.set(name, listener); },
+      removeEventListener(name: string) { events.delete(name); },
+    };
+    const { messages, start, consume, cancel } = installStubs({ video, autoConsume: false });
+    start();
+    await vi.waitFor(() => expect(finishSeek).toBeDefined());
+    finishSeek!(); // Frame 0 seek done -> frame 0 posts, still unacked.
+    await vi.waitFor(() => expect(messages.filter((m) => m.type === "mobileAgentVideoFrame")).toHaveLength(1));
+    // Frame 0 is unacknowledged, yet the pipeline must already seek frame 1.
+    await vi.waitFor(() => expect(seeks).toEqual([0, 0.2]));
+    expect(messages.filter((m) => m.type === "mobileAgentVideoFrame")).toHaveLength(1);
+    const first = messages.find((m) => m.type === "mobileAgentVideoFrame")!;
+    consume(Number(first.requestId)); // Ack frame 0.
+    finishSeek!(); // Frame 1 seek done -> posts immediately, already prepared.
+    await vi.waitFor(() => expect(messages.filter((m) => m.type === "mobileAgentVideoFrame")).toHaveLength(2));
+    expect(messages.filter((m) => m.type === "mobileAgentVideoFrame").map((m) => m.index)).toEqual([0, 1]);
+    cancel();
+    finishSeek?.(); // Release any frame-2 seek started before cancellation.
   });
 });
