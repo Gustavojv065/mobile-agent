@@ -734,11 +734,20 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
   function scheduleSynthCue(handle, cue, startAt, endAt, out) {
     var s = cue.synth;
     var i;
+    // absStart anchors note/hit grids to the ORIGINAL cue when a derived
+    // segment cue re-roots the window: surviving events keep exact timing,
+    // only events already finished before the window are skipped. A
+    // percussive event straddling the window edge re-articulates at the
+    // edge (masked by the segment seam fade); sustained voices hold exact
+    // steady state via the instant attack on trimmed starts.
+    var gridBase = (typeof cue.absStart === 'number') ? cue.absStart : startAt;
     if (s.kind === 'tone') {
       for (i = 0; i < s.freqs.length; i += 1) {
-        var nStart = startAt + i * s.noteDur;
-        if (nStart >= endAt) break;
-        schedulePluck(handle, s, s.freqs[i], nStart, Math.min(endAt, nStart + s.noteDur + s.release), out);
+        var nStartAbs = gridBase + i * s.noteDur;
+        if (nStartAbs >= endAt) break;
+        if (nStartAbs + s.noteDur + s.release <= startAt) continue;
+        var nStart = Math.max(startAt, nStartAbs);
+        schedulePluck(handle, s, s.freqs[i], nStart, Math.min(endAt, nStartAbs + s.noteDur + s.release), out);
       }
     } else if (s.kind === 'pad') {
       for (i = 0; i < s.freqs.length; i += 1) {
@@ -748,14 +757,60 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
       scheduleNoiseWash(handle, s, startAt, endAt, out);
     } else if (s.kind === 'drums') {
       for (i = 0; i < s.hits.length; i += 1) {
-        var hitAt = startAt + s.hits[i].at;
-        if (hitAt >= endAt) break;
+        var hitAbs = gridBase + s.hits[i].at;
+        if (hitAbs >= endAt) break;
+        var hitAt = Math.max(startAt, hitAbs);
         scheduleDrumHit(handle, s, s.hits[i].hit, hitAt, out);
       }
     }
   }
 
-  function scheduleAudioCue(handle, cue, t0) {
+  // Slice of an audio cue for one export segment [segStart, segEnd).
+  // Returns null when the cue does not overlap the segment. The derived cue
+  // is scheduled at t0 = 0 with segment-relative times, keeping every time
+  // non-negative (Web Audio throws on negative schedule times): absolute
+  // grids (note/hit indexing, duck ranges, file offsets) shift by the sliced
+  // amount, sliced edges get near-instant fades, and sustained voices hold
+  // exact steady state via near-zero attack on trimmed starts.
+  function deriveSegmentCue(cue, segStart, segEnd) {
+    var cueEnd = cue.start + cue.duration;
+    if (!(cueEnd > segStart) || !(cue.start < segEnd)) return null;
+    var o0 = Math.max(cue.start, segStart);
+    var o1 = Math.min(cueEnd, segEnd);
+    var shift = o0 - cue.start;
+    var out = {};
+    var k;
+    for (k in cue) {
+      if (Object.prototype.hasOwnProperty.call(cue, k)) out[k] = cue[k];
+    }
+    out.start = o0 - segStart;
+    out.duration = Math.max(0.001, o1 - o0);
+    out.fadeIn = (o0 > cue.start) ? 0.005 : cue.fadeIn;
+    out.fadeOut = (o1 < cueEnd) ? 0.005 : cue.fadeOut;
+    if (cue.kind === 'file' && typeof cue.offset === 'number') {
+      out.offset = cue.offset + shift;
+    }
+    if (cue.kind === 'synth' && cue.synth && typeof cue.synth === 'object') {
+      var s = {};
+      for (k in cue.synth) {
+        if (Object.prototype.hasOwnProperty.call(cue.synth, k)) s[k] = cue.synth[k];
+      }
+      if (o0 > cue.start) s.attack = 0.005;
+      out.synth = s;
+      // Absolute cue start in segment frame (may be negative): anchors the
+      // note/hit grid so surviving events keep exact timing.
+      out.absStart = cue.start - segStart;
+    }
+    if (Array.isArray(cue.duckRanges)) {
+      out.duckRanges = cue.duckRanges.map(function (r) {
+        return { start: r.start - shift, end: r.end - shift };
+      });
+    }
+    out.sourceCue = cue;
+    return out;
+  }
+
+  function scheduleAudioCue(handle, cue, t0, entryOverride) {
     var ctx = handle.context;
     var startAt = t0 + cue.start;
     var endAt = startAt + cue.duration;
@@ -784,9 +839,11 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
       dlySend.connect(handle.fxDelay);
     }
     if (cue.kind === 'file') {
-      var entry = null;
-      for (var i = 0; i < handle.decoded.length; i += 1) {
-        if (handle.decoded[i].cue === cue) { entry = handle.decoded[i]; break; }
+      var entry = entryOverride || null;
+      if (!entry) {
+        for (var i = 0; i < handle.decoded.length; i += 1) {
+          if (handle.decoded[i].cue === cue) { entry = handle.decoded[i]; break; }
+        }
       }
       if (!entry) return;
       var src = ctx.createBufferSource();
@@ -861,10 +918,12 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
 
   // Export sound in sample time, not wall time. Rendering a frame may take
   // seconds without dropping an audio callback or stretching AAC timestamps.
-  function prepareOfflineAudio(schedule, duration) {
+  function prepareOfflineAudio(schedule, duration, segOffset, segLen) {
     var Offline = window.OfflineAudioContext || window.webkitOfflineAudioContext;
     if (!Offline) return Promise.reject(new Error('Offline audio rendering is unavailable on this device.'));
-    var context = new Offline(2, Math.ceil(duration * 48000), 48000);
+    var offset = (typeof segOffset === 'number' && segOffset > 0) ? segOffset : 0;
+    var length = (typeof segLen === 'number' && segLen > 0) ? Math.min(segLen, Math.max(0.5, duration - offset)) : duration;
+    var context = new Offline(2, Math.ceil(length * 48000), 48000);
     var master = context.createGain();
     master.gain.value = schedule.master;
     master.connect(context.destination);
@@ -874,9 +933,13 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
       fxReverb: buses.fxReverb, fxDelay: buses.fxDelay,
       voices: 0, voiceOverflow: false, offlineBuffer: null, features: null
     };
+    var segEnd = offset + length;
+    function overlaps(cue) {
+      return (cue.start + cue.duration > offset) && (cue.start < segEnd);
+    }
     var chain = Promise.resolve();
     schedule.cues.forEach(function (cue) {
-      if (cue.kind !== 'file') return;
+      if (cue.kind !== 'file' || !overlaps(cue)) return;
       chain = chain.then(function () {
         if (cancelled) throw new Error('Video export cancelled.');
         return fetch(cue.src).then(function (response) {
@@ -888,7 +951,23 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
     });
     return chain.then(function () {
       if (cancelled) throw new Error('Video export cancelled.');
-      schedule.cues.forEach(function (cue) { scheduleAudioCue(handle, cue, 0); });
+      schedule.cues.forEach(function (cue) {
+        if (!overlaps(cue)) return;
+        var use = cue;
+        var entry = null;
+        if (offset > 0 || length < duration) {
+          var derived = deriveSegmentCue(cue, offset, segEnd);
+          if (!derived) return;
+          use = derived;
+        }
+        if (cue.kind === 'file') {
+          for (var i = 0; i < handle.decoded.length; i += 1) {
+            if (handle.decoded[i].cue === cue) { entry = handle.decoded[i]; break; }
+          }
+          if (!entry) return;
+        }
+        scheduleAudioCue(handle, use, 0, entry);
+      });
       if (handle.voiceOverflow) throw new Error('The soundtrack exceeds the supported simultaneous voice limit.');
       if (schedule.cues.some(function (cue) { return cue.kind === 'synth' && cue.synth.kind === 'drums' && cue.synth.capped; })) {
         postAudioWarning('Drum steps past 512 hits were skipped; shorten the pattern or split it across tracks.');
@@ -896,14 +975,15 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
       return context.startRendering();
     }).then(function (buffer) {
       if (cancelled) throw new Error('Video export cancelled.');
+      applySeamFades(buffer, offset, segEnd, duration);
       handle.offlineBuffer = buffer;
       var channels = [buffer.getChannelData(0), buffer.getChannelData(1)];
       handle.features = analyzeMixedClips([{
         channels: channels, sampleRate: 48000, start: 0, offset: 0,
-        duration: duration, loop: false, volume: 1, fadeIn: 0, fadeOut: 0
-      }], duration, 48000, 1);
+        duration: length, loop: false, volume: 1, fadeIn: 0, fadeOut: 0
+      }], length, 48000, 1);
       // Release source buffers and the offline graph after mixing. Only the
-      // bounded final soundtrack (at most 45 seconds) remains during export.
+      // bounded segment soundtrack remains during export.
       handle.decoded = [];
       handle.context = null;
       handle.master = null;
@@ -914,9 +994,38 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
     });
   }
 
-  function sendOfflineAudio() {
+  // 50 ms raised-cosine fades at segment seams so concatenated segments do
+  // not click. Interior edges only: the video's true start/end keep the
+  // scene's own envelope.
+  function applySeamFades(buffer, segStart, segEnd, duration) {
+    var rate = 48000;
+    var fade = Math.floor(rate * 0.05);
+    var total = buffer.length;
+    if (!(fade > 1) || total <= 0) return;
+    var ch, data, i, n, gain;
+    for (ch = 0; ch < buffer.numberOfChannels; ch += 1) {
+      data = buffer.getChannelData(ch);
+      if (segStart > 0) {
+        n = Math.min(fade, total);
+        for (i = 0; i < n; i += 1) {
+          gain = 0.5 - 0.5 * Math.cos(Math.PI * i / n);
+          data[i] = data[i] * gain;
+        }
+      }
+      if (segEnd < duration - 0.001) {
+        n = Math.min(fade, total);
+        for (i = 0; i < n; i += 1) {
+          gain = 0.5 - 0.5 * Math.cos(Math.PI * i / n);
+          data[total - 1 - i] = data[total - 1 - i] * gain;
+        }
+      }
+    }
+  }
+
+  function sendOfflineAudio(segOffsetSec) {
     var buffer = activeAudio && activeAudio.offlineBuffer;
     if (!buffer) return Promise.resolve();
+    var baseSamples = Math.round(((typeof segOffsetSec === 'number' && segOffsetSec > 0) ? segOffsetSec : 0) * 48000);
     var left = buffer.getChannelData(0);
     var right = buffer.getChannelData(1);
     var offset = 0;
@@ -930,27 +1039,36 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
         view.setInt16(i * 4, Math.round(clamp(left[offset + i], -1, 1) * 32767), true);
         view.setInt16(i * 4 + 2, Math.round(clamp(right[offset + i], -1, 1) * 32767), true);
       }
-      var pts = Math.round(offset * 1000000 / 48000);
+      var pts = Math.round((baseSamples + offset) * 1000000 / 48000);
       offset += count;
       return postAndWait({ type: 'mobileAgentVideoAudioPcmChunk', pts: pts, base64: bytesToBase64(bytes) }).then(next);
     }
     return next();
   }
 
-  function start() {
+  function start(offsetSeconds, segmentSeconds) {
     if (running) return;
     var contract = readContract();
     if (!contract) {
       post({ type: 'mobileAgentVideoUnsupported' });
       return;
     }
-    var duration = clamp(Number(contract.duration) || 10, 1, 45);
+    var duration = clamp(Number(contract.duration) || 10, 1, 600);
     var fps = clamp(Number(contract.fps) || 30, 5, 60);
     var width = Math.round(clamp(Number(contract.width) || 1280, 160, 1920));
     var height = Math.round(clamp(Number(contract.height) || 720, 160, 1920));
     if (width % 2 !== 0) width += 1;
     if (height % 2 !== 0) height += 1;
-    var frameCount = Math.max(1, Math.round(duration * fps));
+    // Segmented export: one job renders [segOffset, segOffset + segLen).
+    // Single-segment callers pass nothing and render the whole contract.
+    var segOffset = (typeof offsetSeconds === 'number' && offsetSeconds > 0)
+      ? Math.min(offsetSeconds, Math.max(0, duration - 1))
+      : 0;
+    var segLen = (typeof segmentSeconds === 'number' && segmentSeconds > 0)
+      ? clamp(segmentSeconds, 1, 45)
+      : duration;
+    segLen = Math.min(segLen, Math.max(1, duration - segOffset));
+    var frameCount = Math.max(1, Math.round(segLen * fps));
 
     var canvas = resolveCanvas(contract);
     if (!canvas) {
@@ -972,7 +1090,7 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
       height: height,
       fps: fps,
       frameCount: frameCount,
-      duration: duration
+      duration: segLen
     });
 
     running = true;
@@ -980,7 +1098,7 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
     try { window.MOBILE_AGENT_VIDEO_RECORDING = true; } catch (_) {}
 
     var schedule = readAudioSchedule(contract, duration);
-    var audioReady = schedule ? prepareOfflineAudio(schedule, duration) : Promise.resolve(null);
+    var audioReady = schedule ? prepareOfflineAudio(schedule, duration, segOffset, segLen) : Promise.resolve(null);
     audioReady.then(function (audio) {
       if (cancelled) {
         if (audio) releaseAudio(audio);
@@ -993,7 +1111,7 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
         ? analysis.createSpeechApi(contract.speech, duration)
         : null;
       try { window.MOBILE_AGENT_VIDEO_SPEECH = activeSpeechApi; } catch (_) {}
-      runNativeFrames(contract, canvas, ctx, fps, frameCount);
+      runNativeFrames(contract, canvas, ctx, fps, frameCount, segOffset);
     }).catch(function (error) {
       // Rejections (decode failure, synth render failure) fail loud.
       // Never-settling promises still hang until the run aborts — no timer
@@ -1061,14 +1179,15 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
     }
   }
 
-  function runNativeFrames(contract, canvas, ctx, fps, frameCount) {
+  function runNativeFrames(contract, canvas, ctx, fps, frameCount, segOffset) {
     var index = 0;
     var emitted = 0;
+    var clockBase = (typeof segOffset === 'number' && segOffset > 0) ? segOffset : 0;
 
     function tick() {
       if (cancelled) { teardown(); return; }
       if (index >= frameCount) {
-        sendOfflineAudio().then(function () {
+        sendOfflineAudio(clockBase).then(function () {
           if (cancelled) { teardown(); return; }
           post({ type: 'mobileAgentVideoDone', emitted: emitted });
           teardown();
@@ -1077,7 +1196,7 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
         });
         return;
       }
-      var t = index / fps;
+      var t = clockBase + index / fps;
       prepareSourceFrame(contract, t, fps).then(function () {
         if (cancelled) return;
         if (!renderFrame(contract, canvas, ctx, t)) return;

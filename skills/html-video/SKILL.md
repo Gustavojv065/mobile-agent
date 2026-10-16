@@ -46,7 +46,7 @@ Define this before the body finishes loading:
 ```html
 <script>
   window.MOBILE_AGENT_VIDEO = {
-    duration: 10,      // seconds, 1–45, default 10
+    duration: 10,      // seconds, 1–600, default 10 (over 30 s renders in 30 s segments, concatenated)
     fps: 30,           // 5–60, default 30
     width: 1280,       // export width, even number, ≤ 1920, default 1280
     height: 720,       // export height, even number, ≤ 1920, default 720
@@ -619,7 +619,7 @@ inside one canvas scene.
 - [ ] render is deterministic: only `t` and constants (no `Math.random`,
       `Date.now`, `requestAnimationFrame`)
 - [ ] exactly one recorded canvas, sized to `width × height`
-- [ ] config values inside the allowed ranges (duration 1–45, fps 5–60)
+- [ ] config values inside the allowed ranges (duration 1–600, fps 5–60)
 - [ ] self-contained (no external CDN without warning the user about offline)
 - [ ] if the user asked for the file directly: called `renderVideo` with the
       full HTML and reported the returned MP4 (do **not** rely on a meta tag)

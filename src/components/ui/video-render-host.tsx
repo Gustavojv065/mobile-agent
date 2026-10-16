@@ -294,12 +294,16 @@ export function VideoRenderHost() {
 
   const attemptStart = useCallback(
     (triesLeft: number) => {
-      if (!jobRef.current) return;
+      const job = jobRef.current;
+      if (!job) return;
       // Skip retries once the page is alive — repeated start() calls are
       // harmless (running guard) but waste bridge traffic.
       if (configReceivedRef.current) return;
+      const seg = job.segment;
+      const args =
+        seg && seg.length > 0 ? `${seg.offset}, ${seg.length}` : "";
       webViewRef.current?.injectJavaScript(
-        "window.__startMobileAgentVideoExport ? (window.__startMobileAgentVideoExport(), true) : false;",
+        `window.__startMobileAgentVideoExport ? (window.__startMobileAgentVideoExport(${args}), true) : false;`,
       );
       if (triesLeft > 0) {
         retryTimerRef.current = setTimeout(

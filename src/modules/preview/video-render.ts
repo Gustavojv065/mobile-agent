@@ -27,6 +27,8 @@ export type VideoRenderJob = {
   html: string;
   signal?: AbortSignal;
   onProgress?: (progress: number) => void;
+  /** Segmented export: render [offset, offset + length) instead of the whole contract. */
+  segment?: { offset: number; length: number };
   resolve: (result: VideoRenderResult) => void;
   reject: (error: Error) => void;
 };
@@ -90,7 +92,11 @@ export function hasVideoRenderHost(): boolean {
  */
 export function requestVideoRender(
   html: string,
-  options: { signal?: AbortSignal; onProgress?: (progress: number) => void } = {},
+  options: {
+    signal?: AbortSignal;
+    onProgress?: (progress: number) => void;
+    segment?: { offset: number; length: number };
+  } = {},
 ): Promise<VideoRenderResult> {
   return new Promise<VideoRenderResult>((resolve, reject) => {
     if (!html.includes("MOBILE_AGENT_VIDEO")) {
@@ -121,6 +127,7 @@ export function requestVideoRender(
       html,
       onProgress: options.onProgress,
       signal: options.signal,
+      segment: options.segment,
       resolve,
       reject,
     };

@@ -57,6 +57,7 @@ type OfflineStubs = {
   gains: RecordedGain[];
   convolvers: RecordedConvolver[];
   delays: RecordedDelay[];
+  contexts: { length: number; sampleRate: number }[];
 };
 
 function installBrowserStubs(options: {
@@ -79,6 +80,7 @@ function installBrowserStubs(options: {
     gains: [],
     convolvers: [],
     delays: [],
+    contexts: [],
   };
   const g = globalThis as Record<string, unknown>;
 
@@ -313,6 +315,7 @@ function installBrowserStubs(options: {
         this.numberOfChannels = channels;
         this.length = length;
         this.sampleRate = rate;
+        offline.contexts.push({ length, sampleRate: rate });
         this.channelData = [];
         const fill = options.stemFill ?? 0.5;
         for (let c = 0; c < channels; c += 1) {
@@ -451,7 +454,7 @@ function installBrowserStubs(options: {
   // recorder; mirror that here so the audio-reactive path is exercised.
   new Function(VIDEO_AUDIO_ANALYSIS_SCRIPT)();
 
-  return { messages, canvas, oscillators: offline.oscillators, sources: offline.sources, convolvers: offline.convolvers, delays: offline.delays, gains: offline.gains, offline };
+  return { messages, canvas, oscillators: offline.oscillators, sources: offline.sources, convolvers: offline.convolvers, delays: offline.delays, gains: offline.gains, offline, contexts: offline.contexts };
 }
 
 function runScript() {
@@ -1758,5 +1761,102 @@ describe("VIDEO_EXPORT_SCRIPT audio engine", () => {
     ]);
     const types = messages.map((m) => m.type);
     expect(types).not.toContain("mobileAgentVideoError");
+  }, 15000);
+});
+
+describe("VIDEO_EXPORT_SCRIPT segmented export", () => {
+  const SEG_CONTRACT = {
+    duration: 65,
+    fps: 5,
+    render: () => {},
+    audio: {
+      master: 1,
+      tracks: [
+        { file: "data:audio/mpeg;base64,QUJD", start: 0, duration: 5 },
+        { file: "data:audio/mpeg;base64,QUJD", start: 31, duration: 2 },
+        { file: "data:audio/mpeg;base64,QUJD", start: 29.5, duration: 10, offset: 0 },
+      ],
+    },
+  };
+
+  function startSegment() {
+    const { messages, offline, sources, contexts } = installBrowserStubs({
+      audio: "full",
+      stemFill: 1.0,
+      fetchImpl: (() =>
+        Promise.resolve({
+          ok: true,
+          arrayBuffer: () => Promise.resolve(new ArrayBuffer(8)),
+        })) as unknown as typeof fetch,
+    });
+    setContract(SEG_CONTRACT);
+    const w = runScript();
+    (w.__startMobileAgentVideoExport as (offset: number, len: number) => void)(30, 5);
+    return { messages, offline, sources, contexts };
+  }
+
+  it("clocks frames and config to the segment window", async () => {
+    const { messages } = startSegment();
+    await vi.waitFor(
+      () => expect(messages.some((m) => m.type === "mobileAgentVideoDone")).toBe(true),
+      { timeout: 8000 },
+    );
+    expect(messages.find((m) => m.type === "mobileAgentVideoConfig")).toMatchObject({
+      duration: 5,
+      frameCount: 25,
+      fps: 5,
+    });
+    expect(messages.filter((m) => m.type === "mobileAgentVideoFrame")).toHaveLength(25);
+    expect(messages.some((m) => m.type === "mobileAgentVideoError")).toBe(false);
+  }, 15000);
+
+  it("renders only overlapping cues with segment-relative timing", async () => {
+    const fetchCalls: string[] = [];
+    const { messages, sources, contexts } = installBrowserStubs({
+      audio: "full",
+      fetchImpl: ((url: string) => {
+        fetchCalls.push(url);
+        return Promise.resolve({
+          ok: true,
+          arrayBuffer: () => Promise.resolve(new ArrayBuffer(8)),
+        });
+      }) as unknown as typeof fetch,
+    });
+    setContract(SEG_CONTRACT);
+    const w = runScript();
+    (w.__startMobileAgentVideoExport as (offset: number, len: number) => void)(30, 5);
+    await vi.waitFor(
+      () => expect(messages.some((m) => m.type === "mobileAgentVideoDone")).toBe(true),
+      { timeout: 8000 },
+    );
+    // Two overlapping cues decoded; the pre-segment cue never fetched.
+    expect(fetchCalls).toHaveLength(2);
+    // Offline context spans the segment only.
+    expect(contexts).toHaveLength(1);
+    expect(contexts[0]).toMatchObject({ length: 5 * 48000, sampleRate: 48000 });
+    // Inside cue at 31 -> segment-relative start 1 (fixture buffer caps play to 1 s).
+    // Straddling cue at 29.5 -> starts at 0 with the file offset advanced by 0.5.
+    const starts = sources.map((s) => s.startCalls[0] as [number, number, number]);
+    expect(starts).toHaveLength(2);
+    expect(starts).toContainEqual([1, 0, 1]);
+    expect(starts).toContainEqual([0, 0.5, 0.5]);
+    expect(starts.every(([when]) => when >= 0)).toBe(true);
+  }, 15000);
+
+  it("offsets PCM timestamps and fades segment seams", async () => {
+    const { messages } = startSegment();
+    await vi.waitFor(
+      () => expect(messages.some((m) => m.type === "mobileAgentVideoDone")).toBe(true),
+      { timeout: 8000 },
+    );
+    const chunks = messages.filter((m) => m.type === "mobileAgentVideoAudioPcmChunk");
+    expect(chunks.length).toBeGreaterThan(0);
+    // First chunk starts at the segment offset in microseconds.
+    expect(chunks[0].pts).toBe(30 * 1000000);
+    const first = Buffer.from(chunks[0].base64 as string, "base64");
+    const mid = Buffer.from(chunks[Math.floor(chunks.length / 2)].base64 as string, "base64");
+    // Seam fade-in pulls the opening samples below full scale; mid-segment is untouched.
+    expect(first.readInt16LE(0)).toBeLessThan(32767);
+    expect(mid.readInt16LE(0)).toBe(32767);
   }, 15000);
 });

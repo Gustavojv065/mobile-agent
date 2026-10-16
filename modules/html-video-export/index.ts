@@ -71,6 +71,13 @@ export type HtmlVideoExportNativeModule = {
   ): Promise<{ port: number }>;
   /** Releases one asset-server consumer; stops it when none remain. */
   stopAssetServer(): Promise<void>;
+  /**
+   * Concatenates same-encoding MP4 segments by sample-copy remux (no
+   * re-encode): timestamps offset per segment, audio + video carried over.
+   * Plain filesystem paths. Throws on missing segments, track mismatch,
+   * or empty output — never writes a partial file silently.
+   */
+  concatSegments(inputs: string[], outputPath: string): Promise<{ ok: boolean }>;
   finish(): Promise<{
     uri: string;
     sizeBytes: number;

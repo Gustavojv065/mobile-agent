@@ -157,6 +157,11 @@ class HtmlVideoExportModule : Module() {
         try { assetServer?.release() } catch (_: Exception) {}
       }
     }
+
+    AsyncFunction("concatSegments") { inputs: List<String>, outputPath: String ->
+      SegmentConcat.concat(inputs, outputPath)
+      mapOf("ok" to true)
+    }
   }
 
   private fun rejectLegacyRemux() {
