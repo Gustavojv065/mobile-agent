@@ -456,6 +456,9 @@ export const DrawerContent = forwardRef<
                 <View
                   className={cn(
                     "min-h-0 gap-sp-4 p-sp-5",
+                    // Bottom drawers already pad for the safe-area inset on the
+                    // panel; keep the wrapper's bottom padding out of it.
+                    direction === "bottom" && "pb-0",
                     fillAvailableSpace && "flex-1",
                   )}
                 >

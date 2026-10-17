@@ -5,6 +5,7 @@ import { useTheme } from "@/hooks/use-theme";
 import { AudioAnalysisHost } from "@/components/ui/audio-analysis-host";
 import { DismissibleBanner } from "@/components/ui/dismissible-banner";
 import { PageShotHost } from "@/components/ui/page-shot-host";
+import { ReleaseNotesDrawer } from "@/components/ui/release-notes-drawer";
 import { ScenePreviewHost } from "@/components/ui/video-preview-host";
 import { MixCheckHost } from "@/components/ui/video-mix-host";
 import { VideoRenderHost } from "@/components/ui/video-render-host";
@@ -34,7 +35,7 @@ import {
 import * as SplashScreen from "expo-splash-screen";
 import { SQLiteProvider } from "expo-sqlite";
 import { X } from "lucide-react-native";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
@@ -222,45 +223,37 @@ function InAppNotificationBanner() {
   );
 }
 
-function ReleaseUpdateBanner() {
-  const theme = useTheme();
-  const { release, bannerDismissed, installing, installUpdate, dismissUpdate } =
+/**
+ * New-release notice: a "what's new" drawer with the release notes. Dismissing it
+ * hides it for the rest of the session; "Skip this version" hides it permanently
+ * for that release (Settings > App Update stays as the manual path).
+ */
+function ReleaseUpdateNotice() {
+  const { release, bannerDismissed, installing, installUpdate, skipUpdate } =
     useUpdate();
+  const [notesDismissedTag, setNotesDismissedTag] = useState<string | null>(
+    null,
+  );
 
-  if (!release || bannerDismissed) return null;
+  if (!release || bannerDismissed || notesDismissedTag === release.tagName) {
+    return null;
+  }
+
   return (
-    <View className="absolute inset-x-0 top-10 z-50 px-sp-4 pb-10">
-      <DismissibleBanner onDismiss={dismissUpdate}>
-        <View className="rounded-card border border-border bg-card px-sp-4 py-sp-3 shadow-sm dark:border-border-dark dark:bg-card-dark">
-          <View className="flex-row items-start gap-sp-3">
-            <Pressable
-              accessibilityRole="button"
-              className="min-w-0 flex-1 gap-1"
-              disabled={installing}
-              onPress={installUpdate}
-            >
-              <Text className="font-sans text-sm font-semibold text-foreground dark:text-foreground-dark">
-                Update available: {release.tagName}
-              </Text>
-              <Text className="font-sans text-sm text-muted-foreground dark:text-muted-foreground-dark">
-                {installing
-                  ? `Downloading ${release.apkName}…`
-                  : `You have ${release.currentVersion}. Tap to update.`}
-              </Text>
-            </Pressable>
-            <Pressable
-              accessibilityLabel="Dismiss update"
-              accessibilityRole="button"
-              className="p-1"
-              hitSlop={8}
-              onPress={dismissUpdate}
-            >
-              <X color={theme.textSecondary} size={16} />
-            </Pressable>
-          </View>
-        </View>
-      </DismissibleBanner>
-    </View>
+    <ReleaseNotesDrawer
+      installing={installing}
+      onInstall={() => {
+        void installUpdate();
+      }}
+      onLater={() => {
+        setNotesDismissedTag(release.tagName);
+      }}
+      onSkip={() => {
+        void skipUpdate();
+      }}
+      open
+      release={release}
+    />
   );
 }
 
@@ -306,7 +299,7 @@ export default function MainLayout() {
                   <SplashScreenController ready={fontsReady} />
                   <NotificationObserver />
                   <InAppNotificationBanner />
-                  <ReleaseUpdateBanner />
+                  <ReleaseUpdateNotice />
                   <VideoRenderHost />
                   <ScenePreviewHost />
                   <MixCheckHost />

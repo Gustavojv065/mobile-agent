@@ -152,6 +152,7 @@ import {
 
 import { executeClaimedAgentRun, executeSubagentTask, type AgentRunDeps } from "./agent-run";
 import { createRunUiPublisher } from "./run-ui-publisher";
+import { reconcileHydratedAttachments } from "./reconcile-attachments";
 import { resolveConfig } from "./config-resolution";
 import {
     EMPTY_SNAPSHOT,
@@ -763,6 +764,7 @@ export function AppStateProvider({ children }: AppStateProviderProps) {
     const db = useSQLiteContext();
     const repositoriesRef = useRef(createRepositories(db));
     const snapshotRef = useRef<AppStateSnapshot>(EMPTY_SNAPSHOT);
+    const fileSelectionRevisionRef = useRef(0);
     const workspaceServiceRef = useRef(
         createWorkspaceFileService(repositoriesRef.current.workspaceRepository),
     );
@@ -1240,6 +1242,7 @@ export function AppStateProvider({ children }: AppStateProviderProps) {
 
 
     const hydrate = useCallback(async () => {
+        const fileSelectionRevision = fileSelectionRevisionRef.current;
         const hydrationGeneration = ++hydrationGenerationRef.current;
         setHydrating(true);
         setError(null);
@@ -1609,8 +1612,13 @@ export function AppStateProvider({ children }: AppStateProviderProps) {
                                 : nextSnapshot.messages,
                     }
                     : nextSnapshot;
-                snapshotRef.current = reconciledSnapshot;
-                return reconciledSnapshot;
+                const attachmentSafeSnapshot = reconcileHydratedAttachments(
+                    reconciledSnapshot,
+                    current,
+                    fileSelectionRevision !== fileSelectionRevisionRef.current,
+                );
+                snapshotRef.current = attachmentSafeSnapshot;
+                return attachmentSafeSnapshot;
             });
             setReady(true);
 
@@ -4091,6 +4099,7 @@ Your output must be:
                 },
             );
 
+            fileSelectionRevisionRef.current += 1;
             setSnapshot((current) => ({
                 ...current,
                 conversations: current.conversations.map((conversation) =>

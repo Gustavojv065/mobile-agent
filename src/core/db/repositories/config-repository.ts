@@ -111,6 +111,15 @@ export function createConfigRepository(db: AppDatabase): ConfigRepository {
 
       return buildSettings(rows);
     },
+    async getSetting(key) {
+      const rows = await db
+        .select()
+        .from(appSettings)
+        .where(eq(appSettings.key, key))
+        .limit(1);
+
+      return rows[0]?.value ?? null;
+    },
     async getApprovedToolsByConversation() {
       const rows = await db.select().from(appSettings);
       const raw = rows.find(

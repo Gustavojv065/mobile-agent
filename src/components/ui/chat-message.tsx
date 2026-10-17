@@ -11,24 +11,16 @@ import {
   Bookmark,
   Check,
   CheckCircle2,
+  ChevronDown,
   ChevronRight,
   Circle,
   Clock3,
   Copy,
   Download,
-  FileArchive,
-  FileAudio,
-  FileCode,
-  File as FileIcon,
-  FileImage,
-  FileSpreadsheet,
-  FileText,
-  FileVideo,
+  Eye,
   Loader,
-  Maximize2,
   Pencil,
   Play,
-  Presentation,
   RefreshCw,
   Share2,
   Square,
@@ -51,8 +43,8 @@ import {
   useSyncExternalStore,
 } from "react";
 import {
-  ActivityIndicator,
   Alert,
+  FlatList,
   Linking,
   Platform,
   Pressable,
@@ -61,6 +53,8 @@ import {
   type StyleProp,
   Text,
   type TextStyle,
+  useWindowDimensions,
+  type ViewStyle,
   View,
 } from "react-native";
 import Markdown, {
@@ -85,7 +79,7 @@ import { Svg, SvgXml, Defs, LinearGradient, Rect, Stop } from "react-native-svg"
 import { Bubble, BubbleContent } from "@/components/ui/bubble";
 import { Button } from "@/components/ui/button";
 import { CodePreviewDialog } from "@/components/ui/code-preview-dialog";
-import { CollapsibleChevron, CollapsibleSection } from "@/components/ui/collapsible-section";
+import { CollapsibleSection } from "@/components/ui/collapsible-section";
 import {
   Drawer,
   DrawerBody,
@@ -100,6 +94,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { FileAttachmentCard } from "@/components/ui/file-attachment-card";
 import {
   FilePreviewDialog,
   getFilePreviewKind,
@@ -282,35 +277,21 @@ const MARKDOWN_RULES = {
       </View>
     );
   },
-  table: (node, children, _parent, styles) => {
-    const columnCount = getTableColumnCount(node);
-
-    return (
-      <CopyableMarkdownBlock
-        copyLabel="Copy table"
-        copyValue={getTableText(node)}
-        key={node.key}
-        label="Table"
+  table: (node, children, _parent, styles) => (
+    <CopyableMarkdownBlock
+      copyLabel="Copy table"
+      copyValue={getTableText(node)}
+      key={node.key}
+      label="Table"
+    >
+      <MarkdownTable
+        columnCount={getTableColumnCount(node)}
+        tableStyle={styles._VIEW_SAFE_table}
       >
-        <ScrollView
-          directionalLockEnabled
-          horizontal
-          nestedScrollEnabled
-          showsHorizontalScrollIndicator
-          style={{ maxWidth: "100%" }}
-        >
-          <View
-            style={[
-              styles._VIEW_SAFE_table,
-              { width: Math.max(columnCount, 1) * 144 },
-            ]}
-          >
-            {children}
-          </View>
-        </ScrollView>
-      </CopyableMarkdownBlock>
-    );
-  },
+        {children}
+      </MarkdownTable>
+    </CopyableMarkdownBlock>
+  ),
   html_block: (node) => (
     <InlineSvgBlock key={node.key} markup={htmlNodeContent(node)} />
   ),
@@ -722,6 +703,59 @@ function getTableText(node: ASTNode) {
     .join("\n");
 }
 
+/**
+ * Narrowest a column gets before a table starts scrolling sideways instead of
+ * squeezing its text into slivers.
+ */
+const TABLE_MIN_COLUMN_WIDTH = 116;
+
+/**
+ * A markdown table sized to the card it sits in.
+ *
+ * Columns share the available width evenly — so a two-column table fills the
+ * bubble instead of leaving a dead strip on the right that reads like an empty
+ * extra column — and only shrink to the minimum (scrolling sideways) when
+ * there are too many columns to fit.
+ */
+function MarkdownTable({
+  children,
+  columnCount,
+  tableStyle,
+}: {
+  children: ReactNode;
+  columnCount: number;
+  tableStyle: StyleProp<ViewStyle>;
+}) {
+  const { width: windowWidth } = useWindowDimensions();
+  const [measuredWidth, setMeasuredWidth] = useState(0);
+  const columns = Math.max(columnCount, 1);
+  // The first frame has no layout yet, so estimate from the window (the card
+  // keeps a page margin on both sides) until onLayout reports the real width.
+  const availableWidth =
+    measuredWidth > 0 ? measuredWidth : Math.max(windowWidth - 72, 0);
+  const tableWidth = Math.max(availableWidth, columns * TABLE_MIN_COLUMN_WIDTH);
+
+  return (
+    <View
+      onLayout={(event) => {
+        const width = Math.round(event.nativeEvent.layout.width);
+        setMeasuredWidth((current) => (width === current ? current : width));
+      }}
+      style={{ maxWidth: "100%" }}
+    >
+      <ScrollView
+        directionalLockEnabled
+        horizontal
+        nestedScrollEnabled
+        showsHorizontalScrollIndicator
+        style={{ maxWidth: "100%" }}
+      >
+        <View style={[tableStyle, { width: tableWidth }]}>{children}</View>
+      </ScrollView>
+    </View>
+  );
+}
+
 function CopyButton({ label, value }: { label: string; value: string }) {
   const theme = useTheme();
   const [copied, setCopied] = useRecyclingState(false, [value]);
@@ -742,9 +776,10 @@ function CopyButton({ label, value }: { label: string; value: string }) {
 
   return (
     <Pressable
-      accessibilityLabel={label}
+      accessibilityLabel={copied ? `${label} — copied` : label}
       accessibilityRole="button"
-      className="flex-row items-center gap-1 rounded-full px-sp-2 py-1"
+      className="items-center justify-center rounded-full p-1"
+      hitSlop={8}
       onPress={() => {
         Clipboard.setStringAsync(value)
           .then(() => {
@@ -757,13 +792,10 @@ function CopyButton({ label, value }: { label: string; value: string }) {
       style={({ pressed }) => (pressed ? { opacity: 0.65 } : null)}
     >
       {copied ? (
-        <Check color={theme.textSecondary} size={13} />
+        <Check color={theme.textSecondary} size={16} />
       ) : (
-        <Copy color={theme.textSecondary} size={13} />
+        <Copy color={theme.textSecondary} size={16} />
       )}
-      <Text className="font-sans text-xs text-muted-foreground dark:text-muted-foreground-dark">
-        {copied ? "Copied" : "Copy"}
-      </Text>
     </Pressable>
   );
 }
@@ -787,7 +819,7 @@ function CopyableMarkdownBlock({
         <Text className="font-mono text-xs text-muted-foreground dark:text-muted-foreground-dark">
           {label}
         </Text>
-        <View className="flex-row items-center gap-sp-1">
+        <View className="flex-row items-center gap-sp-2">
           {headerAccessory}
           <CopyButton label={copyLabel} value={copyValue} />
         </View>
@@ -947,10 +979,12 @@ function CodeFade({ color }: { color: string }) {
 
 /** Small round icon button used in code-block headers (e.g. full screen). */
 function ViewerIconButton({
+  accessibilityHint,
   accessibilityLabel,
   icon,
   onPress,
 }: {
+  accessibilityHint?: string;
   accessibilityLabel: string;
   icon: ReactNode;
   onPress: () => void;
@@ -959,6 +993,7 @@ function ViewerIconButton({
 
   return (
     <Pressable
+      accessibilityHint={accessibilityHint}
       accessibilityLabel={accessibilityLabel}
       accessibilityRole="button"
       onPress={onPress}
@@ -990,25 +1025,12 @@ function PreviewButton({ onPress }: { onPress: () => void }) {
   const theme = useTheme();
 
   return (
-    <Pressable
+    <ViewerIconButton
       accessibilityHint="Opens the rendered output in a dialog"
       accessibilityLabel="Preview"
-      accessibilityRole="button"
+      icon={<Eye color={theme.text} size={14} />}
       onPress={onPress}
-      style={({ pressed }) => [
-        {
-          backgroundColor: theme.backgroundSelected,
-          borderRadius: 999,
-          paddingHorizontal: 10,
-          paddingVertical: 4,
-        },
-        pressed ? { opacity: 0.7 } : null,
-      ]}
-    >
-      <Text style={{ color: theme.text, fontSize: 11, fontWeight: "600" }}>
-        Preview
-      </Text>
-    </Pressable>
+    />
   );
 }
 
@@ -1033,34 +1055,24 @@ function CopyableCodeBlock({
   );
   const lines = useMemo(() => code.split("\n"), [code]);
   const collapsible = lines.length > COLLAPSED_CODE_LINES;
-  const [expanded, setExpanded] = useRecyclingState(!collapsible, [code]);
-  const collapsed = collapsible && !expanded;
-  const visibleCode = collapsed
+  // A long block never expands inline: the footer opens the full-screen
+  // viewer instead, so a big file can't push the rest of the message away.
+  const visibleCode = collapsible
     ? lines.slice(0, COLLAPSED_CODE_LINES).join("\n")
     : code;
-  const hiddenLineCount = Math.max(lines.length - COLLAPSED_CODE_LINES, 0);
 
   return (
     <CopyableMarkdownBlock
       copyLabel="Copy code"
       copyValue={code}
       headerAccessory={
-        <>
-          {previewable ? (
-            <PreviewButton
-              onPress={() => {
-                setViewer("preview");
-              }}
-            />
-          ) : null}
-          <ViewerIconButton
-            accessibilityLabel="Open code in full screen"
-            icon={<Maximize2 color={theme.text} size={14} />}
+        previewable ? (
+          <PreviewButton
             onPress={() => {
-              setViewer("code");
+              setViewer("preview");
             }}
           />
-        </>
+        ) : null
       }
       label={language || "Code"}
     >
@@ -1077,7 +1089,7 @@ function CopyableCodeBlock({
             textColor={theme.text}
           />
         </ScrollView>
-        {collapsed ? (
+        {collapsible ? (
           <View
             className="absolute bottom-0 left-0 right-0"
             pointerEvents="none"
@@ -1088,22 +1100,19 @@ function CopyableCodeBlock({
       </View>
       {collapsible ? (
         <Pressable
+          accessibilityHint="Opens the whole file in a dialog"
+          accessibilityLabel={`Show all ${lines.length} lines`}
           accessibilityRole="button"
-          accessibilityState={{ expanded }}
           className="h-9 flex-row items-center justify-center gap-sp-1 border-t border-border dark:border-border-dark"
           onPress={() => {
-            setExpanded((current) => !current);
+            setViewer("code");
           }}
           style={({ pressed }) => (pressed ? { opacity: 0.72 } : null)}
         >
           <Text className="font-sans text-xs font-medium text-muted-foreground dark:text-muted-foreground-dark">
-            {expanded
-              ? "Show less"
-              : `Show ${hiddenLineCount} more line${
-                  hiddenLineCount === 1 ? "" : "s"
-                }`}
+            {`Show all ${lines.length} lines`}
           </Text>
-          <CollapsibleChevron color={theme.textSecondary} expanded={expanded} />
+          <ChevronDown color={theme.textSecondary} size={14} />
         </Pressable>
       ) : null}
       {viewer ? (
@@ -1304,104 +1313,6 @@ function getTableColumnCount(node: ASTNode): number {
   return 0;
 }
 
-const ARCHIVE_MIME_TYPES = new Set([
-  "application/zip",
-  "application/gzip",
-  "application/x-tar",
-  "application/x-rar-compressed",
-  "application/x-7z-compressed",
-]);
-const CODE_MIME_TYPES = new Set([
-  "application/json",
-  "application/ld+json",
-  "application/xml",
-  "application/javascript",
-  "application/typescript",
-  "application/x-typescript",
-  "application/x-javascript",
-  "application/x-sh",
-  "application/x-yaml",
-]);
-const CODE_EXTENSIONS = [
-  ".js",
-  ".jsx",
-  ".ts",
-  ".tsx",
-  ".json",
-  ".xml",
-  ".html",
-  ".css",
-  ".yml",
-  ".yaml",
-  ".sh",
-  ".py",
-  ".go",
-  ".rs",
-  ".java",
-  ".c",
-  ".cpp",
-  ".h",
-  ".hpp",
-  ".swift",
-  ".kt",
-  ".php",
-  ".rb",
-];
-const SPREADSHEET_EXTENSIONS = [".csv", ".xls", ".xlsx", ".ods"];
-
-function getFileTypeIcon(file: WorkspaceFile) {
-  const mimeType = file.mimeType?.toLowerCase() ?? "";
-  const fileName = file.displayName.toLowerCase();
-
-  if (mimeType.startsWith("image/")) {
-    return FileImage;
-  }
-
-  if (mimeType.startsWith("audio/")) {
-    return FileAudio;
-  }
-
-  if (mimeType.startsWith("video/")) {
-    return FileVideo;
-  }
-
-  if (ARCHIVE_MIME_TYPES.has(mimeType)) {
-    return FileArchive;
-  }
-
-  if (mimeType === "application/pdf") {
-    return FileText;
-  }
-
-  if (CODE_MIME_TYPES.has(mimeType)) {
-    return FileCode;
-  }
-
-  if (CODE_EXTENSIONS.some((extension) => fileName.endsWith(extension))) {
-    return FileCode;
-  }
-
-  if (
-    SPREADSHEET_EXTENSIONS.some((extension) => fileName.endsWith(extension))
-  ) {
-    return FileSpreadsheet;
-  }
-
-  if (fileName.endsWith(".docx")) {
-    return FileText;
-  }
-
-  if (fileName.endsWith(".pptx")) {
-    return Presentation;
-  }
-
-  if (mimeType.startsWith("text/")) {
-    return FileText;
-  }
-
-  return FileIcon;
-}
-
 function SpinningLoader({ color, size }: { color: string; size: number }) {
   const reduceMotion = useReducedMotion();
   const rotation = useSharedValue(0);
@@ -1451,10 +1362,6 @@ export const ChatMessage = memo(function ChatMessage({
   const [regenerateOpen, setRegenerateOpen] = useState(false);
   const [customPresets, setCustomPresets] = useState<RegeneratePreset[]>([]);
   const [copied, setCopied] = useRecyclingState(false, [message.id]);
-  const [attachmentPage, setAttachmentPage] = useRecyclingState(0, [
-    message.id,
-    message.metadata?.selectedFileIds?.length,
-  ]);
   const [imageAction, setImageAction] = useRecyclingState<
     "download" | "share" | null
   >(null, [message.id]);
@@ -1503,6 +1410,7 @@ export const ChatMessage = memo(function ChatMessage({
         inlineCodeBackground: theme.backgroundSelected,
         linkColor: theme.text,
         mutedText: theme.textSecondary,
+        tableHeaderBackground: theme.backgroundSelected,
         text: theme.text,
       }),
     [
@@ -1521,6 +1429,7 @@ export const ChatMessage = memo(function ChatMessage({
         inlineCodeBackground: theme.backgroundSelected,
         linkColor: theme.textSecondary,
         mutedText: theme.textSecondary,
+        tableHeaderBackground: theme.backgroundSelected,
         text: theme.textSecondary,
       }),
     [
@@ -2025,15 +1934,6 @@ export const ChatMessage = memo(function ChatMessage({
     .map((fileId) => workspaceFiles.find((file) => file.id === fileId))
     .filter((file): file is WorkspaceFile => file !== undefined);
   const hasUserAttachments = isUser && attachedFiles.length > 0;
-  // A virtualized message is still a single cell: mapping hundreds of files
-  // inside it mounts every native row. Keep even that cell bounded.
-  const attachmentPageSize = 5;
-  const attachmentPageCount = Math.ceil(attachedFiles.length / attachmentPageSize);
-  const visibleAttachedFiles = attachedFiles.slice(
-    attachmentPage * attachmentPageSize,
-    (attachmentPage + 1) * attachmentPageSize,
-  );
-  const fileHeaderConnected = hasUserAttachments && Boolean(message.content);
   const reasoningBlocks = message.metadata?.reasoning ?? [];
   const reasoningText = reasoningBlocks
     .map((block) => block.text.trim())
@@ -2072,79 +1972,27 @@ export const ChatMessage = memo(function ChatMessage({
         })}
       >
         {hasUserAttachments ? (
-          <View
-            className={cn(
-              "w-64 max-w-full overflow-hidden border border-border bg-card dark:border-border-dark dark:bg-card-dark",
-              fileHeaderConnected
-                ? "max-w-full rounded-ui rounded-br-none"
-                : "max-w-full rounded-ui",
+          <FlatList
+            className="max-w-full"
+            contentContainerStyle={{ gap: 8 }}
+            data={attachedFiles}
+            horizontal
+            initialNumToRender={6}
+            keyExtractor={(file) => file.id}
+            maxToRenderPerBatch={6}
+            renderItem={({ item: file }) => (
+              <FileAttachmentCard
+                file={file}
+                opening={openingFileId === file.id}
+                onPress={() => {
+                  handleOpenFile(file).catch(console.error);
+                }}
+              />
             )}
-          >
-            {visibleAttachedFiles.map((file, index) => {
-              const opening = openingFileId === file.id;
-              const FileTypeIcon = getFileTypeIcon(file);
-
-              return (
-                <Pressable
-                  accessibilityHint="Opens the attached file"
-                  accessibilityLabel={file.displayName}
-                  accessibilityRole="button"
-                  disabled={opening}
-                  key={file.id}
-                  className={cn(
-                    "w-full flex-row items-center gap-sp-2 px-sp-2 py-sp-2",
-                    index > 0 &&
-                      "border-t border-border dark:border-border-dark",
-                  )}
-                  onPress={() => {
-                    handleOpenFile(file).catch(console.error);
-                  }}
-                  style={({ pressed }) => (pressed ? { opacity: 0.72 } : null)}
-                >
-                  <View className="h-8 w-8 shrink-0 items-center justify-center rounded-md bg-secondary dark:bg-secondary-dark">
-                    <FileTypeIcon color={theme.textSecondary} size={16} />
-                  </View>
-                  <Text
-                    className="min-w-0 flex-1 font-sans text-sm font-medium text-foreground dark:text-foreground-dark"
-                    numberOfLines={1}
-                  >
-                    {file.displayName}
-                  </Text>
-                  {opening ? (
-                    <ActivityIndicator
-                      color={theme.textSecondary}
-                      size="small"
-                    />
-                  ) : (
-                    <ChevronRight color={theme.textSecondary} size={16} />
-                  )}
-                </Pressable>
-              );
-            })}
-            {attachmentPageCount > 1 ? (
-              <View className="flex-row items-center justify-between border-t border-border px-sp-2 py-sp-2 dark:border-border-dark">
-                <Button
-                  accessibilityLabel="Previous attached files"
-                  disabled={attachmentPage === 0}
-                  onPress={() => setAttachmentPage((page) => page - 1)}
-                  variant="ghost"
-                >
-                  Prev
-                </Button>
-                <Text className="font-sans text-xs text-muted-foreground dark:text-muted-foreground-dark">
-                  {attachedFiles.length} files · {attachmentPage + 1}/{attachmentPageCount}
-                </Text>
-                <Button
-                  accessibilityLabel="Next attached files"
-                  disabled={attachmentPage + 1 >= attachmentPageCount}
-                  onPress={() => setAttachmentPage((page) => page + 1)}
-                  variant="ghost"
-                >
-                  Next
-                </Button>
-              </View>
-            ) : null}
-          </View>
+            showsHorizontalScrollIndicator={false}
+            style={{ flexGrow: 0 }}
+            windowSize={3}
+          />
         ) : null}
 
         {isAssistant || message.content ? (
@@ -2154,11 +2002,7 @@ export const ChatMessage = memo(function ChatMessage({
             variant={variant}
           >
             <BubbleContent
-              className={cn(
-                "!px-4",
-                isAssistant ? "!py-0" : undefined,
-                fileHeaderConnected ? "rounded-tr-none" : undefined,
-              )}
+              className={cn("!px-4", isAssistant ? "!py-0" : undefined)}
             >
               {isAssistant ? (
                 <View className="gap-sp-3">
@@ -2931,6 +2775,7 @@ function createMarkdownStyles(input: {
   inlineCodeBackground: string;
   linkColor: string;
   mutedText: string;
+  tableHeaderBackground: string;
   text: string;
 }) {
   return {
@@ -3120,18 +2965,25 @@ function createMarkdownStyles(input: {
       borderColor: input.borderColor,
       borderRightWidth: 1,
       color: input.text,
-      flexShrink: 0,
-      padding: 8,
-      width: 144,
+      flex: 1,
+      fontSize: 14,
+      lineHeight: 20,
+      minWidth: TABLE_MIN_COLUMN_WIDTH,
+      paddingHorizontal: 10,
+      paddingVertical: 8,
     },
     th: {
+      backgroundColor: input.tableHeaderBackground,
       borderColor: input.borderColor,
       borderRightWidth: 1,
       color: input.text,
-      flexShrink: 0,
+      flex: 1,
+      fontSize: 14,
       fontWeight: "700",
-      padding: 8,
-      width: 144,
+      lineHeight: 20,
+      minWidth: TABLE_MIN_COLUMN_WIDTH,
+      paddingHorizontal: 10,
+      paddingVertical: 8,
     },
     tr: {
       borderBottomWidth: 1,

@@ -5,16 +5,23 @@ import React, {
   useCallback,
   useContext,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
 import { AppState, Linking } from "react-native";
+import { useSQLiteContext } from "expo-sqlite";
 
+import { createConfigRepository } from "@/core/db/repositories/config-repository";
+import { createDrizzleDb } from "@/core/db/repositories/shared";
 import {
   type AvailableRelease,
   checkForGitHubReleaseUpdate,
   installAvailableRelease,
 } from "@/modules/updates/github-release";
+
+/** `app_settings` row holding the release tag the user chose to skip. */
+const SKIPPED_RELEASE_TAG_KEY = "skipped_release_tag";
 
 type UpdateContextType = {
   release: AvailableRelease | null;
@@ -24,12 +31,39 @@ type UpdateContextType = {
   checkForUpdates: () => Promise<void>;
   installUpdate: () => Promise<void>;
   dismissUpdate: () => void;
+  /**
+   * Hides this release for good: the choice is persisted, so neither the
+   * "what's new" drawer nor the banner comes back for the same tag — even
+   * after the app restarts.
+   */
+  skipUpdate: () => Promise<void>;
 };
 
 const UpdateContext = createContext<UpdateContextType | null>(null);
 
 export function UpdateProvider({ children }: { children: React.ReactNode }) {
+  const sqlite = useSQLiteContext();
+  const configRepository = useMemo(
+    () => createConfigRepository(createDrizzleDb(sqlite)),
+    [sqlite],
+  );
+
   const dismissedTagRef = useRef<string | null>(null);
+  const skippedTagRef = useRef<string | null>(null);
+  // Kick off the persisted-skip read once; checks await it before surfacing a
+  // release so a skipped tag can never flash the drawer on launch.
+  const skippedTagLoadedRef = useRef<Promise<void> | null>(null);
+
+  if (skippedTagLoadedRef.current === null) {
+    skippedTagLoadedRef.current = configRepository
+      .getSetting(SKIPPED_RELEASE_TAG_KEY)
+      .then((tag) => {
+        skippedTagRef.current = tag;
+      })
+      .catch((error) => {
+        console.warn(error);
+      });
+  }
 
   const [release, setRelease] = useState<AvailableRelease | null>(null);
   const [checking, setChecking] = useState(false);
@@ -41,10 +75,17 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
       setChecking(true);
 
       const nextRelease = await checkForGitHubReleaseUpdate();
+      await skippedTagLoadedRef.current;
 
-      if (nextRelease?.tagName !== dismissedTagRef.current) {
-        setRelease(nextRelease);
+      if (
+        nextRelease &&
+        (nextRelease.tagName === dismissedTagRef.current ||
+          nextRelease.tagName === skippedTagRef.current)
+      ) {
+        return;
       }
+
+      setRelease(nextRelease);
     } catch (error) {
       console.warn(error);
     } finally {
@@ -72,6 +113,22 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
     dismissedTagRef.current = release.tagName;
     setBannerDismissed(true);
   }, [release]);
+
+  const skipUpdate = useCallback(async () => {
+    const tagName = release?.tagName ?? skippedTagRef.current;
+
+    if (!tagName) return;
+
+    skippedTagRef.current = tagName;
+    dismissedTagRef.current = tagName;
+    setBannerDismissed(true);
+
+    try {
+      await configRepository.setSetting(SKIPPED_RELEASE_TAG_KEY, tagName);
+    } catch (error) {
+      console.warn(error);
+    }
+  }, [configRepository, release]);
 
   useEffect(() => {
     // The launch check is network I/O — keep it off the startup critical
@@ -115,6 +172,7 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
         checkForUpdates,
         installUpdate,
         dismissUpdate,
+        skipUpdate,
       }}
     >
       {children}

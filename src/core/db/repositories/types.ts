@@ -429,6 +429,8 @@ export interface ConfigRepository {
   deleteProvider(providerId: string): Promise<void>;
   ensureDefaultProviders(): Promise<void>;
   getSettings(): Promise<AppSettings>;
+  /** Raw read of a single `app_settings` row (`null` when unset). */
+  getSetting(key: string): Promise<string | null>;
   getConversationApprovalModes(): Promise<Record<string, ToolApprovalMode>>;
   getApprovedToolsByConversation(): Promise<Record<string, string[]>>;
   listModelPresets(): Promise<ModelPreset[]>;

@@ -7,6 +7,8 @@ const RELEASE_CACHE_TTL_MS = 60 * 60 * 1000;
 export type AvailableRelease = {
   apkName: string;
   apkUrl: string;
+  /** Release notes body as published (`.release-notes.md`), may be empty. */
+  body: string;
   currentVersion: string;
   name: string;
   tagName: string;
@@ -18,6 +20,7 @@ type GitHubRelease = {
     browser_download_url?: string;
     name?: string;
   }>;
+  body?: string | null;
   draft?: boolean;
   html_url?: string;
   name?: string;
@@ -96,6 +99,7 @@ async function fetchGitHubReleaseUpdate() {
       ? {
           apkName: apk.name,
           apkUrl: apk.url,
+          body: selectedRelease?.body?.trim() ?? "",
           currentVersion,
           name: selectedRelease?.name?.trim() || tagName,
           tagName,

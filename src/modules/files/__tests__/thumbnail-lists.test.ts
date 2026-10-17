@@ -28,11 +28,12 @@ describe("large attachment list regression guards", () => {
     expect(source).not.toContain("source={{ uri }}");
   });
 
-  it("bounds attachment rows inside each virtualized chat message", () => {
+  it("virtualizes attachment cards inside each virtualized chat message", () => {
     const source = readFileSync(new URL("../../../components/ui/chat-message.tsx", import.meta.url), "utf8");
     expect(source).not.toContain("attachedFiles.map(");
-    expect(source).toContain("attachedFiles.slice(");
-    expect(source).toContain("const attachmentPageSize = 5");
-    expect(source).toContain('accessibilityLabel="Next attached files"');
+    expect(source).toContain("data={attachedFiles}");
+    expect(source).toContain("initialNumToRender={6}");
+    expect(source).toContain("windowSize={3}");
+    expect(source).toContain("<FileAttachmentCard");
   });
 });

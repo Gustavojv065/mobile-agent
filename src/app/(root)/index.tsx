@@ -1,5 +1,6 @@
 import * as DocumentPicker from "expo-document-picker";
 import { File } from "expo-file-system";
+import * as ImagePicker from "expo-image-picker";
 import { TextInputWrapper, type PasteEventPayload } from "expo-paste-input";
 import { useRouter } from "expo-router";
 import {
@@ -13,9 +14,11 @@ import {
   ClipboardList,
   Edit,
   FolderOpen,
+  Image as ImageIcon,
   Info,
   Mic,
   Paperclip,
+  Plus,
   Server,
   StopCircle,
   Trash2,
@@ -37,6 +40,7 @@ import {
   FlatList,
   Platform,
   Pressable,
+  ScrollView,
   Text,
   TextInput,
   useWindowDimensions,
@@ -45,11 +49,15 @@ import {
 import {
   KeyboardAvoidingView,
   KeyboardController,
+  useKeyboardState,
 } from "react-native-keyboard-controller";
 import Animated, {
   FadeIn,
   FadeOut,
   LinearTransition,
+  useAnimatedStyle,
+  useDerivedValue,
+  withTiming,
 } from "react-native-reanimated";
 import Svg, { Defs, LinearGradient, Rect, Stop } from "react-native-svg";
 import {
@@ -75,9 +83,10 @@ import {
   DrawerTitle,
 } from "@/components/ui/drawer";
 import {
-  FilePreviewDialog,
-  getFilePreviewKind,
-} from "@/components/ui/file-preview-dialog";
+  FileAttachmentCard,
+  isPreviewableAttachment,
+} from "@/components/ui/file-attachment-card";
+import { FilePreviewDialog } from "@/components/ui/file-preview-dialog";
 import { Input } from "@/components/ui/input";
 import {
   MessageScroller,
@@ -95,6 +104,8 @@ import { VoiceInputBar } from "@/components/ui/voice-input-bar";
 import { CHAT_TEXT_STYLE } from "@/constants/chat-typography";
 import { isFolderPickerCancellation } from "@/core/services/external-folder/external-folder-service";
 import { resolveWorkspaceFile } from "@/core/services/workspace-file-service";
+import { inferMimeType } from "@/core/services/file-names";
+import { useColorScheme } from "@/hooks/use-color-scheme";
 import type {
   AgentConfig,
   ExternalFolderSession,
@@ -227,6 +238,7 @@ function logComposerDebug(label: string, data: Record<string, unknown>) {
 export default function Screen() {
   const router = useRouter();
   const theme = useTheme();
+  const keyboardVisible = useKeyboardState((state) => state.isVisible);
   const { error, ready } = useAppState();
   const [infoDrawerOpen, setInfoDrawerOpen] = useState(false);
   const {
@@ -464,6 +476,12 @@ export default function Screen() {
       <KeyboardAvoidingView behavior="padding" className="flex-1">
         <Container
           contentClassName="flex-1 gap-sp-1 !px-4"
+          contentStyle={keyboardVisible ? { paddingBottom: 8 } : undefined}
+          edges={
+            keyboardVisible
+              ? ["top", "right", "left"]
+              : ["top", "right", "bottom", "left"]
+          }
           includeBottomTabInset={false}
         >
           <View className="flex-row items-center justify-between gap-sp-3">
@@ -705,29 +723,35 @@ export default function Screen() {
                   ) : null}
                 </View>
               </DrawerBody>
-              <DrawerFooter>
-                <View className="flex-row gap-sp-2">
+              <DrawerFooter className="items-center gap-sp-3">
+                <View className="w-full flex-row gap-sp-2">
                   <Button
-                    className="flex-1"
-                    onPress={denyPendingToolApproval}
+                    className="min-w-0 flex-1"
+                    textClassName="text-center"
                     variant="outline"
+                    onPress={denyPendingToolApproval}
                   >
                     Deny
                   </Button>
                   <Button
-                    className="flex-1"
-                    variant="outline"
-                    onPress={approvePendingToolApprovalForChat}
-                  >
-                    Allow for chat
-                  </Button>
-                  <Button
-                    className="flex-1"
+                    className="min-w-0 flex-1"
+                    textClassName="text-center"
                     onPress={approvePendingToolApproval}
                   >
                     Allow once
                   </Button>
                 </View>
+                <Pressable
+                  accessibilityRole="button"
+                  className="items-center"
+                  hitSlop={8}
+                  onPress={approvePendingToolApprovalForChat}
+                  style={({ pressed }) => (pressed ? { opacity: 0.6 } : null)}
+                >
+                  <Text className="font-sans text-sm text-muted-foreground underline dark:text-muted-foreground-dark">
+                    Allow for chat
+                  </Text>
+                </Pressable>
               </DrawerFooter>
             </DrawerContent>
           </Drawer>
@@ -960,26 +984,6 @@ function formatTokenCount(value: number | null) {
   return Math.round(value).toLocaleString();
 }
 
-function formatFileSize(size: number | null | undefined) {
-  if (typeof size !== "number" || !Number.isFinite(size) || size < 0) {
-    return "Unknown size";
-  }
-
-  if (size < 1024) {
-    return `${size} B`;
-  }
-
-  const units = ["KB", "MB", "GB"];
-  let value = size / 1024;
-  let unitIndex = 0;
-
-  while (value >= 1024 && unitIndex < units.length - 1) {
-    value /= 1024;
-    unitIndex += 1;
-  }
-
-  return `${value >= 100 ? Math.round(value) : value.toFixed(value >= 10 ? 1 : 0)} ${units[unitIndex]}`;
-}
 
 function formatCurrency(value: number | null) {
   if (value === null) {
@@ -1263,6 +1267,7 @@ const ChatInput = memo(function ChatInput({
   onOpenAgentSettings: () => void;
 }) {
   const theme = useTheme();
+  const colorScheme = useColorScheme();
   const { height: screenHeight } = useWindowDimensions();
   const { scrollToEnd } = useMessageScrollerActions();
   const router = useRouter();
@@ -1278,6 +1283,13 @@ const ChatInput = memo(function ChatInput({
   } | null>(null);
   const [composerContentHeight, setComposerContentHeight] = useState(0);
   const [filesDrawerOpen, setFilesDrawerOpen] = useState(false);
+  const [composerActionsOpen, setComposerActionsOpen] = useState(false);
+  const composerActionsRotation = useDerivedValue(() =>
+    withTiming(composerActionsOpen ? 45 : 0, { duration: 180 }),
+  );
+  const composerActionsIconStyle = useAnimatedStyle(() => ({
+    transform: [{ rotate: `${composerActionsRotation.value}deg` }],
+  }));
   const [attachmentPreview, setAttachmentPreview] =
     useState<WorkspaceFile | null>(null);
   const [modelsDrawerOpen, setModelsDrawerOpen] = useState(false);
@@ -1287,11 +1299,10 @@ const ChatInput = memo(function ChatInput({
   const [skillImportOpen, setSkillImportOpen] = useState(false);
   const [mcpServersDrawerOpen, setMcpServersDrawerOpen] = useState(false);
   const [busyAction, setBusyAction] = useState<
-    null | "clear" | "import" | "folder" | "paste"
+    null | "clear" | "import" | "folder" | "paste" | "photos"
   >(null);
   const [folderDrawerOpen, setFolderDrawerOpen] = useState(false);
   const [deletingFileId, setDeletingFileId] = useState<string | null>(null);
-  const [folderNotice, setFolderNotice] = useState<string | null>(null);
   const [approvalModeDrawerOpen, setApprovalModeDrawerOpen] = useState(false);
   const [slashMenuView, setSlashMenuView] = useState<
     "commands" | "saved-prompts"
@@ -1368,8 +1379,8 @@ const ChatInput = memo(function ChatInput({
   // height honest without depending on that event.
   const hasComposerText = prompt.trim().length > 0;
   const composerInputHeight = hasComposerText
-    ? Math.min(maxComposerInputHeight, Math.max(76, composerContentHeight))
-    : 76;
+    ? Math.min(maxComposerInputHeight, Math.max(56, composerContentHeight))
+    : 56;
   const composerScrollEnabled =
     hasComposerText && composerContentHeight > maxComposerInputHeight;
 
@@ -1636,14 +1647,16 @@ const ChatInput = memo(function ChatInput({
 
     if (folderIntent.requiresFolderAccess) {
       if (!supportsTools) {
-        setFolderNotice(
+        Alert.alert(
+          "Folder access unavailable",
           "Folder actions need an API-key-backed model. Switch models in Settings first.",
         );
         return;
       }
 
       if (Platform.OS !== "android") {
-        setFolderNotice(
+        Alert.alert(
+          "Folder access unavailable",
           "Picked-folder agent access is Android-only right now. Use @ file actions to work in the app workspace on this platform.",
         );
         return;
@@ -1655,7 +1668,6 @@ const ChatInput = memo(function ChatInput({
           selectedFileIds: previousSelectedFileIds,
         });
         setFolderDrawerOpen(true);
-        setFolderNotice(null);
         return;
       }
     }
@@ -1678,7 +1690,6 @@ const ChatInput = memo(function ChatInput({
       requestAnimationFrame(() => {
         scrollToEnd();
       });
-      setFolderNotice(null);
     } catch (sendError) {
       const errorMessage =
         sendError instanceof Error ? sendError.message : String(sendError);
@@ -1703,11 +1714,10 @@ const ChatInput = memo(function ChatInput({
     setBusyAction("folder");
 
     try {
-      const session = await pickConversationFolder();
+      await pickConversationFolder();
 
       setFolderDrawerOpen(false);
       setPendingFolderSend(null);
-      setFolderNotice(`Using ${session.displayName} for this chat.`);
       setPrompt("");
       setPendingQuote(null);
       KeyboardController.dismiss();
@@ -1724,10 +1734,56 @@ const ChatInput = memo(function ChatInput({
       });
     } catch (error) {
       if (!isFolderPickerCancellation(error)) {
-        setFolderNotice(
+        Alert.alert(
+          "Could not access folder",
           error instanceof Error ? error.message : "Could not select folder.",
         );
       }
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const attachImportedFiles = async (imported: WorkspaceFile[]) => {
+    setLocalWorkspaceFiles((current) => {
+      const map = new Map(current.map((file) => [file.id, file]));
+      for (const file of imported) map.set(file.id, file);
+      return [...map.values()];
+    });
+    await setSelectedFileIds([
+      ...new Set([...selectedFileIds, ...imported.map((file) => file.id)]),
+    ]);
+  };
+
+  const handlePickPhotos = async () => {
+    if (busyAction || loading || !supportsImageInput) return;
+    setBusyAction("photos");
+    try {
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ["images"],
+        allowsMultipleSelection: true,
+        quality: 1,
+      });
+      if (result.canceled) return;
+      const imported = await importFiles(
+        result.assets.map((asset) => {
+          const file = new File(asset.uri);
+          const name = asset.fileName || file.name;
+          return {
+            uri: asset.uri,
+            name,
+            mimeType: asset.mimeType || file.type || inferMimeType(name),
+            size: asset.fileSize ?? file.size,
+            lastModified: Date.now(),
+          };
+        }),
+      );
+      await attachImportedFiles(imported);
+    } catch (error) {
+      Alert.alert(
+        "Could not attach photos",
+        error instanceof Error ? error.message : "Please try again.",
+      );
     } finally {
       setBusyAction(null);
     }
@@ -1750,21 +1806,7 @@ const ChatInput = memo(function ChatInput({
       if (!result.canceled && result.assets.length > 0) {
         const imported = await importFiles(result.assets);
 
-        setLocalWorkspaceFiles((current) => {
-          const map = new Map(current.map((file) => [file.id, file]));
-
-          for (const file of imported) {
-            map.set(file.id, file);
-          }
-
-          return [...map.values()];
-        });
-        await setSelectedFileIds([
-          ...selectedFileIds,
-          ...imported
-            .map((file) => file.id)
-            .filter((id) => !selectedFileIds.includes(id)),
-        ]);
+        await attachImportedFiles(imported);
         setPrompt((current) => clearComposerTrigger(current));
       }
     } finally {
@@ -1914,7 +1956,8 @@ const ChatInput = memo(function ChatInput({
           onPress: () => {
             clearTriggerText();
             if (Platform.OS !== "android") {
-              setFolderNotice(
+              Alert.alert(
+                "Folder access unavailable",
                 "Picked-folder access is Android-only right now.",
               );
               return;
@@ -1922,12 +1965,10 @@ const ChatInput = memo(function ChatInput({
 
             setBusyAction("folder");
             pickConversationFolder()
-              .then((session) => {
-                setFolderNotice(`Using ${session.displayName} for this chat.`);
-              })
               .catch((error) => {
                 if (!isFolderPickerCancellation(error)) {
-                  setFolderNotice(
+                  Alert.alert(
+                    "Could not select folder",
                     error instanceof Error
                       ? error.message
                       : "Could not select folder.",
@@ -1950,9 +1991,6 @@ const ChatInput = memo(function ChatInput({
           onPress: () => {
             clearTriggerText();
             clearConversationFolder()
-              .then(() => {
-                setFolderNotice("Switched back to the workspace.");
-              })
               .catch(console.error);
           },
           subtitle: "Stop using the external folder",
@@ -1988,6 +2026,19 @@ const ChatInput = memo(function ChatInput({
           savedPrompts.length > 0
             ? `${savedPrompts.length} saved prompt${savedPrompts.length === 1 ? "" : "s"}`
             : "No saved prompts",
+      },
+      {
+        id: "tool-permissions",
+        icon: <Check color={theme.text} size={16} />,
+        label: "Tool permissions",
+        onPress: () => {
+          clearTriggerText();
+          setApprovalModeDrawerOpen(true);
+        },
+        subtitle:
+          toolApprovalMode === "ask"
+            ? "Ask before running tools"
+            : "Allow tools automatically",
       },
       {
         id: "select-agent",
@@ -2057,6 +2108,7 @@ const ChatInput = memo(function ChatInput({
       reasoningEffort,
       savedPrompts.length,
       selectedSkills.length,
+      toolApprovalMode,
       theme.text,
     ],
   );
@@ -2119,9 +2171,45 @@ const ChatInput = memo(function ChatInput({
     slashMenuView,
   ]);
 
+  const attachmentStrip = selectedFiles.length > 0 ? (
+          <View className="mx-3 mt-3 p-1">
+            <FlatList
+              horizontal
+              style={{ height: 64 }}
+              data={selectedFiles}
+              keyExtractor={(file) => file.id}
+              initialNumToRender={6}
+              maxToRenderPerBatch={6}
+              windowSize={3}
+              extraData={selectedFileIds}
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={{
+                alignItems: "center",
+                gap: 8,
+                paddingHorizontal: 4,
+              }}
+              renderItem={({ item: file }) => (
+                <FileAttachmentCard
+                  disabled={!isPreviewableAttachment(file)}
+                  file={file}
+                  onPress={() => {
+                    KeyboardController.dismiss();
+                    setAttachmentPreview(file);
+                  }}
+                  onRemove={() => {
+                    setSelectedFileIds(
+                      selectedFileIds.filter((id) => id !== file.id),
+                    ).catch(console.error);
+                  }}
+                />
+              )}
+            />
+          </View>
+        ) : null;
+
   return (
     <View className="relative">
-      <View className="gap-sp-3">
+      <View className="gap-sp-2">
         {activeFolderLabel ? (
           <View className="self-start rounded-full border border-border bg-card px-sp-3 py-2 dark:border-border-dark dark:bg-card-dark">
             <View className="flex-row items-center gap-sp-2">
@@ -2130,13 +2218,10 @@ const ChatInput = memo(function ChatInput({
                 {activeFolderLabel}
               </Text>
               <Pressable
+                accessibilityLabel="Remove folder"
                 accessibilityRole="button"
                 onPress={() => {
-                  clearConversationFolder()
-                    .then(() => {
-                      setFolderNotice("Switched back to the workspace.");
-                    })
-                    .catch(console.error);
+                  clearConversationFolder().catch(console.error);
                 }}
               >
                 <X color={theme.textSecondary} size={14} />
@@ -2145,164 +2230,60 @@ const ChatInput = memo(function ChatInput({
           </View>
         ) : null}
 
-        {folderNotice ? (
-          <Text className="font-sans text-xs text-muted-foreground dark:text-muted-foreground-dark">
-            {folderNotice}
-          </Text>
-        ) : null}
-
-        {selectedFiles.length > 0 ? (
-          <View className="gap-sp-1">
-            <View className="flex-row items-center justify-between px-1">
-              <Text className="font-sans text-xs text-muted-foreground dark:text-muted-foreground-dark">
-                {selectedFiles.length} file{selectedFiles.length === 1 ? "" : "s"} selected
-              </Text>
-              <Pressable
-                accessibilityLabel="Clear selected files"
-                accessibilityRole="button"
-                hitSlop={8}
-                onPress={() => {
-                  setSelectedFileIds([]).catch(console.error);
-                }}
-                style={({ pressed }) => (pressed ? { opacity: 0.6 } : null)}
-              >
-                <Text className="font-sans text-xs font-medium text-muted-foreground dark:text-muted-foreground-dark">
-                  Clear
-                </Text>
-              </Pressable>
-            </View>
-            <FlatList
-              horizontal
-              style={{ height: 76 }}
-              data={selectedFiles}
-              keyExtractor={(file) => file.id}
-              initialNumToRender={6}
-              maxToRenderPerBatch={6}
-              windowSize={3}
-              extraData={selectedFileIds}
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={{ gap: 8, paddingVertical: 2 }}
-              renderItem={({ item: file }) => {
-                const isImage = file.mimeType?.startsWith("image/");
-                const canPreview = Boolean(getFilePreviewKind(file));
-
-                if (isImage) {
-                  return (
-                    <View
-                      key={file.id}
-                      className="relative h-16 w-16 shrink-0 overflow-visible"
-                    >
-                      <Pressable
-                        accessibilityLabel={`Preview ${file.displayName}`}
-                        accessibilityRole="button"
-                        className="h-16 w-16 overflow-hidden rounded-2xl border border-border bg-secondary dark:border-border-dark dark:bg-secondary-dark"
-                        disabled={!canPreview}
-                        onPress={() => {
-                          KeyboardController.dismiss();
-                          setAttachmentPreview(file);
-                        }}
-                        style={({ pressed }) =>
-                          pressed ? { opacity: 0.85 } : null
-                        }
-                      >
-                        <WorkspaceThumbnail
-                          size={64}
-                          uri={resolveWorkspaceFile(file.relativePath).uri}
-                          style={{ height: 64, width: 64 }}
-                        />
-                      </Pressable>
-                      <Pressable
-                        accessibilityLabel={`Remove ${file.displayName}`}
-                        accessibilityRole="button"
-                        hitSlop={8}
-                        onPress={() => {
-                          setSelectedFileIds(
-                            selectedFileIds.filter((id) => id !== file.id),
-                          ).catch(console.error);
-                        }}
-                        style={({ pressed }) => [
-                          {
-                            alignItems: "center",
-                            backgroundColor: theme.background,
-                            borderRadius: 999,
-                            height: 22,
-                            justifyContent: "center",
-                            position: "absolute",
-                            right: -6,
-                            top: -6,
-                            width: 22,
-                            borderWidth: 1,
-                            borderColor: theme.border,
-                          },
-                          pressed ? { opacity: 0.7 } : null,
-                        ]}
-                      >
-                        <X color={theme.text} size={12} />
-                      </Pressable>
-                    </View>
-                  );
-                }
-
-                return (
-                  <View
-                    key={file.id}
-                    className="h-16 max-w-48 shrink-0 flex-row items-center gap-sp-2 rounded-2xl border border-border bg-card py-sp-2 pl-sp-3 pr-sp-2 dark:border-border-dark dark:bg-card-dark"
-                  >
-                    <Pressable
-                      accessibilityLabel={`Preview ${file.displayName}`}
-                      accessibilityRole="button"
-                      className="min-w-0 flex-1 flex-row items-center gap-sp-2"
-                      disabled={!canPreview}
-                      onPress={() => {
-                        KeyboardController.dismiss();
-                        setAttachmentPreview(file);
-                      }}
-                      style={({ pressed }) =>
-                        pressed ? { opacity: 0.7 } : null
-                      }
-                    >
-                      <Paperclip
-                        color={theme.textSecondary}
-                        size={16}
-                      />
-                      <View className="min-w-0 flex-1">
-                        <Text
-                          className="font-sans text-xs font-medium text-foreground dark:text-foreground-dark"
-                          numberOfLines={1}
-                        >
-                          {file.displayName}
-                        </Text>
-                        <Text
-                          className="font-sans text-[11px] text-muted-foreground dark:text-muted-foreground-dark"
-                          numberOfLines={1}
-                        >
-                          {formatFileSize(file.size)}
-                        </Text>
-                      </View>
-                    </Pressable>
-                    <Pressable
-                      accessibilityLabel={`Remove ${file.displayName}`}
-                      accessibilityRole="button"
-                      hitSlop={8}
-                      onPress={() => {
-                        setSelectedFileIds(
-                          selectedFileIds.filter((id) => id !== file.id),
-                        ).catch(console.error);
-                      }}
-                      style={({ pressed }) =>
-                        pressed ? { opacity: 0.6 } : null
-                      }
-                    >
-                      <X color={theme.textSecondary} size={14} />
-                    </Pressable>
-                  </View>
-                );
-              }}
-            />
+        {composerActionsOpen ? (
+          <View className="overflow-hidden rounded-card border border-border bg-card dark:border-border-dark dark:bg-card-dark">
+            <ScrollView
+              style={{ maxHeight: 320 }}
+              keyboardShouldPersistTaps="handled"
+            >
+              {[
+                {
+                  label: "Photos",
+                  icon: <ImageIcon color={theme.text} size={18} />,
+                  subtitle: supportsImageInput
+                    ? "Choose photos from your library"
+                    : "Select a model that supports images",
+                  disabled: !supportsImageInput || !!busyAction || loading,
+                  onPress: () => {
+                    void handlePickPhotos();
+                  },
+                },
+                {
+                  label: "Files",
+                  icon: <Paperclip color={theme.text} size={18} />,
+                  subtitle: "Upload or select workspace files",
+                  onPress: () => setFilesDrawerOpen(true),
+                },
+                ...mentionMenuItems
+                  .filter((item) => item.id === "select-folder")
+                  .map((item) => ({
+                    ...item,
+                    label: "Folder",
+                    disabled: item.disabled || !!busyAction || loading,
+                  })),
+                {
+                  label: "Skills",
+                  icon: <Brain color={theme.text} size={18} />,
+                  subtitle: `${selectedSkills.length} selected`,
+                  onPress: () => setSkillsDrawerOpen(true),
+                },
+              ].map((item, index) => (
+                <View key={item.label}>
+                  {index > 0 ? <Separator /> : null}
+                  <ComposerMenuRow
+                    {...item}
+                    onPress={() => {
+                      setComposerActionsOpen(false);
+                      item.onPress();
+                    }}
+                  />
+                </View>
+              ))}
+            </ScrollView>
           </View>
         ) : null}
 
-        {composerTrigger ? (
+        {composerTrigger && !composerActionsOpen ? (
           <View className="overflow-hidden rounded-card border border-border bg-card dark:border-border-dark dark:bg-card-dark">
             {triggerMenuItems.length > 0 ? (
               triggerMenuItems.map((item, index) => (
@@ -2347,7 +2328,17 @@ const ChatInput = memo(function ChatInput({
             <Rect width="100%" height={40} fill="url(#fadeBottom)" />
           </Svg>
         </View>
-        <View className="relative overflow-hidden rounded-3xl bg-white dark:bg-card-dark">
+        <View
+          className="relative rounded-3xl bg-white dark:bg-card-dark"
+          style={{
+            shadowColor: "#000000",
+            shadowOffset: { width: 0, height: 1 },
+            shadowOpacity: colorScheme === "dark" ? 0.12 : 0.04,
+            shadowRadius: 4,
+            elevation: 1,
+          }}
+        >
+          <View className="overflow-hidden rounded-3xl">
           <Animated.View
             key={voiceActive ? "voice" : "text"}
             entering={FadeIn.duration(180)}
@@ -2367,6 +2358,7 @@ const ChatInput = memo(function ChatInput({
               />
             ) : (
               <>
+                {attachmentStrip}
                 {pendingQuote ? (
                   <View className="mx-3 mt-3 flex-row items-start gap-2 rounded-2xl border border-border bg-secondary px-3 py-2 dark:border-border-dark dark:bg-secondary-dark">
                     <Text
@@ -2400,6 +2392,7 @@ const ChatInput = memo(function ChatInput({
                     ref={composerRef}
                     className="min-h-0 rounded-full border-0 bg-transparent px-4 py-3 text-base dark:bg-transparent"
                     onChangeText={setPrompt}
+                    onFocus={() => setComposerActionsOpen(false)}
                     onContentSizeChange={(event) => {
                       setComposerContentHeight(
                         event.nativeEvent.contentSize.height,
@@ -2416,19 +2409,27 @@ const ChatInput = memo(function ChatInput({
 
                 <View className="h-[56px] flex-row items-center gap-2 px-2 pb-2">
                   <Pressable
+                    accessibilityLabel={
+                      composerActionsOpen
+                        ? "Close chat options"
+                        : "Add attachments and chat options"
+                    }
                     accessibilityRole="button"
-                    className="flex-row items-center gap-1 rounded-full bg-[#F0F0F3] px-4 py-2 dark:bg-secondary-dark"
+                    accessibilityState={{ expanded: composerActionsOpen }}
+                    className="h-9 w-9 items-center justify-center rounded-full bg-[#F0F0F3] dark:bg-secondary-dark"
+                    hitSlop={6}
                     onPress={() => {
-                      setApprovalModeDrawerOpen(true);
+                      KeyboardController.dismiss();
+                      composerRef.current?.blur();
+                      setComposerActionsOpen((open) => !open);
                     }}
                     style={({ pressed }) =>
                       pressed ? { opacity: 0.82 } : null
                     }
                   >
-                    <Text className="font-sans text-sm font-medium text-foreground dark:text-foreground-dark">
-                      {toolApprovalMode === "ask" ? "Ask" : "Allow"}
-                    </Text>
-                    <ChevronDown color={theme.textSecondary} size={14} />
+                    <Animated.View style={composerActionsIconStyle}>
+                      <Plus color={theme.text} size={20} />
+                    </Animated.View>
                   </Pressable>
 
                   <Pressable
@@ -2464,9 +2465,10 @@ const ChatInput = memo(function ChatInput({
                       className="h-12 w-12 items-center justify-center rounded-full bg-[#F0F0F3] dark:bg-secondary-dark"
                       hitSlop={8}
                       onPress={() => {
-                        KeyboardController.dismiss();
-                        composerRef.current?.blur();
-                        voiceInput.start().catch(console.error);
+                      KeyboardController.dismiss();
+                      composerRef.current?.blur();
+                      setComposerActionsOpen(false);
+                      voiceInput.start().catch(console.error);
                       }}
                       style={({ pressed }) =>
                         pressed ? { opacity: 0.82 } : null
@@ -2514,6 +2516,7 @@ const ChatInput = memo(function ChatInput({
               </>
             )}
           </Animated.View>
+          </View>
         </View>
 
         <ComposerTip />

@@ -23,7 +23,7 @@ const Colors = {
   },
   dark: {
     text: "#ffffff",
-    background: "#000000",
+    background: "#141618",
     backgroundElement: "#212225",
     backgroundSelected: "#2E3135",
     textSecondary: "#B0B4BA",

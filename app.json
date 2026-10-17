@@ -66,6 +66,8 @@
       ],
       "./plugins/with-litert-lm",
       "./plugins/with-background-agent",
+      "./plugins/with-android-system-bars",
+      "./plugins/with-gradle-build-settings",
       "./plugins/with-scheduler-alarm",
       "./plugins/with-whisper",
       [
@@ -80,7 +82,9 @@
       [
         "expo-notifications",
         {
-          "defaultChannel": "agent-runs"
+          "defaultChannel": "agent-runs",
+          "color": "#023c69",
+          "icon": "./assets/images/notification-icon.png"
         }
       ],
       [
@@ -101,6 +105,14 @@
       "expo-asset",
       "expo-font",
       "expo-image",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow $(PRODUCT_NAME) to attach selected photos to your chats.",
+          "cameraPermission": false,
+          "microphonePermission": "Allow $(PRODUCT_NAME) to use the microphone for voice input."
+        }
+      ],
       "expo-secure-store",
       "expo-sharing",
       "expo-status-bar",
