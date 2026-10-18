@@ -98,6 +98,13 @@ import {
 import { Questionnaire } from "@/components/ui/questionnaire";
 import { SecretRequest } from "@/components/ui/secret-request-dialog";
 import { Separator } from "@/components/ui/separator";
+import {
+  Trace,
+  TraceDescription,
+  TraceIcon,
+  TraceLine,
+  TraceTitle,
+} from "@/components/ui/trace";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { Textarea } from "@/components/ui/textarea";
 import { VoiceInputBar } from "@/components/ui/voice-input-bar";
@@ -111,6 +118,7 @@ import type {
   ExternalFolderSession,
   McpServerConfig,
   ModelRef,
+  PendingToolApproval,
   ReasoningEffort,
   SavedPrompt,
   SkillConfig,
@@ -127,6 +135,11 @@ import { useVoiceInput } from "@/hooks/use-voice-input";
 import { listPrimaryAgents, resolveAgent } from "@/modules/agents/registry";
 import { detectFolderIntent } from "@/modules/chat/folder-intent";
 import { formatFileKindLabel } from "@/modules/files/file-type-label";
+import {
+  formatToolName,
+  toolObjectLabel,
+  toolTraceIcon,
+} from "@/modules/runtime/tool-label";
 import { appendQuote, formatQuotedText } from "@/modules/chat/quote-text";
 import {
   formatUsagePlanLabel,
@@ -713,16 +726,7 @@ export default function Screen() {
                 className="flex-0"
                 contentContainerClassName="gap-sp-3"
               >
-                <View className="gap-sp-2 rounded-ui border border-border bg-card px-sp-4 py-sp-3 dark:border-border-dark dark:bg-card-dark">
-                  <Text className="font-sans text-sm font-medium text-foreground dark:text-foreground-dark">
-                    {formatToolName(pendingToolApproval?.toolName ?? "")}
-                  </Text>
-                  {pendingToolApproval?.inputSummary ? (
-                    <Text className="font-mono text-xs text-muted-foreground dark:text-muted-foreground-dark">
-                      {pendingToolApproval.inputSummary}
-                    </Text>
-                  ) : null}
-                </View>
+                <ApprovalToolCard pendingToolApproval={pendingToolApproval} />
               </DrawerBody>
               <DrawerFooter className="items-center gap-sp-3">
                 <View className="w-full flex-row gap-sp-2">
@@ -1006,15 +1010,41 @@ function formatPercent(value: number | null) {
   return `${value.toFixed(1)}%`;
 }
 
-function formatToolName(toolName: string) {
-  if (!toolName) {
-    return "Tool";
-  }
+/**
+ * The pending tool approval, as a trace row: icon and a "Run <object>"
+ * sentence, with the raw input summary beneath (same styling the chat rows
+ * show once the tool runs).
+ */
+function ApprovalToolCard({
+  pendingToolApproval,
+}: {
+  pendingToolApproval: PendingToolApproval | null;
+}) {
+  const theme = useTheme();
+  const label =
+    toolObjectLabel(pendingToolApproval?.inputSummary) ??
+    formatToolName(pendingToolApproval?.toolName ?? "");
+  const Icon = toolTraceIcon(pendingToolApproval?.toolName ?? "");
 
-  return toolName
-    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
-    .replace(/[-_]+/g, " ")
-    .replace(/\b\w/g, (match) => match.toUpperCase());
+  return (
+    <View className="gap-sp-2 rounded-ui border border-border bg-card px-sp-4 py-sp-3 dark:border-border-dark dark:bg-card-dark">
+      <Trace>
+        <TraceLine>
+          <TraceIcon>
+            {/* eslint-disable-next-line react-hooks/static-components -- stable module-level lucide icon, no internal hooks */}
+            <Icon color={theme.textSecondary} size={16} />
+          </TraceIcon>
+          <TraceTitle>Run {label}</TraceTitle>
+          <TraceDescription>needs approval</TraceDescription>
+        </TraceLine>
+      </Trace>
+      {pendingToolApproval?.inputSummary ? (
+        <Text className="font-mono text-xs text-muted-foreground dark:text-muted-foreground-dark">
+          {pendingToolApproval.inputSummary}
+        </Text>
+      ) : null}
+    </View>
+  );
 }
 
 function InfoSection({

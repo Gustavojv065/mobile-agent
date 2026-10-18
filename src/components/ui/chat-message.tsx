@@ -10,20 +10,15 @@ import * as Speech from "expo-speech";
 import {
   Bookmark,
   Brain,
-  type LucideIcon,
   Check,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
   Circle,
-  Clock3,
   Copy,
   Database,
   Download,
   Eye,
-  Globe,
-  Image as ImageIcon,
-  FileText,
   Loader,
   ListTodo,
   Pencil,
@@ -135,7 +130,6 @@ import {
   resolveWorkspaceFile,
 } from "@/core/services/workspace-file-service";
 import type {
-  ExecutionTimelineEvent,
   GeneratedImageAttachment,
   ReasoningBlock,
   StoredMessage,
@@ -163,7 +157,12 @@ import {
   subscribeVideoRenderStatus,
 } from "@/modules/preview/video-render";
 import { getVideoPoster, toPlayableFileUri } from "@/modules/preview/video-poster";
-import { formatToolName, toolTraceVerb } from "@/modules/runtime/tool-label";
+import {
+  formatToolName,
+  toolObjectLabel,
+  toolTraceIcon,
+  toolTraceVerb,
+} from "@/modules/runtime/tool-label";
 import type { VideoThumbnail } from "expo-video";
 
 refractor.register(jsx);
@@ -1463,9 +1462,6 @@ export const ChatMessage = memo(function ChatMessage({
     null,
     [message.id],
   );
-  const [timelineExpanded, setTimelineExpanded] = useRecyclingState(false, [
-    message.id,
-  ]);
   // Width of the assistant content column once laid out; tables consume it to
   // skip the window-sized estimate right after their first frame.
   const [markdownContainerWidth, setMarkdownContainerWidth] = useState(0);
@@ -1928,11 +1924,6 @@ export const ChatMessage = memo(function ChatMessage({
   const todoActive =
     message.status === "streaming" &&
     todoList.some((task) => task.status === "in_progress");
-  const executionTimeline = (message.metadata?.executionTimeline ?? []).filter(
-    (event) =>
-      event.kind !== "prompt" &&
-      !(event.kind === "run" && event.status === "pending"),
-  );
   const termuxRuns = (message.metadata?.toolExecutions ?? []).filter(
     (execution) => Boolean(execution.termux),
   );
@@ -1941,14 +1932,35 @@ export const ChatMessage = memo(function ChatMessage({
   );
   const pluginOutputs = message.metadata?.pluginOutputs ?? [];
   const toolExecutions = message.metadata?.toolExecutions ?? [];
+  // Elapsed-time labels for the trace rows' `TraceDescription` — the number
+  // the steps drawer used to show, computed from the records' own timestamps
+  // so old chats show it too. The first step has no number (the drawer's
+  // "Start" row).
+  const stepGapLabels = new Map<string, string>();
+  const recordsByStep = [...toolExecutions].sort(
+    (a, b) =>
+      new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+  );
+  recordsByStep.forEach((record, index) => {
+    if (index === 0) {
+      return;
+    }
+    const gap = formatStepGap(
+      recordsByStep[index - 1].createdAt,
+      record.createdAt,
+    );
+    if (gap) {
+      stepGapLabels.set(record.id ?? record.createdAt, gap);
+    }
+  });
   const toolRunsById = new Map(
     toolExecutions.flatMap((run) =>
       run.id ? ([[run.id, run]] as const) : [],
     ),
   );
-  // New runs anchor every execution; older messages only carry the termux
-  // anchors — map(`${termux first, toolRunAnchors win}`), then drop anchors
-  // whose record is missing or whose offset left the (possibly changed) text.
+  // New runs anchor every execution; old messages only carried the termux
+  // anchors — merge both (toolRunAnchors win), then drop anchors whose record
+  // is missing or whose offset left the (possibly changed) text.
   const toolRunOffsets = new Map(
     [
       ...(message.metadata?.termuxRunAnchors ?? []),
@@ -2003,6 +2015,7 @@ export const ChatMessage = memo(function ChatMessage({
       ) : (
         <ToolTraceRow
           expanded={expandedToolRunIds.has(record.id ?? record.createdAt)}
+          gapLabel={stepGapLabels.get(record.id ?? record.createdAt)}
           key={`tool-${record.id ?? record.createdAt}`}
           onExpandedChange={(open) => {
             setExpandedToolRunIds((current) => {
@@ -2071,12 +2084,6 @@ export const ChatMessage = memo(function ChatMessage({
       : memoryEvents.length === 1
         ? getMemoryEventLabel(memoryEvents[0].kind)
         : `${memoryEvents.length} memory updates`;
-  const timelineLabel =
-    executionTimeline.length === 0
-      ? null
-      : executionTimeline.length === 1
-        ? "1 step"
-        : `${executionTimeline.length} steps`;
 
   return (
     <Message align={align}>
@@ -2328,6 +2335,7 @@ export const ChatMessage = memo(function ChatMessage({
                   {unanchoredToolRuns.length > 0 ? (
                     <ToolTraceGroup
                       expandedIds={expandedToolRunIds}
+                      gapLabels={stepGapLabels}
                       onExpandedChange={setExpandedToolRunIds}
                       records={unanchoredToolRuns}
                       streaming={message.status === "streaming"}
@@ -2489,7 +2497,6 @@ export const ChatMessage = memo(function ChatMessage({
         message.status !== "streaming" &&
         (message.content.trim() ||
           memoryEvents.length > 0 ||
-          executionTimeline.length > 0 ||
           generatedImages.length > 0) ? (
           <MessageFooter className="ml-2 -mt-2">
             <Button
@@ -2544,18 +2551,6 @@ export const ChatMessage = memo(function ChatMessage({
                 variant="ghost"
               />
             ) : null}
-            {timelineLabel ? (
-              <Button
-                accessibilityLabel={timelineLabel}
-                leftIcon={<Clock3 color={theme.textSecondary} size={18} />}
-                onPress={() => {
-                  setTimelineExpanded(true);
-                }}
-                size="icon-xs"
-                className="h-9 w-9 px-0"
-                variant="ghost"
-              />
-            ) : null}
           </MessageFooter>
         ) : null}
 
@@ -2565,46 +2560,6 @@ export const ChatMessage = memo(function ChatMessage({
           </Text>
         ) : null}
       </View>
-      <Drawer
-        direction="bottom"
-        onOpenChange={setTimelineExpanded}
-        open={timelineExpanded}
-      >
-        <DrawerContent showCloseButton showHandle size={560}>
-          <DrawerHeader>
-            <DrawerTitle>{timelineLabel ?? "Steps"}</DrawerTitle>
-          </DrawerHeader>
-          <DrawerBody contentContainerClassName="gap-sp-4 pb-sp-4">
-            {executionTimeline.map((event, eventIndex) => {
-              const previousEvent = executionTimeline[eventIndex - 1];
-
-              return (
-                <View
-                  key={event.id}
-                  className="gap-1 rounded-ui border border-border bg-card px-sp-3 py-sp-3 dark:border-border-dark dark:bg-card-dark"
-                >
-                  <View className="flex-row items-center justify-between gap-sp-3">
-                    <Text className="flex-1 font-sans text-sm font-medium text-foreground dark:text-foreground-dark">
-                      {formatTimelineTitle(event)}
-                    </Text>
-                    <Text className="font-sans text-xs text-muted-foreground dark:text-muted-foreground-dark">
-                      {formatTimelineDuration(previousEvent, event)}
-                    </Text>
-                  </View>
-                  <Text className="font-sans text-xs text-muted-foreground dark:text-muted-foreground-dark">
-                    {formatTimelineStatus(event.status)}
-                  </Text>
-                  {event.detail ? (
-                    <Text className="font-sans text-sm text-muted-foreground dark:text-muted-foreground-dark">
-                      {event.detail}
-                    </Text>
-                  ) : null}
-                </View>
-              );
-            })}
-          </DrawerBody>
-        </DrawerContent>
-      </Drawer>
       <Drawer
         direction="bottom"
         onOpenChange={(open) => {
@@ -2855,24 +2810,6 @@ function getMemoryEventLabel(kind: "created" | "deleted" | "updated") {
   return "Memory removed";
 }
 
-function formatTimelineStatus(
-  status: "completed" | "failed" | "info" | "pending",
-) {
-  if (status === "completed") {
-    return "Completed";
-  }
-
-  if (status === "failed") {
-    return "Failed";
-  }
-
-  if (status === "pending") {
-    return "Waiting";
-  }
-
-  return "Info";
-}
-
 function formatReasoningDuration(blocks: ReasoningBlock[]) {
   const durationMs = blocks.reduce((total, block) => {
     const startedAt = new Date(block.startedAt).getTime();
@@ -2905,61 +2842,28 @@ function formatReasoningDuration(blocks: ReasoningBlock[]) {
   return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`;
 }
 
-function formatTimelineTitle(event: ExecutionTimelineEvent) {
-  if (event.kind === "run") {
-    if (event.status === "failed") {
-      return "Failed";
-    }
-
-    if (event.status === "completed") {
-      return "Finished";
-    }
-
-    return "Thinking";
+/**
+ * Elapsed time from one step to the next, the number the old steps drawer
+ * showed per event ("2.4s since the previous step" — it includes the model's
+ * own thinking between calls). Returns null for pairs it cannot measure.
+ */
+function formatStepGap(
+  previousCreatedAt: string,
+  createdAt: string | undefined,
+): null | string {
+  if (!createdAt) {
+    return null;
   }
 
-  if (event.kind === "image") {
-    return "Generated image";
-  }
-
-  if (event.kind === "tool") {
-    if (event.title.startsWith("Approval requested for ")) {
-      return `Waiting for approval: ${event.title.slice(
-        "Approval requested for ".length,
-      )}`;
-    }
-
-    if (event.title === "Questions for the user") {
-      return "Waiting for your answers";
-    }
-
-    if (event.status === "failed") {
-      return `${event.title.replace(/\sfailed$/i, "")} failed`;
-    }
-
-    return `Calling ${event.title.replace(/\scompleted$/i, "")}`;
-  }
-
-  return event.title;
-}
-
-function formatTimelineDuration(
-  previousEvent: ExecutionTimelineEvent | undefined,
-  event: ExecutionTimelineEvent,
-) {
-  if (!previousEvent) {
-    return "Start";
-  }
-
-  const startedAt = new Date(previousEvent.createdAt).getTime();
-  const completedAt = new Date(event.createdAt).getTime();
+  const startedAt = new Date(previousCreatedAt).getTime();
+  const completedAt = new Date(createdAt).getTime();
 
   if (
     Number.isNaN(startedAt) ||
     Number.isNaN(completedAt) ||
     completedAt < startedAt
   ) {
-    return "—";
+    return null;
   }
 
   const durationMs = completedAt - startedAt;
@@ -3333,103 +3237,6 @@ function TermuxRunCard({
 
 // —─── Tool trace rows (shadcn `Trace` pattern) ─────────────────────────────
 
-const TOOL_TRACE_ICONS: Record<string, LucideIcon> = {
-  analyzeAudio: ImageIcon,
-  browser: Globe,
-  cancel_schedule: ListTodo,
-  createDirectory: FileText,
-  createFile: Pencil,
-  deleteEntry: FileText,
-  downloadFile: Download,
-  edit: Pencil,
-  exportWorkspaceFileToFolder: FileText,
-  fetchPage: Globe,
-  getVideoFrame: ImageIcon,
-  glob: FileText,
-  grep: FileText,
-  importFolderFileToWorkspace: FileText,
-  importSkillFromUrl: FileText,
-  listDirectory: FileText,
-  listFiles: FileText,
-  list_schedules: ListTodo,
-  manageAgent: Pencil,
-  managePlugin: Pencil,
-  manageSkill: Pencil,
-  mergeDocuments: FileText,
-  mergePdfs: FileText,
-  moveEntry: FileText,
-  ocr: ImageIcon,
-  previewMix: ImageIcon,
-  previewScene: ImageIcon,
-  read: FileText,
-  renameEntry: Pencil,
-  renderVideo: ImageIcon,
-  schedule_task: ListTodo,
-  skill: FileText,
-  skillReadFile: FileText,
-  splitDocument: FileText,
-  splitPdf: FileText,
-};
-
-const DEFAULT_TOOL_TRACE_ICON = Wrench;
-
-function toolTraceIcon(toolName: string): LucideIcon {
-  return TOOL_TRACE_ICONS[toolName] ?? DEFAULT_TOOL_TRACE_ICON;
-}
-
-/**
- * A short human object for the trace title, picked from the recorded input
- * summary (`name`, `url`, `query`…). Returns null when the summary holds
- * nothing readable — algorithmic ids never make it into the title.
- */
-function toolTraceObjectLabel(inputSummary: string | null | undefined) {
-  if (!inputSummary) {
-    return null;
-  }
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(inputSummary);
-  } catch {
-    return null;
-  }
-
-  if (
-    !parsed ||
-    typeof parsed !== "object" ||
-    Array.isArray(parsed) ||
-    (parsed instanceof Error)
-  ) {
-    return null;
-  }
-
-  const candidateKeys = [
-    "name",
-    "path",
-    "file",
-    "displayName",
-    "title",
-    "label",
-    "url",
-    "query",
-    "pattern",
-  ] as const;
-
-  for (const key of candidateKeys) {
-    const value = (parsed as Record<string, unknown>)[key];
-    if (typeof value !== "string") {
-      continue;
-    }
-    const trimmed = value.trim();
-    if (!trimmed || /^[a-z0-9_-]{16,}$/i.test(trimmed)) {
-      continue;
-    }
-    return trimmed.length > 48 ? `${trimmed.slice(0, 48)}…` : trimmed;
-  }
-
-  return null;
-}
-
 function toolTraceTitle(record: ToolExecutionRecord, streaming: boolean) {
   if (record.status === "failed") {
     return `Failed to run ${formatToolName(record.toolName)}`;
@@ -3441,7 +3248,7 @@ function toolTraceTitle(record: ToolExecutionRecord, streaming: boolean) {
       : formatToolName(record.toolName);
   }
 
-  const object = toolTraceObjectLabel(record.inputSummary);
+  const object = toolObjectLabel(record.inputSummary);
   const verb = toolTraceVerb(record.toolName);
 
   if (verb === "Used") {
@@ -3453,6 +3260,8 @@ function toolTraceTitle(record: ToolExecutionRecord, streaming: boolean) {
 
 type ToolTraceRowProps = {
   expanded: boolean;
+  /** Elapsed time from the previous step, when known. */
+  gapLabel?: string;
   onExpandedChange: (open: boolean) => void;
   record: ToolExecutionRecord;
   streaming: boolean;
@@ -3512,6 +3321,7 @@ function TraceDiffBlock({ diff }: { diff: string }) {
 function ToolTraceRow({
   expanded,
   onExpandedChange,
+  gapLabel,
   record,
   streaming,
 }: ToolTraceRowProps) {
@@ -3540,6 +3350,11 @@ function ToolTraceRow({
             {record.diffStat ? (
               <TraceDescription className="font-mono">
                 {record.diffStat}
+              </TraceDescription>
+            ) : null}
+            {gapLabel ? (
+              <TraceDescription className="font-mono">
+                {gapLabel}
               </TraceDescription>
             ) : null}
           </TraceLine>
@@ -3581,6 +3396,8 @@ function ToolTraceRow({
 
 type ToolTraceGroupProps = {
   expandedIds: Set<string>;
+  /** Per-record elapsed-time labels, keyed like `expandedIds`. */
+  gapLabels: Map<string, string>;
   onExpandedChange: (
     update: (current: Set<string>) => Set<string>,
   ) => void;
@@ -3591,6 +3408,7 @@ type ToolTraceGroupProps = {
 /** Unanchored tool executions, collapsed behind a single summary row. */
 function ToolTraceGroup({
   expandedIds,
+  gapLabels,
   onExpandedChange,
   records,
   streaming,
@@ -3621,6 +3439,7 @@ function ToolTraceGroup({
               return (
                 <ToolTraceRow
                   expanded={expandedIds.has(key) || (record.status === "running" && streaming)}
+                  gapLabel={gapLabels.get(key)}
                   key={key}
                   onExpandedChange={(open) => {
                     onExpandedChange((current) => {

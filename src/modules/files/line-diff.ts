@@ -161,7 +161,7 @@ function groupHunks(ops: DiffOp[]): Hunk[] {
     return [];
   }
 
-  const clusters: Array<[number, number]> = [];
+  const clusters: [number, number][] = [];
   let first = changeIndexes[0];
   let last = changeIndexes[0];
   for (const index of changeIndexes.slice(1)) {
