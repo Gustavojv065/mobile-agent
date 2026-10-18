@@ -9,6 +9,8 @@ import * as Sharing from "expo-sharing";
 import * as Speech from "expo-speech";
 import {
   Bookmark,
+  Brain,
+  type LucideIcon,
   Check,
   CheckCircle2,
   ChevronDown,
@@ -16,15 +18,21 @@ import {
   Circle,
   Clock3,
   Copy,
+  Database,
   Download,
   Eye,
+  Globe,
+  Image as ImageIcon,
+  FileText,
   Loader,
+  ListTodo,
   Pencil,
   Play,
   RefreshCw,
   Share2,
   Square,
   Trash2,
+  Wrench,
 } from "lucide-react-native";
 import {
   createContext,
@@ -78,8 +86,23 @@ import { Svg, SvgXml, Defs, LinearGradient, Rect, Stop } from "react-native-svg"
 
 import { Bubble, BubbleContent } from "@/components/ui/bubble";
 import { Button } from "@/components/ui/button";
+import { ChatMediaCard } from "@/components/ui/chat-media-card";
 import { CodePreviewDialog } from "@/components/ui/code-preview-dialog";
-import { CollapsibleSection } from "@/components/ui/collapsible-section";
+import {
+  CodeBlock,
+  CodeBlockContent,
+  CodeBlockLine,
+} from "@/components/ui/code-block";
+import {
+  Trace,
+  TraceCollapsible,
+  TraceCollapsibleContent,
+  TraceCollapsibleTrigger,
+  TraceDescription,
+  TraceIcon,
+  TraceLine,
+  TraceTitle,
+} from "@/components/ui/trace";
 import {
   Drawer,
   DrawerBody,
@@ -116,6 +139,7 @@ import type {
   GeneratedImageAttachment,
   ReasoningBlock,
   StoredMessage,
+  ToolExecutionRecord,
   WorkspaceFile,
 } from "@/core/types/app-state";
 import { downloadText } from "@/core/services/download-service";
@@ -139,6 +163,7 @@ import {
   subscribeVideoRenderStatus,
 } from "@/modules/preview/video-render";
 import { getVideoPoster, toPlayableFileUri } from "@/modules/preview/video-poster";
+import { formatToolName, toolTraceVerb } from "@/modules/runtime/tool-label";
 import type { VideoThumbnail } from "expo-video";
 
 refractor.register(jsx);
@@ -330,6 +355,34 @@ const ChatMediaContext = createContext<{
 }>({ onPreviewImage: () => {}, onPreviewVideo: () => {}, workspaceFiles: [] });
 
 /**
+ * Measured inner width of the assistant bubble's content column, reported by
+ * the element that renders every markdown block of a message. Tables read it
+ * on the frame *after* the first layout instead of estimating from the
+ * window, so they lay out at their final width immediately instead of
+ * reshuffling when their own onLayout lands.
+ */
+const MarkdownContainerWidthContext = createContext(0);
+
+/**
+ * Session-wide known aspect ratios (poster: real width ÷ height) keyed by
+ * resolved uri. Without it, every image mounts at a 16:9 guess and jumps to
+ * its real ratio on decode — a layout jump each time FlashList recycles the
+ * row back in. Cache tabs: bounded, uri-keyed, cheap to hit.
+ */
+const MEDIA_ASPECT_CACHE = new Map<string, number>();
+const MEDIA_ASPECT_CACHE_LIMIT = 128;
+
+function rememberMediaAspectRatio(uri: string, ratio: number) {
+  if (MEDIA_ASPECT_CACHE.size >= MEDIA_ASPECT_CACHE_LIMIT) {
+    const oldest = MEDIA_ASPECT_CACHE.keys().next().value;
+    if (oldest !== undefined) {
+      MEDIA_ASPECT_CACHE.delete(oldest);
+    }
+  }
+  MEDIA_ASPECT_CACHE.set(uri, ratio);
+}
+
+/**
  * The trailing indicator for a streaming message. It renders the idle spinner
  * by default and swaps to a live "Rendering video…" label while the app-level
  * render host is recording — subscribed in isolation so progress ticks only
@@ -365,32 +418,34 @@ const StreamingIndicator = memo(function StreamingIndicator({
 const STREAMING_IDLE_ELEMENT = <Loading />;
 
 function PreviewUriImage({ uri }: { uri: string }) {
-  const [aspectRatio, setAspectRatio] = useState(16 / 9);
+  const [aspectRatio, setAspectRatio] = useState(
+    () => MEDIA_ASPECT_CACHE.get(uri) ?? 16 / 9,
+  );
   return (
-    <Image
-      cachePolicy="memory-disk"
-      contentFit="contain"
-      onLoad={(event) => {
-        const { height, width } = event.source;
-        if (width > 0 && height > 0) {
-          setAspectRatio(width / height);
-        }
-      }}
-      recyclingKey={uri}
-      source={{ uri }}
-      style={{
-        aspectRatio,
-        borderRadius: 16,
-        maxHeight: 420,
-        width: "100%",
-      }}
-    />
+    <ChatMediaCard>
+      <Image
+        cachePolicy="memory-disk"
+        contentFit="contain"
+        onLoad={(event) => {
+          const { height, width } = event.source;
+          if (width > 0 && height > 0) {
+            rememberMediaAspectRatio(uri, width / height);
+            setAspectRatio(width / height);
+          }
+        }}
+        recyclingKey={uri}
+        source={{ uri }}
+        style={{
+          aspectRatio,
+          maxHeight: 420,
+          width: "100%",
+        }}
+      />
+    </ChatMediaCard>
   );
 }
 
 function MarkdownImage({ alt, uri }: { alt: string; uri: string }) {
-  const [aspectRatio, setAspectRatio] = useState(16 / 9);
-  const [failed, setFailed] = useState(false);
   const { onPreviewImage, workspaceFiles } = useContext(ChatMediaContext);
   const resolvedUri = useMemo(() => {
     if (!uri) return uri;
@@ -400,6 +455,12 @@ function MarkdownImage({ alt, uri }: { alt: string; uri: string }) {
     }
     return uri;
   }, [uri, workspaceFiles]);
+  // Seed from the session cache when this uri was already decoded once, so a
+  // recycled row starts at the real height instead of the 16:9 guess.
+  const [aspectRatio, setAspectRatio] = useState(
+    () => MEDIA_ASPECT_CACHE.get(resolvedUri) ?? 16 / 9,
+  );
+  const [failed, setFailed] = useState(false);
   const videoAttachment = useMemo(() => {
     if (!uri.startsWith("workspace://")) return null;
     const file = workspaceFileFromUrl(uri, workspaceFiles);
@@ -426,14 +487,13 @@ function MarkdownImage({ alt, uri }: { alt: string; uri: string }) {
   }
 
   return (
-    <Pressable
+    <ChatMediaCard
       accessibilityHint="Opens the image preview"
       accessibilityLabel={alt || "Open image preview"}
-      accessibilityRole="button"
+      className="mb-2.5 mt-1"
       onPress={() => {
         onPreviewImage({ alt: alt || "Image", kind: "uri", uri: resolvedUri });
       }}
-      style={({ pressed }) => (pressed ? { opacity: 0.9 } : null)}
     >
       <Image
         accessibilityLabel={alt || "Image"}
@@ -447,14 +507,15 @@ function MarkdownImage({ alt, uri }: { alt: string; uri: string }) {
           const { height, width } = event.source;
 
           if (width > 0 && height > 0) {
+            rememberMediaAspectRatio(resolvedUri, width / height);
             setAspectRatio(width / height);
           }
         }}
         recyclingKey={resolvedUri}
         source={{ uri: resolvedUri }}
-        style={{ aspectRatio, maxWidth: "100%", width: "100%" }}
+        style={{ aspectRatio, width: "100%" }}
       />
-    </Pressable>
+    </ChatMediaCard>
   );
 }
 
@@ -504,15 +565,12 @@ function VideoAttachmentView({
   }, [localUri]);
 
   return (
-    <Pressable
+    <ChatMediaCard
       accessibilityHint="Plays the video"
       accessibilityLabel={`Play video ${displayName}`}
-      accessibilityRole="button"
-      className="overflow-hidden rounded-card border border-border dark:border-border-dark"
       onPress={() => {
         onPreviewVideo({ displayName, mimeType, uri });
       }}
-      style={({ pressed }) => (pressed ? { opacity: 0.9 } : null)}
     >
       {poster ? (
         <Image
@@ -542,7 +600,7 @@ function VideoAttachmentView({
           <Play color="#ffffff" size={28} />
         </View>
       </View>
-    </Pressable>
+    </ChatMediaCard>
   );
 }
 
@@ -733,12 +791,19 @@ function MarkdownTable({
   tableStyle: StyleProp<ViewStyle>;
 }) {
   const { width: windowWidth } = useWindowDimensions();
+  const contextWidth = useContext(MarkdownContainerWidthContext);
   const [measuredWidth, setMeasuredWidth] = useState(0);
   const columns = Math.max(columnCount, 1);
-  // The first frame has no layout yet, so estimate from the window (the card
-  // keeps a page margin on both sides) until onLayout reports the real width.
+  // On the very first frame no layout exists yet, so estimate from the window
+  // (the card keeps a page margin on both sides). From the frame after that,
+  // the message-level container measurement or our own onLayout wins, and the
+  // table renders at its final width — no slide-in reshuffle.
   const availableWidth =
-    measuredWidth > 0 ? measuredWidth : Math.max(windowWidth - 72, 0);
+    measuredWidth > 0
+      ? measuredWidth
+      : contextWidth > 0
+        ? contextWidth
+        : Math.max(windowWidth - 72, 0);
   const tableWidth = Math.max(availableWidth, columns * TABLE_MIN_COLUMN_WIDTH);
 
   return (
@@ -1378,12 +1443,16 @@ export const ChatMessage = memo(function ChatMessage({
     null,
     [message.id],
   );
-  const [reasoningExpanded, setReasoningExpanded] = useRecyclingState(
-    () => message.status === "streaming",
-    [message.id],
-  );
-  const [tasksExpanded, setTasksExpanded] = useRecyclingState(
-    () => message.status === "streaming",
+  // undefined = the reader hasn't touched it; the fallback is then "open
+  // while thinking runs" (shadcn's open ?? running pattern for trace rows).
+  const [reasoningExpanded, setReasoningExpanded] = useRecyclingState<
+    boolean | undefined
+  >(() => (message.status === "streaming" ? true : undefined), [message.id]);
+  const [tasksExpanded, setTasksExpanded] = useRecyclingState<
+    boolean | undefined
+  >(() => (message.status === "streaming" ? true : undefined), [message.id]);
+  const [doneTasksExpanded, setDoneTasksExpanded] = useRecyclingState(
+    false,
     [message.id],
   );
   const [imagePreview, setImagePreview] =
@@ -1397,6 +1466,14 @@ export const ChatMessage = memo(function ChatMessage({
   const [timelineExpanded, setTimelineExpanded] = useRecyclingState(false, [
     message.id,
   ]);
+  // Width of the assistant content column once laid out; tables consume it to
+  // skip the window-sized estimate right after their first frame.
+  const [markdownContainerWidth, setMarkdownContainerWidth] = useState(0);
+  // Open-by-tap tool trace rows; running rows ignore it and stay open.
+  const [expandedToolRunIds, setExpandedToolRunIds] = useRecyclingState(
+    () => new Set<string>(),
+    [message.id],
+  );
   const isAssistant = message.role === "assistant";
   const isUser = message.role === "user";
   // While streaming, tokens arrive at 20-60/s and a full MarkdownIt +
@@ -1842,15 +1919,15 @@ export const ChatMessage = memo(function ChatMessage({
   };
   const memoryEvents = message.metadata?.memoryEvents ?? [];
   const todoList = message.metadata?.todoList ?? [];
-  const completedTaskCount = todoList.filter(
+  const pendingTodoList = todoList.filter(
+    (task) => task.status !== "completed",
+  );
+  const completedTodoList = todoList.filter(
     (task) => task.status === "completed",
-  ).length;
-  const taskLabel =
-    todoList.length === 0
-      ? null
-      : completedTaskCount === todoList.length
-        ? `${todoList.length} tasks done`
-        : `${completedTaskCount}/${todoList.length} tasks`;
+  );
+  const todoActive =
+    message.status === "streaming" &&
+    todoList.some((task) => task.status === "in_progress");
   const executionTimeline = (message.metadata?.executionTimeline ?? []).filter(
     (event) =>
       event.kind !== "prompt" &&
@@ -1863,59 +1940,92 @@ export const ChatMessage = memo(function ChatMessage({
     (run) => run.status === "running" && message.status === "streaming",
   );
   const pluginOutputs = message.metadata?.pluginOutputs ?? [];
-  const termuxRunsById = new Map(
-    termuxRuns.flatMap((run) => (run.id ? ([[run.id, run]] as const) : [])),
+  const toolExecutions = message.metadata?.toolExecutions ?? [];
+  const toolRunsById = new Map(
+    toolExecutions.flatMap((run) =>
+      run.id ? ([[run.id, run]] as const) : [],
+    ),
   );
-  const anchoredTermuxRuns = (message.metadata?.termuxRunAnchors ?? [])
-    .map((anchor) => ({ anchor, run: termuxRunsById.get(anchor.executionId) }))
-    .filter(
-      (
-        entry,
-      ): entry is {
-        anchor: (typeof entry)["anchor"];
-        run: NonNullable<(typeof entry)["run"]>;
-      } =>
-        Boolean(entry.run) &&
-        Number.isInteger(entry.anchor.textOffset) &&
-        entry.anchor.textOffset >= 0 &&
-        entry.anchor.textOffset <= message.content.length,
+  // New runs anchor every execution; older messages only carry the termux
+  // anchors — map(`${termux first, toolRunAnchors win}`), then drop anchors
+  // whose record is missing or whose offset left the (possibly changed) text.
+  const toolRunOffsets = new Map(
+    [
+      ...(message.metadata?.termuxRunAnchors ?? []),
+      ...(message.metadata?.toolRunAnchors ?? []),
+    ].map((anchor) => [anchor.executionId, anchor.textOffset]),
+  );
+  const anchoredToolRuns = [...toolRunOffsets]
+    .map(([executionId, textOffset]) => ({
+      record: toolRunsById.get(executionId),
+      textOffset,
+    }))
+    .filter((entry): entry is { record: ToolExecutionRecord; textOffset: number } =>
+      Boolean(entry.record) &&
+      Number.isInteger(entry.textOffset) &&
+      entry.textOffset >= 0 &&
+      entry.textOffset <= message.content.length,
     )
-    .sort((a, b) => a.anchor.textOffset - b.anchor.textOffset);
-  const anchoredTermuxRunIds = new Set(
-    anchoredTermuxRuns.map(({ anchor }) => anchor.executionId),
+    .sort((a, b) => a.textOffset - b.textOffset);
+  const anchoredToolRunIds = new Set(
+    anchoredToolRuns.map(({ record }) => record.id ?? ""),
   );
   const unanchoredTermuxRuns = termuxRuns.filter(
-    (run) => !run.id || !anchoredTermuxRunIds.has(run.id),
+    (run) => !run.id || !anchoredToolRunIds.has(run.id),
   );
-  const inlineTermuxContent: ReactNode[] = [];
+  const unanchoredToolRuns = toolExecutions.filter(
+    (run) => !run.termux && (!run.id || !anchoredToolRunIds.has(run.id)),
+  );
+  const inlineToolContent: ReactNode[] = [];
   let contentOffset = 0;
-  for (const { anchor, run } of anchoredTermuxRuns) {
-    const text = message.content.slice(contentOffset, anchor.textOffset);
+  for (const { record, textOffset } of anchoredToolRuns) {
+    const text = message.content.slice(contentOffset, textOffset);
     if (text.trim()) {
-      inlineTermuxContent.push(
+      inlineToolContent.push(
         <MarkdownContent
           content={text}
-          key={`text-${anchor.executionId}`}
+          key={`text-${toolRunOffsets.get(record.id ?? "") ?? textOffset}`}
           onLinkPress={handleLinkPress}
           selectable={selectEnabled}
           styles={markdownStyles}
         />,
       );
     }
-    inlineTermuxContent.push(
-      <TermuxRunCard
-        command={run.termux!.command}
-        key={`termux-${anchor.executionId}`}
-        output={run.termux!.output}
-        running={run.status === "running" && message.status === "streaming"}
-        taskId={run.termux!.taskId}
-      />,
+    inlineToolContent.push(
+      record.termux ? (
+        <TermuxRunCard
+          command={record.termux.command}
+          key={`termux-${record.id ?? record.createdAt}`}
+          output={record.termux.output}
+          running={record.status === "running" && message.status === "streaming"}
+          taskId={record.termux.taskId}
+        />
+      ) : (
+        <ToolTraceRow
+          expanded={expandedToolRunIds.has(record.id ?? record.createdAt)}
+          key={`tool-${record.id ?? record.createdAt}`}
+          onExpandedChange={(open) => {
+            setExpandedToolRunIds((current) => {
+              const key = record.id ?? record.createdAt;
+              const next = new Set(current);
+              if (open) {
+                next.add(key);
+              } else {
+                next.delete(key);
+              }
+              return next;
+            });
+          }}
+          record={record}
+          streaming={message.status === "streaming"}
+        />
+      ),
     );
-    contentOffset = anchor.textOffset;
+    contentOffset = textOffset;
   }
   const trailingContent = message.content.slice(contentOffset);
-  if (anchoredTermuxRuns.length > 0 && trailingContent.trim()) {
-    inlineTermuxContent.push(
+  if (anchoredToolRuns.length > 0 && trailingContent.trim()) {
+    inlineToolContent.push(
       <MarkdownContent
         content={trailingContent}
         key="text-trailing"
@@ -1972,14 +2082,10 @@ export const ChatMessage = memo(function ChatMessage({
     <Message align={align}>
       <ChatMediaContext.Provider value={mediaContext}>
       <View
-        className={cn("gap-1", align === "end" ? "items-end" : "items-start", {
-          "w-full": isAssistant,
-          "max-w-[80%]": !isAssistant,
-        })}
+        className={cn("w-full gap-1", align === "end" ? "items-end" : "items-start")}
       >
         {hasUserAttachments ? (
           <FlatList
-            className="max-w-full"
             contentContainerStyle={{ gap: 8 }}
             data={attachedFiles}
             horizontal
@@ -1996,7 +2102,7 @@ export const ChatMessage = memo(function ChatMessage({
               />
             )}
             showsHorizontalScrollIndicator={false}
-            style={{ flexGrow: 0 }}
+            style={{ flexGrow: 0, width: "100%" }}
             windowSize={3}
           />
         ) : null}
@@ -2004,109 +2110,197 @@ export const ChatMessage = memo(function ChatMessage({
         {isAssistant || message.content ? (
           <Bubble
             align={align}
-            className={cn("max-w-full", isAssistant && "w-full")}
+            className={cn(
+              "max-w-full",
+              isAssistant ? "w-full" : "max-w-[80%]",
+            )}
             variant={variant}
           >
             <BubbleContent
               className={cn("!px-4", isAssistant ? "!py-0" : undefined)}
             >
               {isAssistant ? (
-                <View className="gap-sp-3">
+              <MarkdownContainerWidthContext.Provider
+                value={markdownContainerWidth}
+              >
+                <View
+                  className="gap-sp-3"
+                  onLayout={(event) => {
+                    const width = Math.round(event.nativeEvent.layout.width);
+                    setMarkdownContainerWidth((current) =>
+                      width === current ? current : width,
+                    );
+                  }}
+                >
                   {reasoningLabel ? (
-                    <CollapsibleSection
-                      contentClassName="flex-row gap-sp-2"
-                      expanded={reasoningExpanded}
-                      label={reasoningLabel}
-                      onExpandedChange={setReasoningExpanded}
-                    >
-                      <View className="w-5 items-center">
-                        <Clock3 color={theme.textSecondary} size={16} />
-                        <View className="my-1 min-h-6 w-px flex-1 bg-border dark:bg-border-dark" />
-                        <Check color={theme.textSecondary} size={16} />
-                      </View>
-                      <View className="min-w-0 flex-1 gap-sp-3 pb-0.5">
-                        <Text selectable style={reasoningMarkdownStyles.body}>
-                          {reasoningText}
-                        </Text>
-                        <Text className="font-sans text-sm text-muted-foreground dark:text-muted-foreground-dark">
-                          {reasoningInProgress ? "Working" : "Done"}
-                        </Text>
-                      </View>
-                    </CollapsibleSection>
+                    <Trace>
+                      <TraceCollapsible
+                        onOpenChange={setReasoningExpanded}
+                        open={reasoningExpanded ?? reasoningInProgress}
+                      >
+                        <TraceCollapsibleTrigger>
+                          <TraceLine
+                            status={reasoningInProgress ? "running" : undefined}
+                          >
+                            <TraceIcon>
+                              <Brain color={theme.textSecondary} size={16} />
+                            </TraceIcon>
+                            <TraceTitle>{reasoningLabel}</TraceTitle>
+                          </TraceLine>
+                        </TraceCollapsibleTrigger>
+                        <TraceCollapsibleContent>
+                          <View className="border-l border-border pl-sp-3 dark:border-border-dark">
+                            <Text
+                              selectable
+                              style={reasoningMarkdownStyles.body}
+                            >
+                              {reasoningText}
+                            </Text>
+                          </View>
+                        </TraceCollapsibleContent>
+                      </TraceCollapsible>
+                    </Trace>
                   ) : null}
 
                   {memoryEventLabel ? (
-                    <CollapsibleSection
-                      contentClassName="gap-sp-2"
-                      expanded={memoryExpanded}
-                      label={memoryEventLabel}
-                      onExpandedChange={setMemoryExpanded}
-                    >
-                      {memoryEvents.map((event) => (
-                        <View key={event.id} className="gap-1">
-                          {memoryEvents.length > 1 ? (
-                            <Text className="font-sans text-sm font-medium text-muted-foreground dark:text-muted-foreground-dark">
-                              {getMemoryEventLabel(event.kind)}
-                            </Text>
-                          ) : null}
-                          <Text
-                            selectable
-                            className="font-sans text-sm text-muted-foreground dark:text-muted-foreground-dark"
-                          >
-                            {event.content}
-                          </Text>
-                        </View>
-                      ))}
-                    </CollapsibleSection>
+                    <Trace>
+                      <TraceCollapsible
+                        onOpenChange={setMemoryExpanded}
+                        open={memoryExpanded}
+                      >
+                        <TraceCollapsibleTrigger>
+                          <TraceLine>
+                            <TraceIcon>
+                              <Database
+                                color={theme.textSecondary}
+                                size={16}
+                              />
+                            </TraceIcon>
+                            <TraceTitle>{memoryEventLabel}</TraceTitle>
+                          </TraceLine>
+                        </TraceCollapsibleTrigger>
+                        <TraceCollapsibleContent>
+                          <View className="gap-sp-2">
+                            {memoryEvents.map((event) => (
+                              <View key={event.id} className="gap-1">
+                                {memoryEvents.length > 1 ? (
+                                  <Text className="font-sans text-sm font-medium text-muted-foreground dark:text-muted-foreground-dark">
+                                    {getMemoryEventLabel(event.kind)}
+                                  </Text>
+                                ) : null}
+                                <Text
+                                  selectable
+                                  className="font-sans text-sm text-muted-foreground dark:text-muted-foreground-dark"
+                                >
+                                  {event.content}
+                                </Text>
+                              </View>
+                            ))}
+                          </View>
+                        </TraceCollapsibleContent>
+                      </TraceCollapsible>
+                    </Trace>
                   ) : null}
 
-                  {taskLabel ? (
-                    <CollapsibleSection
-                      contentClassName="gap-sp-1.5 border-l border-border pl-sp-3 dark:border-border-dark"
-                      expanded={tasksExpanded}
-                      label={taskLabel}
-                      onExpandedChange={setTasksExpanded}
-                    >
-                      {todoList.map((task) => (
-                        <View
-                          key={task.id}
-                          className="flex-row items-start gap-sp-2"
+                  {todoList.length > 0 ? (
+                    <Trace>
+                      {pendingTodoList.length > 0 ? (
+                        <TraceCollapsible
+                          onOpenChange={setTasksExpanded}
+                          open={tasksExpanded ?? todoActive}
                         >
-                          {task.status === "completed" ? (
-                            <CheckCircle2
-                              color={theme.textSecondary}
-                              size={16}
-                              style={{ marginTop: 1 }}
-                            />
-                          ) : task.status === "in_progress" ? (
-                            <SpinningLoader
-                              color={theme.textSecondary}
-                              size={16}
-                            />
-                          ) : (
-                            <Circle
-                              color={theme.textSecondary}
-                              size={16}
-                              style={{ marginTop: 1 }}
-                            />
-                          )}
-                          <Text
-                            className={cn(
-                              "min-w-0 flex-1 font-sans text-sm",
-                              task.status === "completed"
-                                ? "text-muted-foreground line-through dark:text-muted-foreground-dark"
-                                : "text-foreground dark:text-foreground-dark",
-                            )}
-                          >
-                            {task.title}
-                          </Text>
-                        </View>
-                      ))}
-                    </CollapsibleSection>
+                          <TraceCollapsibleTrigger>
+                            <TraceLine status={todoActive ? "running" : undefined}>
+                              <TraceIcon>
+                                <ListTodo
+                                  color={theme.textSecondary}
+                                  size={16}
+                                />
+                              </TraceIcon>
+                              <TraceTitle>
+                                {pendingTodoList.length} to do
+                              </TraceTitle>
+                            </TraceLine>
+                          </TraceCollapsibleTrigger>
+                          <TraceCollapsibleContent>
+                            <View className="gap-sp-1.5 border-l border-border pl-sp-3 dark:border-border-dark">
+                              {pendingTodoList.map((task) => (
+                                <View
+                                  key={task.id}
+                                  className="flex-row items-start gap-sp-2"
+                                >
+                                  {task.status === "in_progress" ? (
+                                    <SpinningLoader
+                                      color={theme.textSecondary}
+                                      size={16}
+                                    />
+                                  ) : (
+                                    <Circle
+                                      color={theme.textSecondary}
+                                      size={16}
+                                      style={{ marginTop: 1 }}
+                                    />
+                                  )}
+                                  <Text
+                                    className={cn(
+                                      "min-w-0 flex-1 font-sans text-sm",
+                                      task.status === "in_progress"
+                                        ? "text-foreground dark:text-foreground-dark"
+                                        : "text-muted-foreground dark:text-muted-foreground-dark",
+                                    )}
+                                  >
+                                    {task.title}
+                                  </Text>
+                                </View>
+                              ))}
+                            </View>
+                          </TraceCollapsibleContent>
+                        </TraceCollapsible>
+                      ) : null}
+                      {completedTodoList.length > 0 ? (
+                        <TraceCollapsible
+                          onOpenChange={setDoneTasksExpanded}
+                          open={doneTasksExpanded}
+                        >
+                          <TraceCollapsibleTrigger>
+                            <TraceLine>
+                              <TraceIcon>
+                                <CheckCircle2
+                                  color={theme.textSecondary}
+                                  size={16}
+                                />
+                              </TraceIcon>
+                              <TraceTitle>
+                                {completedTodoList.length} completed
+                              </TraceTitle>
+                            </TraceLine>
+                          </TraceCollapsibleTrigger>
+                          <TraceCollapsibleContent>
+                            <View className="gap-sp-1.5 border-l border-border pl-sp-3 dark:border-border-dark">
+                              {completedTodoList.map((task) => (
+                                <View
+                                  key={task.id}
+                                  className="flex-row items-start gap-sp-2"
+                                >
+                                  <CheckCircle2
+                                    color={theme.textSecondary}
+                                    size={16}
+                                    style={{ marginTop: 1 }}
+                                  />
+                                  <Text className="min-w-0 flex-1 font-sans text-sm text-muted-foreground line-through dark:text-muted-foreground-dark">
+                                    {task.title}
+                                  </Text>
+                                </View>
+                              ))}
+                            </View>
+                          </TraceCollapsibleContent>
+                        </TraceCollapsible>
+                      ) : null}
+                    </Trace>
                   ) : null}
 
-                  {anchoredTermuxRuns.length > 0 ? (
-                    <View className="gap-sp-3">{inlineTermuxContent}</View>
+                  {anchoredToolRuns.length > 0 ? (
+                    <View className="gap-sp-3">{inlineToolContent}</View>
                   ) : message.content.trim() ? (
                     <MarkdownContent
                       content={bodyContent}
@@ -2130,6 +2324,14 @@ export const ChatMessage = memo(function ChatMessage({
                         />
                       ))}
                     </View>
+                  ) : null}
+                  {unanchoredToolRuns.length > 0 ? (
+                    <ToolTraceGroup
+                      expandedIds={expandedToolRunIds}
+                      onExpandedChange={setExpandedToolRunIds}
+                      records={unanchoredToolRuns}
+                      streaming={message.status === "streaming"}
+                    />
                   ) : null}
                   {pluginOutputs.length > 0 ? (
                     <View className="gap-sp-2">
@@ -2173,11 +2375,10 @@ export const ChatMessage = memo(function ChatMessage({
                   {generatedImages.length > 0 ? (
                     <View className="gap-sp-2">
                       {generatedImages.map((image) => (
-                        <Pressable
+                        <ChatMediaCard
                           key={image.id}
                           accessibilityHint="Open the generated image preview"
-                          accessibilityRole="button"
-                          className="overflow-hidden rounded-card border border-border dark:border-border-dark"
+                          accessibilityLabel="Generated image"
                           onPress={() => {
                             setImagePreview({ image, kind: "generated" });
                           }}
@@ -2198,7 +2399,7 @@ export const ChatMessage = memo(function ChatMessage({
                               Tap to view, save, or share
                             </Text>
                           </View>
-                        </Pressable>
+                        </ChatMediaCard>
                       ))}
                     </View>
                   ) : null}
@@ -2218,8 +2419,9 @@ export const ChatMessage = memo(function ChatMessage({
                     <StreamingIndicator idle={STREAMING_IDLE_ELEMENT} />
                   ) : null}
                 </View>
-              ) : (
-                <DropdownMenu>
+              </MarkdownContainerWidthContext.Provider>
+            ) : (
+              <DropdownMenu>
                   <DropdownMenuTrigger triggerOn="longPress">
                     <Pressable
                       accessibilityHint="Long press to open message actions"
@@ -2430,16 +2632,17 @@ export const ChatMessage = memo(function ChatMessage({
           </DrawerHeader>
           <DrawerBody className="gap-sp-3" contentContainerClassName="gap-sp-3">
             {imagePreview?.kind === "generated" ? (
-              <Image
-                contentFit="contain"
-                source={{ uri: imagePreview.image.uri }}
-                style={{
-                  aspectRatio: 1,
-                  borderRadius: 16,
-                  maxHeight: 420,
-                  width: "100%",
-                }}
-              />
+              <ChatMediaCard>
+                <Image
+                  contentFit="contain"
+                  source={{ uri: imagePreview.image.uri }}
+                  style={{
+                    aspectRatio: 1,
+                    maxHeight: 420,
+                    width: "100%",
+                  }}
+                />
+              </ChatMediaCard>
             ) : null}
             {imagePreview?.kind === "uri" ? (
               <PreviewUriImage uri={imagePreview.uri} />
@@ -2901,7 +3104,6 @@ function createMarkdownStyles(input: {
       marginTop: 16,
     },
     image: {
-      borderRadius: 16,
       marginBottom: 10,
       marginTop: 4,
     },
@@ -3126,5 +3328,319 @@ function TermuxRunCard({
         <ChevronRight color={theme.textSecondary} size={16} />
       </Pressable>
     </Animated.View>
+  );
+}
+
+// —─── Tool trace rows (shadcn `Trace` pattern) ─────────────────────────────
+
+const TOOL_TRACE_ICONS: Record<string, LucideIcon> = {
+  analyzeAudio: ImageIcon,
+  browser: Globe,
+  cancel_schedule: ListTodo,
+  createDirectory: FileText,
+  createFile: Pencil,
+  deleteEntry: FileText,
+  downloadFile: Download,
+  edit: Pencil,
+  exportWorkspaceFileToFolder: FileText,
+  fetchPage: Globe,
+  getVideoFrame: ImageIcon,
+  glob: FileText,
+  grep: FileText,
+  importFolderFileToWorkspace: FileText,
+  importSkillFromUrl: FileText,
+  listDirectory: FileText,
+  listFiles: FileText,
+  list_schedules: ListTodo,
+  manageAgent: Pencil,
+  managePlugin: Pencil,
+  manageSkill: Pencil,
+  mergeDocuments: FileText,
+  mergePdfs: FileText,
+  moveEntry: FileText,
+  ocr: ImageIcon,
+  previewMix: ImageIcon,
+  previewScene: ImageIcon,
+  read: FileText,
+  renameEntry: Pencil,
+  renderVideo: ImageIcon,
+  schedule_task: ListTodo,
+  skill: FileText,
+  skillReadFile: FileText,
+  splitDocument: FileText,
+  splitPdf: FileText,
+};
+
+const DEFAULT_TOOL_TRACE_ICON = Wrench;
+
+function toolTraceIcon(toolName: string): LucideIcon {
+  return TOOL_TRACE_ICONS[toolName] ?? DEFAULT_TOOL_TRACE_ICON;
+}
+
+/**
+ * A short human object for the trace title, picked from the recorded input
+ * summary (`name`, `url`, `query`…). Returns null when the summary holds
+ * nothing readable — algorithmic ids never make it into the title.
+ */
+function toolTraceObjectLabel(inputSummary: string | null | undefined) {
+  if (!inputSummary) {
+    return null;
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(inputSummary);
+  } catch {
+    return null;
+  }
+
+  if (
+    !parsed ||
+    typeof parsed !== "object" ||
+    Array.isArray(parsed) ||
+    (parsed instanceof Error)
+  ) {
+    return null;
+  }
+
+  const candidateKeys = [
+    "name",
+    "path",
+    "file",
+    "displayName",
+    "title",
+    "label",
+    "url",
+    "query",
+    "pattern",
+  ] as const;
+
+  for (const key of candidateKeys) {
+    const value = (parsed as Record<string, unknown>)[key];
+    if (typeof value !== "string") {
+      continue;
+    }
+    const trimmed = value.trim();
+    if (!trimmed || /^[a-z0-9_-]{16,}$/i.test(trimmed)) {
+      continue;
+    }
+    return trimmed.length > 48 ? `${trimmed.slice(0, 48)}…` : trimmed;
+  }
+
+  return null;
+}
+
+function toolTraceTitle(record: ToolExecutionRecord, streaming: boolean) {
+  if (record.status === "failed") {
+    return `Failed to run ${formatToolName(record.toolName)}`;
+  }
+
+  if (record.status === "running") {
+    return streaming
+      ? `Running ${formatToolName(record.toolName)}`
+      : formatToolName(record.toolName);
+  }
+
+  const object = toolTraceObjectLabel(record.inputSummary);
+  const verb = toolTraceVerb(record.toolName);
+
+  if (verb === "Used") {
+    return object ? `Used ${formatToolName(record.toolName)} on ${object}` : `Ran ${formatToolName(record.toolName)}`;
+  }
+
+  return object ? `${verb} ${object}` : `${verb} — ${formatToolName(record.toolName)}`;
+}
+
+type ToolTraceRowProps = {
+  expanded: boolean;
+  onExpandedChange: (open: boolean) => void;
+  record: ToolExecutionRecord;
+  streaming: boolean;
+};
+
+/**
+ * The captured diff of an `edit`, painted with the shared CodeBlock — its
+ * per-line added/removed variants supply the `+`/`−` markers and tints for
+ * code and prose alike.
+ */
+function TraceDiffBlock({ diff }: { diff: string }) {
+  return (
+    <CodeBlock size="sm">
+      <CodeBlockContent>
+        {diff.split("\n").map((line, index) => {
+          if (line.startsWith("+")) {
+            return (
+              <CodeBlockLine key={`diff-${index}`} variant="added">
+                <Text className="font-mono text-sm text-foreground dark:text-foreground-dark">
+                  {line.slice(1)}
+                </Text>
+              </CodeBlockLine>
+            );
+          }
+
+          if (line.startsWith("-")) {
+            return (
+              <CodeBlockLine key={`diff-${index}`} variant="removed">
+                <Text className="font-mono text-sm text-foreground dark:text-foreground-dark">
+                  {line.slice(1)}
+                </Text>
+              </CodeBlockLine>
+            );
+          }
+
+          return (
+            <CodeBlockLine key={`diff-${index}`}>
+              <Text
+                className={cn(
+                  "font-mono text-sm",
+                  line.startsWith("@@") || line.startsWith("…")
+                    ? "text-muted-foreground dark:text-muted-foreground-dark"
+                    : "text-foreground dark:text-foreground-dark",
+                )}
+              >
+                {line}
+              </Text>
+            </CodeBlockLine>
+          );
+        })}
+      </CodeBlockContent>
+    </CodeBlock>
+  );
+}
+
+/** One tool execution as an expandable trace row; detail = in/out summary. */
+function ToolTraceRow({
+  expanded,
+  onExpandedChange,
+  record,
+  streaming,
+}: ToolTraceRowProps) {
+  const theme = useTheme();
+  const running = record.status === "running" && streaming;
+  const Icon = toolTraceIcon(record.toolName);
+  const status =
+    record.status === "failed"
+      ? ("error" as const)
+      : running
+        ? ("running" as const)
+        : record.status === "running"
+          ? ("pending" as const)
+          : undefined;
+
+  return (
+    <Trace>
+      <TraceCollapsible onOpenChange={onExpandedChange} open={expanded || running}>
+        <TraceCollapsibleTrigger>
+          <TraceLine status={status}>
+            <TraceIcon>
+              {/* eslint-disable-next-line react-hooks/static-components -- stable module-level lucide icon, no internal hooks */}
+              <Icon color={theme.textSecondary} size={16} />
+            </TraceIcon>
+            <TraceTitle>{toolTraceTitle(record, streaming)}</TraceTitle>
+            {record.diffStat ? (
+              <TraceDescription className="font-mono">
+                {record.diffStat}
+              </TraceDescription>
+            ) : null}
+          </TraceLine>
+        </TraceCollapsibleTrigger>
+        <TraceCollapsibleContent>
+          <View className="gap-sp-1.5 border-l border-border pl-sp-3 dark:border-border-dark">
+            {record.inputSummary ? (
+              <Text
+                selectable
+                className="font-mono text-xs text-muted-foreground dark:text-muted-foreground-dark"
+              >
+                {record.inputSummary}
+              </Text>
+            ) : null}
+            {record.outputSummary ? (
+              <Text
+                selectable
+                className="font-mono text-xs text-muted-foreground dark:text-muted-foreground-dark"
+              >
+                {record.outputSummary}
+              </Text>
+            ) : null}
+            {record.diff ? <TraceDiffBlock diff={record.diff} /> : null}
+            {record.error ? (
+              <Text
+                numberOfLines={8}
+                selectable
+                className="font-mono text-xs text-destructive dark:text-destructive-dark"
+              >
+                {record.error}
+              </Text>
+            ) : null}
+          </View>
+        </TraceCollapsibleContent>
+      </TraceCollapsible>
+    </Trace>
+  );
+}
+
+type ToolTraceGroupProps = {
+  expandedIds: Set<string>;
+  onExpandedChange: (
+    update: (current: Set<string>) => Set<string>,
+  ) => void;
+  records: ToolExecutionRecord[];
+  streaming: boolean;
+};
+
+/** Unanchored tool executions, collapsed behind a single summary row. */
+function ToolTraceGroup({
+  expandedIds,
+  onExpandedChange,
+  records,
+  streaming,
+}: ToolTraceGroupProps) {
+  const theme = useTheme();
+  const [groupExpanded, setGroupExpanded] = useState(false);
+  const running = records.some(
+    (record) => record.status === "running" && streaming,
+  );
+
+  return (
+    <Trace>
+      <TraceCollapsible onOpenChange={setGroupExpanded} open={groupExpanded}>
+        <TraceCollapsibleTrigger>
+          <TraceLine status={running ? "running" : undefined}>
+            <TraceIcon>
+              <Wrench color={theme.textSecondary} size={16} />
+            </TraceIcon>
+            <TraceTitle>
+              {running ? `Running ${records.length} tools` : `Ran ${records.length} tools`}
+            </TraceTitle>
+          </TraceLine>
+        </TraceCollapsibleTrigger>
+        <TraceCollapsibleContent>
+          <Trace className="border-l border-border pl-sp-3 dark:border-border-dark">
+            {records.map((record) => {
+              const key = record.id ?? record.createdAt;
+              return (
+                <ToolTraceRow
+                  expanded={expandedIds.has(key) || (record.status === "running" && streaming)}
+                  key={key}
+                  onExpandedChange={(open) => {
+                    onExpandedChange((current) => {
+                      const next = new Set(current);
+                      if (open) {
+                        next.add(key);
+                      } else {
+                        next.delete(key);
+                      }
+                      return next;
+                    });
+                  }}
+                  record={record}
+                  streaming={streaming}
+                />
+              );
+            })}
+          </Trace>
+        </TraceCollapsibleContent>
+      </TraceCollapsible>
+    </Trace>
   );
 }

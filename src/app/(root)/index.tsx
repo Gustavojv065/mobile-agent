@@ -126,6 +126,7 @@ import { useTheme } from "@/hooks/use-theme";
 import { useVoiceInput } from "@/hooks/use-voice-input";
 import { listPrimaryAgents, resolveAgent } from "@/modules/agents/registry";
 import { detectFolderIntent } from "@/modules/chat/folder-intent";
+import { formatFileKindLabel } from "@/modules/files/file-type-label";
 import { appendQuote, formatQuotedText } from "@/modules/chat/quote-text";
 import {
   formatUsagePlanLabel,
@@ -2528,12 +2529,14 @@ const ChatInput = memo(function ChatInput({
       />
       <Drawer onOpenChange={setFilesDrawerOpen} open={filesDrawerOpen}>
         <DrawerContent showCloseButton showHandle size={filesDrawerSize}>
-          <View className="min-h-0 flex-1 gap-sp-2 pb-sp-4">
-            <SearchBox
-              onChangeText={setFilesSearch}
-              placeholder="Search files"
-              value={filesSearch}
-            />
+          <View className="min-h-0 flex-1 gap-sp-4 pb-sp-4">
+            <View className="pr-12">
+              <SearchBox
+                onChangeText={setFilesSearch}
+                placeholder="Search files"
+                value={filesSearch}
+              />
+            </View>
             {mergedWorkspaceFiles.length > 0 ? (
               filteredWorkspaceFiles.length > 0 ? (
                 <FlatList
@@ -2602,7 +2605,7 @@ const ChatInput = memo(function ChatInput({
                       selected={selected}
                       subtitle={
                         supported
-                          ? (file.mimeType ?? "Unknown type")
+                          ? formatFileKindLabel(file)
                           : "Not supported with current model"
                       }
                       title={file.displayName}
@@ -2622,26 +2625,24 @@ const ChatInput = memo(function ChatInput({
             )}
           </View>
           <DrawerFooter>
-            <View className="gap-sp-2">
-              <Button
-                leftIcon={<Upload color={theme.text} size={16} />}
-                loading={busyAction === "import"}
-                onPress={handleImportFiles}
-                variant="secondary"
-              >
-                Upload new file
-              </Button>
-              <Button
-                disabled={mergedWorkspaceFiles.length === 0 || loading}
-                leftIcon={<Trash2 color={theme.destructive} size={16} />}
-                loading={busyAction === "clear"}
-                onPress={handleClearWorkspaceFiles}
-                textClassName="text-destructive dark:text-destructive-dark"
-                variant="ghost"
-              >
-                Clear all workspace files
-              </Button>
-            </View>
+            <Button
+              leftIcon={<Upload color={theme.text} size={16} />}
+              loading={busyAction === "import"}
+              onPress={handleImportFiles}
+              variant="secondary"
+            >
+              Upload new file
+            </Button>
+            <Button
+              disabled={mergedWorkspaceFiles.length === 0 || loading}
+              leftIcon={<Trash2 color={theme.destructive} size={16} />}
+              loading={busyAction === "clear"}
+              onPress={handleClearWorkspaceFiles}
+              textClassName="text-destructive dark:text-destructive-dark"
+              variant="ghost"
+            >
+              Clear all workspace files
+            </Button>
           </DrawerFooter>
         </DrawerContent>
       </Drawer>

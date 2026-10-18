@@ -84,7 +84,6 @@ export default function ConnectedMcpServersScreen() {
             Add custom
           </Button>
         }
-        backHref="/settings"
         title="MCP servers"
       />
 

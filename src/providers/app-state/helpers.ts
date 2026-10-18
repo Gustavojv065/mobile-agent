@@ -490,6 +490,7 @@ export function buildAssistantMetadata(input: {
   termuxRunAnchors?: import("@/core/types/app-state").TermuxRunAnchor[];
   todoList?: import("@/core/types/app-state").TodoListItem[];
   toolExecutions: ToolExecutionRecord[];
+  toolRunAnchors?: import("@/core/types/app-state").ToolRunAnchor[];
   usage?: ModelUsageSnapshot | null;
 }) {
   const metadata: MessageMetadata = {};
@@ -536,6 +537,10 @@ export function buildAssistantMetadata(input: {
 
   if (input.termuxRunAnchors && input.termuxRunAnchors.length > 0) {
     metadata.termuxRunAnchors = input.termuxRunAnchors;
+  }
+
+  if (input.toolRunAnchors && input.toolRunAnchors.length > 0) {
+    metadata.toolRunAnchors = input.toolRunAnchors;
   }
 
   if (input.toolExecutions.length > 0) {

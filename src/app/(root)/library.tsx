@@ -41,6 +41,7 @@ import type { WorkspaceFile } from "@/core/types/app-state";
 import { cn } from "@/core/utils";
 import { useChat } from "@/hooks/use-chat";
 import { useTheme } from "@/hooks/use-theme";
+import { formatFileKindLabel } from "@/modules/files/file-type-label";
 
 type LibraryCategory = "all" | "images" | "docs";
 
@@ -312,7 +313,7 @@ function LibraryFileRow({
   const isImage = file.mimeType?.startsWith("image/");
   const uri = resolveWorkspaceFile(file.relativePath).uri;
   const subtitle = [
-    file.mimeType ?? "Unknown type",
+    formatFileKindLabel(file),
     typeof file.size === "number" ? formatBytes(file.size) : null,
     formatDate(file.createdAt),
   ]

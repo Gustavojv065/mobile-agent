@@ -268,6 +268,13 @@ export type ToolExecutionRecord = {
   outputSummary: string | null;
   error: string | null;
   createdAt: string;
+  /**
+   * Bounded line-diff of a text edit, captured by the `edit` tool when the
+   * source file is small enough. Rendered inside the expanded trace row.
+   */
+  diff?: string | null;
+  /** Diff stat for the row description, like `+48 −12` (shadcn Commit pattern). */
+  diffStat?: string | null;
   /** Captured Termux command details for the read-only command output UI. */
   termux?: {
     command: string;
@@ -376,6 +383,7 @@ export type MessageMetadata = {
   todoList?: TodoListItem[];
   pluginOutputs?: PluginOutputRecord[];
   toolExecutions?: ToolExecutionRecord[];
+  toolRunAnchors?: ToolRunAnchor[];
   usage?: ModelUsageSnapshot | null;
 };
 
@@ -390,6 +398,17 @@ export type PluginOutputRecord = {
 };
 
 export type TermuxRunAnchor = {
+  executionId: string;
+  textOffset: number;
+};
+
+/**
+ * Text offset where a tool execution happened, so its row can be spliced
+ * inline into the reply where the model actually wrote around it (new
+ * writer; supercedes the termux-only anchors below, which still exist on
+ * older messages so the reader merges both).
+ */
+export type ToolRunAnchor = {
   executionId: string;
   textOffset: number;
 };

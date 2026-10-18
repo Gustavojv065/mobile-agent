@@ -21,7 +21,7 @@ export default function Layout() {
         }}
       >
         <Stack.Screen name="index" options={{ animation: "fade" }} />
-        <Stack.Screen name="library" options={{ animation: "fade" }} />
+        <Stack.Screen name="library" />
         <Stack.Screen name="terminal" options={{ animation: "fade" }} />
         <Stack.Screen name="settings/index" />
       </Stack>

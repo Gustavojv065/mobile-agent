@@ -1,4 +1,5 @@
 import {
+  Children,
   cloneElement,
   createContext,
   forwardRef,
@@ -11,6 +12,7 @@ import {
   type ComponentRef,
 } from "react";
 import { Modal, Pressable, Text, View, useWindowDimensions } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { cn } from "@/core/utils";
 
@@ -117,15 +119,26 @@ export function DropdownMenuContent({
 }) {
   const { open, setOpen, position } = useDropdown("DropdownMenuContent");
   const { height: screenHeight, width: screenWidth } = useWindowDimensions();
-  const [menuHeight, setMenuHeight] = useState(0);
+  const insets = useSafeAreaInsets();
+  const [measuredHeight, setMeasuredHeight] = useState(0);
 
   if (!open || !position) {
     return null;
   }
 
-  const top = Math.min(
-    position.y + position.height + sideOffset,
-    screenHeight - menuHeight - 8,
+  // First frame has no onLayout yet; estimate from the item count (rows are
+  // ~52px: py-3 around single-line text) so the clamp is effective from the
+  // first frame instead of launching bottom-clipped.
+  const menuHeight = measuredHeight || Children.count(children) * 52;
+  const bottomMargin = insets.bottom + 12;
+  // Clamp into the safe area on both ends: a trigger scrolled behind the
+  // composer must not pin the menu to the bottom edge with items cut off.
+  const top = Math.max(
+    8,
+    Math.min(
+      position.y + position.height + sideOffset,
+      screenHeight - menuHeight - bottomMargin,
+    ),
   );
 
   return (
@@ -138,12 +151,12 @@ export function DropdownMenuContent({
       <Pressable className="flex-1" onPress={() => setOpen(false)}>
         <View
           onLayout={(event) => {
-            setMenuHeight(event.nativeEvent.layout.height);
+            const height = Math.round(event.nativeEvent.layout.height);
+            setMeasuredHeight((current) => (current === height ? current : height));
           }}
           style={{
             position: "absolute",
 
-            // align menu to the trigger
             top,
 
             // right-align with trigger

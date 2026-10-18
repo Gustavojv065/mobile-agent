@@ -17,6 +17,7 @@ import {
 } from "react";
 import {
   Animated,
+  Keyboard,
   Pressable,
   Easing as ReactNativeEasing,
   Modal as ReactNativeModal,
@@ -265,8 +266,20 @@ export const DrawerContent = forwardRef<
         };
 
     useEffect(() => {
+      // Keep one animation at a time on `progress`. Without this, a close
+      // animation still in flight when `open` flips true (fast reopen, drawer
+      // swaps) fights the open timing, and the loser's completion callback can
+      // demote `mounted` — leaving the panel stuck mid-flight. Stopping the
+      // superseded timing synchronously keeps the state machine in sync.
+      let animation: Animated.CompositeAnimation | undefined;
+
       if (open) {
         setMounted(true);
+        // The chat screen opens drawers with the composer keyboard up; the
+        // modal window then avoids the keyboard and the panel lands above it
+        // with an empty gap until the keyboard drops. Dismiss once at mount
+        // so drawers always slide into their final position.
+        Keyboard.dismiss();
         // Defer expensive BlurView one frame so panel slide starts first.
         // Prevents the black-frame stall seen on provider drawer open.
         setBlurReady(false);
@@ -275,30 +288,37 @@ export const DrawerContent = forwardRef<
           timer = setTimeout(() => setBlurReady(true), 60);
         });
 
-        Animated.timing(progress, {
+        animation = Animated.timing(progress, {
           toValue: 1,
           duration: 180,
           easing: ReactNativeEasing.out(ReactNativeEasing.cubic),
           useNativeDriver: true,
-        }).start();
+        });
+        animation.start();
 
         return () => {
           cancelAnimationFrame(raf);
           if (timer) clearTimeout(timer);
+          animation?.stop();
         };
       }
 
       setBlurReady(false);
-      Animated.timing(progress, {
+      animation = Animated.timing(progress, {
         toValue: 0,
         duration: 160,
         easing: ReactNativeEasing.in(ReactNativeEasing.cubic),
         useNativeDriver: true,
-      }).start(({ finished }) => {
+      });
+      animation.start(({ finished }) => {
         if (finished) {
           setMounted(false);
         }
       });
+
+      return () => {
+        animation?.stop();
+      };
     }, [open, progress]);
 
     const handleDismiss = () => {

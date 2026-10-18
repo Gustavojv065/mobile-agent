@@ -262,20 +262,9 @@ export default function VoiceSettingsScreen() {
                         }}
                       />
                     </View>
-                    <View className="flex-row items-center justify-between gap-sp-3">
-                      <Text className="font-sans text-xs text-muted-foreground dark:text-muted-foreground-dark">
-                        Downloading {Math.round(progress * 100)}%
-                      </Text>
-                      <Button
-                        onPress={() => {
-                          cancelVoiceDownload().catch(console.error);
-                        }}
-                        size="xs"
-                        variant="outline"
-                      >
-                        Cancel
-                      </Button>
-                    </View>
+                    <Text className="font-sans text-xs text-muted-foreground dark:text-muted-foreground-dark">
+                      Downloading {Math.round(progress * 100)}%
+                    </Text>
                   </View>
                 ) : null}
               </DrawerBody>
@@ -313,14 +302,38 @@ export default function VoiceSettingsScreen() {
                       </Button>
                     </View>
                   ) : (
-                    <Button
-                      disabled={busy !== null || !supported}
-                      onPress={() => {
-                        download(selectedModel.id).catch(console.error);
-                      }}
-                    >
-                      {`Download ${formatBytes(selectedModel.sizeBytes)}`}
-                    </Button>
+                    <View className="w-full">
+                      <Button
+                        disabled={busy !== null || !supported}
+                        loading={busy === selectedModel.id}
+                        onPress={() => {
+                          download(selectedModel.id).catch(console.error);
+                        }}
+                      >
+                        {busy === selectedModel.id
+                          ? "Downloading…"
+                          : `Download ${formatBytes(selectedModel.sizeBytes)}`}
+                      </Button>
+                      {busy === selectedModel.id ? (
+                        <Pressable
+                          accessibilityHint="Cancels the model download"
+                          accessibilityLabel="Cancel"
+                          accessibilityRole="button"
+                          className="items-center py-sp-3"
+                          hitSlop={8}
+                          onPress={() => {
+                            cancelVoiceDownload().catch(console.error);
+                          }}
+                          style={({ pressed }) =>
+                            pressed ? { opacity: 0.6 } : null
+                          }
+                        >
+                          <Text className="font-sans text-sm text-muted-foreground dark:text-muted-foreground-dark">
+                            Cancel
+                          </Text>
+                        </Pressable>
+                      ) : null}
+                    </View>
                   )
                 ) : null}
               </DrawerFooter>

@@ -114,6 +114,7 @@ export function MessageScrollerProvider({
   const listRef = useRef<FlashListRef<unknown>>(null);
   const didInitialScrollRef = useRef(false);
   const lastScrollableRef = useRef<ScrollState>({ end: false, start: false });
+  const lastContentHeightRef = useRef(0);
   const metricsRef = useRef({
     contentHeight: 0,
     offsetY: 0,
@@ -189,8 +190,26 @@ export function MessageScrollerProvider({
   const onListContentSizeChange = useCallback(
     (contentHeight: number) => {
       const { offsetY, viewportHeight } = metricsRef.current;
+      const previousHeight = lastContentHeightRef.current;
 
+      lastContentHeightRef.current = contentHeight;
       recomputeScrollable(offsetY, viewportHeight, contentHeight);
+
+      // Stick-to-bottom while pinned. FlashList's maintainVisibleContentPosition
+      // only autoscrolls on data changes, never when the bottom item itself
+      // grows (streaming text, arriving tables, images settling) — Shopify
+      // confirmed that gap on flash-list#1666. Until the user scrolls away,
+      // keep the viewport glued to the newest content ourselves.
+      const grew = previousHeight > 0 && contentHeight > previousHeight + 1;
+      const wasPinned =
+        previousHeight > 0 &&
+        viewportHeight > 0 &&
+        previousHeight - offsetY - viewportHeight <= 8;
+
+      if (grew && wasPinned) {
+        listRef.current?.scrollToEnd({ animated: false });
+      }
+
       if (
         initialScrollToEnd &&
         !didInitialScrollRef.current &&

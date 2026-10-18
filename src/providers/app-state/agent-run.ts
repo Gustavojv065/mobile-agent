@@ -707,8 +707,11 @@ export async function executeClaimedAgentRun(
   const toolExecutions = [
     ...(assistantMessage.metadata?.toolExecutions ?? []),
   ] as ToolExecutionRecord[];
-  const termuxRunAnchors = new Map(
-    (assistantMessage.metadata?.termuxRunAnchors ?? []).map((anchor) => [
+  const toolRunAnchors = new Map(
+    [
+      ...(assistantMessage.metadata?.termuxRunAnchors ?? []),
+      ...(assistantMessage.metadata?.toolRunAnchors ?? []),
+    ].map((anchor) => [
       anchor.executionId,
       anchor.textOffset,
     ]),
@@ -774,8 +777,8 @@ export async function executeClaimedAgentRun(
       pluginOutputs: pluginSnapshot?.pluginOutputs,
       reasoning,
       runId: run.id,
-      termuxRunAnchors: Array.from(
-        termuxRunAnchors,
+      toolRunAnchors: Array.from(
+        toolRunAnchors,
         ([executionId, textOffset]) => ({ executionId, textOffset }),
       ),
       todoList,
@@ -1092,8 +1095,10 @@ export async function executeClaimedAgentRun(
 
   const handleToolExecutionRecord = (record: ToolExecutionRecord) => {
     if (runRegistry.isDisposed()) return;
-    if (record.termux && record.id && !termuxRunAnchors.has(record.id)) {
-      termuxRunAnchors.set(record.id, assistantText.length);
+    // Anchor every tool execution at the current text position, so its row
+    // can render inline in the reply where the model wrote around it.
+    if (record.id && !toolRunAnchors.has(record.id)) {
+      toolRunAnchors.set(record.id, assistantText.length);
     }
     const existingIndex = record.id
       ? toolExecutions.findIndex((existing) => existing.id === record.id)
@@ -1214,8 +1219,8 @@ export async function executeClaimedAgentRun(
         ...storedMetadata,
         executionTimeline: [...storedTimeline, backgroundCompletionEvent],
         pluginOutputs: mergedPluginOutputs,
-        termuxRunAnchors: Array.from(
-          termuxRunAnchors,
+        toolRunAnchors: Array.from(
+          toolRunAnchors,
           ([executionId, textOffset]) => ({ executionId, textOffset }),
         ),
         toolExecutions: mergedExecutions,
@@ -2160,8 +2165,8 @@ export async function executeClaimedAgentRun(
         completedAt: block.completedAt ?? new Date().toISOString(),
       })),
       runId: run.id,
-      termuxRunAnchors: Array.from(
-        termuxRunAnchors,
+      toolRunAnchors: Array.from(
+        toolRunAnchors,
         ([executionId, textOffset]) => ({ executionId, textOffset }),
       ),
       todoList,
@@ -2307,8 +2312,8 @@ export async function executeClaimedAgentRun(
           completedAt: block.completedAt ?? new Date().toISOString(),
         })),
         runId: run.id,
-        termuxRunAnchors: Array.from(
-          termuxRunAnchors,
+        toolRunAnchors: Array.from(
+          toolRunAnchors,
           ([executionId, textOffset]) => ({ executionId, textOffset }),
         ),
         todoList,
@@ -2375,8 +2380,8 @@ export async function executeClaimedAgentRun(
         completedAt: block.completedAt ?? new Date().toISOString(),
       })),
       runId: run.id,
-      termuxRunAnchors: Array.from(
-        termuxRunAnchors,
+      toolRunAnchors: Array.from(
+        toolRunAnchors,
         ([executionId, textOffset]) => ({ executionId, textOffset }),
       ),
       todoList,

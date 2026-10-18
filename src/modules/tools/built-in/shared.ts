@@ -9,6 +9,10 @@ export function summarizeValue(value: unknown) {
 
 export function createRecord(input: {
   id?: string;
+  /** Optional captured line-diff (added/removed hunks), e.g. for the edit tool. */
+  diff?: string | null;
+  /** Row stat for the captured diff, like `+48 −12`. */
+  diffStat?: string | null;
   error?: string | null;
   inputSummary: string;
   outputSummary?: string | null;
@@ -25,5 +29,7 @@ export function createRecord(input: {
     error: input.error ?? null,
     createdAt: new Date().toISOString(),
     ...(input.termux ? { termux: input.termux } : {}),
+    ...(input.diff ? { diff: input.diff } : {}),
+    ...(input.diffStat ? { diffStat: input.diffStat } : {}),
   } satisfies ToolExecutionRecord;
 }

@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { Alert, View } from "react-native";
 
 import { Button } from "@/components/ui/button";
+import { ChatMediaCard } from "@/components/ui/chat-media-card";
 import {
   Drawer,
   DrawerBody,
@@ -165,7 +166,7 @@ export function VideoPlayerDialog({
         </DrawerHeader>
         <DrawerBody className="gap-sp-3" contentContainerClassName="gap-sp-3">
           {video ? (
-            <View className="overflow-hidden rounded-card border border-border bg-black dark:border-border-dark">
+            <ChatMediaCard>
               <VideoView
                 contentFit="contain"
                 fullscreenOptions={{ enable: true }}
@@ -174,7 +175,7 @@ export function VideoPlayerDialog({
                 style={{ aspectRatio: aspectRatio ?? 16 / 9, width: "100%" }}
                 surfaceType="textureView"
               />
-            </View>
+            </ChatMediaCard>
           ) : null}
         </DrawerBody>
         <DrawerFooter className="flex-row gap-sp-2">

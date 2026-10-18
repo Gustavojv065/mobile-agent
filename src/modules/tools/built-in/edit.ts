@@ -4,6 +4,7 @@ import { z } from "zod";
 import { createRecord, summarizeValue } from "@/modules/tools/built-in/shared";
 import type { WorkspaceToolFactoryParams } from "@/modules/tools/built-in/types";
 import { applyTextEdits } from "@/modules/tools/built-in/edits";
+import { buildLineDiff, type LineDiff } from "@/modules/files/line-diff";
 import {
   createWorkspaceFileService,
   isDocumentWorkspaceFile,
@@ -33,7 +34,9 @@ export function createEditTool({
       fileId: z.string().min(1),
     }),
     execute: async ({ edits, fileId }) => {
-      const inputSummary = summarizeValue({
+      // Computed from args up front so the failure path always has it; the
+      // display name is filled in once the file is actually loaded.
+      let inputSummary = summarizeValue({
         edits: edits.map((edit) => ({
           newTextLength: edit.newText.length,
           oldTextLength: edit.oldText.length,
@@ -52,6 +55,16 @@ export function createEditTool({
         if (!isTextWorkspaceFile(file) && !isDocumentWorkspaceFile(file)) {
           throw new Error(`${file.displayName} is not an editable file.`);
         }
+
+        inputSummary = summarizeValue({
+          displayName: file.displayName,
+          edits: edits.map((edit) => ({
+            newTextLength: edit.newText.length,
+            oldTextLength: edit.oldText.length,
+            replaceAll: edit.replaceAll ?? false,
+          })),
+          fileId,
+        });
 
         if (isDocumentWorkspaceFile(file)) {
           if (!file.sourceMarkdown) {
@@ -81,6 +94,7 @@ export function createEditTool({
               status: "completed",
               inputSummary,
               outputSummary: summarizeValue(output),
+              ...toRecordDiff(buildLineDiff(file.sourceMarkdown, result.content)),
             }),
           );
 
@@ -103,6 +117,7 @@ export function createEditTool({
             status: "completed",
             inputSummary,
             outputSummary: summarizeValue(output),
+            ...toRecordDiff(buildLineDiff(current, result.content)),
           }),
         );
 
@@ -120,4 +135,16 @@ export function createEditTool({
       }
     },
   });
+}
+
+/** Splits a LineDiff into the record fields for the trace row. */
+function toRecordDiff(diff: LineDiff | null) {
+  if (!diff) {
+    return { diff: null as string | null, diffStat: null as string | null };
+  }
+
+  return {
+    diff: diff.hunkText,
+    diffStat: `+${diff.added} −${diff.removed}`,
+  };
 }

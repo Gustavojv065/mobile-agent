@@ -84,7 +84,7 @@ export default function SettingsMemoryScreen() {
       <View className="flex-row items-center gap-sp-2">
         <Button
           leftIcon={<ChevronLeft color={theme.text} size={16} />}
-          onPress={() => router.dismissTo("/settings/memory")}
+          onPress={() => router.back()}
           size="icon-xs"
           variant="ghost"
         />

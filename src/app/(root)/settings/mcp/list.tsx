@@ -142,9 +142,6 @@ export default function McpCatalogScreen() {
             Add custom
           </Button>
         }
-        backHref={
-          mcpServers.length > 0 ? "/settings/mcp/connected" : "/settings"
-        }
         title="MCP servers"
       />
 

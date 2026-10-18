@@ -1,4 +1,4 @@
-import { useRouter, type Href } from "expo-router";
+import { useRouter } from "expo-router";
 import { ChevronLeft } from "lucide-react-native";
 import type { ReactNode } from "react";
 import { Text, View } from "react-native";
@@ -8,11 +8,9 @@ import { useTheme } from "@/hooks/use-theme";
 
 export function McpScreenHeader({
   action,
-  backHref,
   title,
 }: {
   action?: ReactNode;
-  backHref: Href;
   title: string;
 }) {
   const router = useRouter();
@@ -22,7 +20,7 @@ export function McpScreenHeader({
     <View className="flex-row items-center gap-sp-2">
       <Button
         leftIcon={<ChevronLeft color={theme.text} size={16} />}
-        onPress={() => router.dismissTo(backHref)}
+        onPress={() => router.back()}
         size="icon-xs"
         variant="ghost"
       />
