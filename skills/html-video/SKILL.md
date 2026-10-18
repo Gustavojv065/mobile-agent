@@ -259,6 +259,9 @@ Images and video clips in scenes (user-provided visuals):
 - Images: hide an `<img src="workspace://<id>">` and paint it with
   `drawImage` in `render`. Guard every draw — `if (img.complete &&
   img.naturalWidth) { ... }` — so a still-loading image never throws.
+  The exporter itself awaits workspace images: one that fails to decode
+  (corrupt data, or too large for the device) fails the render loudly
+  with its source named rather than silently leaving a blank visual.
   Cover-fit recipe: `var s = Math.max(canvas.width / img.naturalWidth,
   canvas.height / img.naturalHeight);` then draw centered at that scale.
   Transparent PNG/GIF alpha composites in-scene — but the MP4 itself is

@@ -324,6 +324,27 @@ function workspaceIdFromSrc(src: string): string | null {
 }
 
 /**
+ * Tags every `<img>` that points at a workspace file, before either inlining
+ * lane runs (each replaces only the src value, so the attribute survives).
+ * The export loop awaits these images with `awaitSceneImage`: an image that
+ * fails to decode otherwise renders blank through the documented
+ * `complete && naturalWidth` draw guard, whereas videos were always awaited
+ * with loud failures for the same reason.
+ */
+function markWorkspaceImageTags(html: string, ids: string[]): string {
+  if (ids.length === 0) return html;
+  const wanted = new Set(ids);
+  return html.replace(WORKSPACE_IMAGE_SRC_PATTERN, (tag) => {
+    const match = IMG_SRC_VALUE_PATTERN.exec(tag);
+    if (!match) return tag;
+    const id = workspaceIdFromSrc(match[2]);
+    if (!id || !wanted.has(id)) return tag;
+    if (/\bdata-mobile-agent-asset\b/i.test(tag)) return tag;
+    return tag.replace(/^<img\b/i, '<img data-mobile-agent-asset="image"');
+  });
+}
+
+/**
  * Rewrites served `<img>` sources and marks them CORS-approved in one pass, so
  * the canvas stays readable during export. Only tags we actually rewrote are
  * touched — data-URI and external images are left exactly as authored.
@@ -374,13 +395,14 @@ export async function inlineImageAssets(
   if (ids.length === 0) {
     return { html, imageFiles: [] };
   }
+  const marked = markWorkspaceImageTags(html, ids);
 
   const { ensureAssetServer, workspaceFileUrl } = await import(
     "@/modules/preview/asset-server"
   );
   const baseUrl = await ensureAssetServer().catch(() => null);
   if (!baseUrl) {
-    return inlineAssetUris(html, repository, ids, "image", assertImageFileUsable).then(
+    return inlineAssetUris(marked, repository, ids, "image", assertImageFileUsable).then(
       ({ html: inlined, files }) => ({ html: inlined, imageFiles: files }),
     );
   }
@@ -412,7 +434,7 @@ export async function inlineImageAssets(
     servedById.set(id, workspaceFileUrl(baseUrl, record.relativePath));
   }
 
-  return { html: serveImageTags(html, servedById), imageFiles };
+  return { html: serveImageTags(marked, servedById), imageFiles };
 }
 
 /**

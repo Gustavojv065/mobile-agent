@@ -10,6 +10,7 @@ function installStubs(options: {
   autoConsume?: boolean;
   withAudio?: boolean;
   video?: object;
+  image?: object;
 } = {}) {
   const messages: Posted[] = [];
   const createVideoEncoder = vi.fn(() => { throw new Error("Native export must not construct a WebCodecs encoder."); });
@@ -79,7 +80,12 @@ function installStubs(options: {
   };
   g.document = {
     getElementById: () => null,
-    querySelectorAll: (selector: string) => selector === "video" ? (options.video ? [options.video] : []) : [canvas],
+    querySelectorAll: (selector: string) =>
+      selector === "video"
+        ? (options.video ? [options.video] : [])
+        : selector === "img[data-mobile-agent-asset]"
+          ? (options.image ? [options.image] : [])
+          : [canvas],
     createElement: () => ({ setAttribute: () => {}, appendChild: () => {} }),
     body: { appendChild: () => {} },
   };
@@ -203,6 +209,59 @@ describe("VIDEO_EXPORT_SCRIPT native encoding", () => {
     await vi.waitFor(() => expect(messages.filter((m) => m.type === "mobileAgentVideoFrame")).toHaveLength(1));
     cancel();
     finishSeek?.(); // Release any second-frame seek started before cancellation.
+  });
+
+  function fakeImage(init: { complete: boolean; naturalWidth?: number; src?: string }) {
+    const events = new Map<string, () => void>();
+    const img: Record<string, unknown> = {
+      src: init.src ?? "http://127.0.0.1:9999/files/img-1/photo.png",
+      complete: init.complete,
+      naturalWidth: init.complete ? (init.naturalWidth ?? 0) : 0,
+      addEventListener: (name: string, listener: () => void) => { events.set(name, listener); },
+      removeEventListener: (name: string) => { events.delete(name); },
+    };
+    return { img, fire: (name: string) => events.get(name)?.() };
+  }
+
+  it("fails loud with the source when a workspace image never decodes", async () => {
+    const { img } = fakeImage({ complete: true, naturalWidth: 0 });
+    const { messages, start } = installStubs({ image: img });
+    start();
+
+    await vi.waitFor(() => expect(messages.some((m) => m.type === "mobileAgentVideoError")).toBe(true));
+    const error = messages.find((m) => m.type === "mobileAgentVideoError");
+    expect(error?.message).toMatch(/scene image could not be decoded/);
+    expect(error?.message).toContain("photo.png");
+    expect(messages.filter((m) => m.type === "mobileAgentVideoFrame")).toHaveLength(0);
+  });
+
+  it("waits for a still-loading workspace image before capturing frames", async () => {
+    const { img, fire } = fakeImage({ complete: false });
+    const { messages, start, cancel } = installStubs({ image: img });
+    start();
+    // Not complete yet: the pipeline holds off on frame capture instead of
+    // silently recording without the visual.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(messages.filter((m) => m.type === "mobileAgentVideoFrame")).toHaveLength(0);
+
+    img.complete = true;
+    img.naturalWidth = 5;
+    fire("load");
+    await vi.waitFor(() => expect(messages.some((m) => m.type === "mobileAgentVideoFrame")).toBe(true));
+    cancel();
+  });
+
+  it("fails loud when a loading workspace image errors", async () => {
+    const { img, fire } = fakeImage({ complete: false, src: "http://127.0.0.1:9999/files/img-1/gone.png" });
+    const { messages, start } = installStubs({ image: img });
+    start();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    fire("error");
+
+    await vi.waitFor(() => expect(messages.some((m) => m.type === "mobileAgentVideoError")).toBe(true));
+    const error = messages.find((m) => m.type === "mobileAgentVideoError");
+    expect(error?.message).toMatch(/scene image could not be decoded/);
+    expect(error?.message).toContain("gone.png");
   });
 
   it("prepares the next frame while the current one awaits native ack", async () => {

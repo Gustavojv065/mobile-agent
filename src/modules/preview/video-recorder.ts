@@ -1136,6 +1136,10 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
       if (typeof videos[i].pause !== 'function') continue;
       waits.push(seekSourceVideo(videos[i], t, fps));
     }
+    var images = document.querySelectorAll('img[data-mobile-agent-asset]');
+    for (var j = 0; j < images.length; j += 1) {
+      waits.push(awaitSceneImage(images[j]));
+    }
     return Promise.all(waits);
   }
 
@@ -1171,6 +1175,40 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
       video.addEventListener('loadeddata', ready);
       video.addEventListener('error', failed);
       if (video.readyState >= 1) seek();
+    });
+  }
+
+  // Workspace images are tagged by the asset inliner. An image that never
+  // decodes (corrupt data, unsupported format, or too large for this device)
+  // surfaces as complete + naturalWidth === 0, and a scene following the
+  // documented "complete && naturalWidth" draw guard would skip the draw and
+  // silently render that visual blank. Await and validate instead, so the
+  // export fails loud with the source named, not blank.
+  function awaitSceneImage(img) {
+    return new Promise(function (resolve, reject) {
+      var timer = null;
+      function source() {
+        try { return String(img.currentSrc || img.src || '(no src)'); } catch (_) { return '(unknown source)'; }
+      }
+      function finish(error) {
+        clearTimeout(timer);
+        img.removeEventListener('load', ready);
+        img.removeEventListener('error', failed);
+        if (error) reject(error); else resolve();
+      }
+      function failed(extra) {
+        finish(new Error('A scene image could not be decoded (it may be too large for this device)' + (extra || '') + ': ' + source()));
+      }
+      function ready() {
+        if (cancelled) { finish(new Error('Video export cancelled.')); return; }
+        if (!img.complete) return;
+        if (!(img.naturalWidth > 0)) { failed(); return; }
+        finish();
+      }
+      timer = setTimeout(function () { failed(' before it was ready'); }, 15000);
+      img.addEventListener('load', ready);
+      img.addEventListener('error', failed);
+      ready();
     });
   }
 

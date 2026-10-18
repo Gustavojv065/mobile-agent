@@ -624,6 +624,8 @@ describe("inlineImageAssets served URLs", () => {
     // Without the attribute the export canvas would be tainted and
     // `toDataURL` would throw while capturing frames.
     expect(out).toMatch(/<img[^>]*crossorigin="anonymous"[^>]*>/);
+    // The export loop awaits marked images and fails loud on decode failure.
+    expect(out).toMatch(/<img[^>]*data-mobile-agent-asset="image"/);
     expect(out).not.toContain("data:image");
   });
 
@@ -706,6 +708,8 @@ describe("inlineImageAssets served URLs", () => {
     );
 
     expect(out).toContain("data:image/png;base64,");
+    // Marked for the exporter's loud decode guard even on the fallback lane.
+    expect(out).toMatch(/<img[^>]*data-mobile-agent-asset="image"/);
     expect(out).not.toContain("crossorigin");
   });
 });
