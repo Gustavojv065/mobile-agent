@@ -11,6 +11,7 @@ function installStubs(options: {
   withAudio?: boolean;
   video?: object;
   image?: object;
+  duration?: number;
 } = {}) {
   const messages: Posted[] = [];
   const createVideoEncoder = vi.fn(() => { throw new Error("Native export must not construct a WebCodecs encoder."); });
@@ -59,7 +60,7 @@ function installStubs(options: {
 
   g.window = {
     MOBILE_AGENT_VIDEO: {
-      duration: 1,
+      duration: options.duration ?? 1,
       fps: 5,
       width: 320,
       height: 240,
@@ -102,6 +103,8 @@ function installStubs(options: {
     messages,
     createVideoEncoder,
     start: () => w.__startMobileAgentVideoExport(),
+    startAt: (offset: number, length: number) =>
+      (w.__startMobileAgentVideoExport as (o: number, l: number) => void)(offset, length),
     consume: (id: number) => (g.window as Record<string, (id: number) => void>).__mobileAgentExportConsumed(id),
     cancel: () => w.__cancelMobileAgentVideoExport(),
   };
@@ -183,6 +186,36 @@ describe("VIDEO_EXPORT_SCRIPT native encoding", () => {
       messages.findLastIndex((m) => m.type === "mobileAgentVideoFrame"),
     );
   });
+
+  it("restarts the soundtrack clock at zero for a later segment page", async () => {
+    // Regression for 50bb719: a segment page used to stamp its PCM chunks
+    // with absolute (segment-offset-anchored) timestamps, tripping the
+    // native encoder's from-zero sample-count clock ("Non-contiguous PCM
+    // soundtrack") on every audio render past the first 30 s segment — and
+    // would have misplaced the track inside the segment MP4 besides.
+    const { messages, startAt } = installStubs({ withAudio: true, duration: 60 });
+    startAt(30, 30);
+
+    await vi.waitFor(
+      () => expect(messages.some((m) => m.type === "mobileAgentVideoDone")).toBe(true),
+      { timeout: 15000 },
+    );
+    const pcm = messages.filter((m) => m.type === "mobileAgentVideoAudioPcmChunk");
+    expect(pcm.length).toBeGreaterThan(1);
+    // Each segment file re-serves a fresh native encoder whose clock starts
+    // at zero, so the first chunk must land there…
+    expect(pcm[0].pts).toBe(0);
+    expect(pcm[0].pts).not.toBe(30_000_000);
+    // …and stay contiguous on that clock within the encoder's ±2µs guard.
+    let bytesSent = 0;
+    for (const chunk of pcm) {
+      const native = Math.trunc(bytesSent / 4 * 1_000_000 / 48000);
+      expect(Math.abs(Number(chunk.pts) - native)).toBeLessThanOrEqual(2);
+      bytesSent += Buffer.from(String(chunk.base64), "base64").length;
+    }
+    // A full 30 s segment of interleaved stereo PCM16 at 48 kHz.
+    expect(bytesSent).toBe(30 * 48000 * 4);
+  }, 30000);
 
   it("waits for source-video seeks before posting frames", async () => {
     const events = new Map<string, () => void>();

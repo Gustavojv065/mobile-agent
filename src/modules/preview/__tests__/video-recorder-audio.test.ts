@@ -1843,7 +1843,7 @@ describe("VIDEO_EXPORT_SCRIPT segmented export", () => {
     expect(starts.every(([when]) => when >= 0)).toBe(true);
   }, 15000);
 
-  it("offsets PCM timestamps and fades segment seams", async () => {
+  it("restarts PCM timestamps at zero and fades segment seams", async () => {
     const { messages } = startSegment();
     await vi.waitFor(
       () => expect(messages.some((m) => m.type === "mobileAgentVideoDone")).toBe(true),
@@ -1851,8 +1851,10 @@ describe("VIDEO_EXPORT_SCRIPT segmented export", () => {
     );
     const chunks = messages.filter((m) => m.type === "mobileAgentVideoAudioPcmChunk");
     expect(chunks.length).toBeGreaterThan(0);
-    // First chunk starts at the segment offset in microseconds.
-    expect(chunks[0].pts).toBe(30 * 1000000);
+    // Each segment file's audio track starts at zero like its video; the
+    // native encoder re-creates per segment and clocks chunks by sample count
+    // from zero ("Non-contiguous PCM soundtrack" rejects anything else).
+    expect(chunks[0].pts).toBe(0);
     const first = Buffer.from(chunks[0].base64 as string, "base64");
     const mid = Buffer.from(chunks[Math.floor(chunks.length / 2)].base64 as string, "base64");
     // Seam fade-in pulls the opening samples below full scale; mid-segment is untouched.

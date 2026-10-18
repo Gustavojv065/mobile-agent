@@ -1024,10 +1024,14 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
     }
   }
 
-  function sendOfflineAudio(segOffsetSec) {
+  function sendOfflineAudio() {
     var buffer = activeAudio && activeAudio.offlineBuffer;
     if (!buffer) return Promise.resolve();
-    var baseSamples = Math.round(((typeof segOffsetSec === 'number' && segOffsetSec > 0) ? segOffsetSec : 0) * 48000);
+    // Segment is already local: this page rendered exactly [segOffset,
+    // segOffset+segLen), and each segment file's audio track must start at
+    // zero like its video. Absolute timestamps here would break the native
+    // encoder, whose clock is the sample count from zero (it re-creates per
+    // segment), and desync the track in the concatenated MP4.
     var left = buffer.getChannelData(0);
     var right = buffer.getChannelData(1);
     var offset = 0;
@@ -1041,7 +1045,7 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
         view.setInt16(i * 4, Math.round(clamp(left[offset + i], -1, 1) * 32767), true);
         view.setInt16(i * 4 + 2, Math.round(clamp(right[offset + i], -1, 1) * 32767), true);
       }
-      var pts = Math.round((baseSamples + offset) * 1000000 / 48000);
+      var pts = Math.round(offset * 1000000 / 48000);
       offset += count;
       return postAndWait({ type: 'mobileAgentVideoAudioPcmChunk', pts: pts, base64: bytesToBase64(bytes) }).then(next);
     }
@@ -1235,7 +1239,7 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
     var sending = false;
 
     function finish() {
-      sendOfflineAudio(clockBase).then(function () {
+      sendOfflineAudio().then(function () {
         if (cancelled) { teardown(); return; }
         post({ type: 'mobileAgentVideoDone', emitted: emitted });
         teardown();
