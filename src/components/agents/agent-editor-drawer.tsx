@@ -91,7 +91,7 @@ const BUILT_IN_TOOL_LABELS: Record<BuiltInToolKey, string> = {
   todos: "Todo lists",
   workspaceCreateFile: "Create files",
   workspaceEdit: "Edit files",
-  workspaceFetchPage: "Fetch web pages",
+  workspaceFetchPage: "Browse web pages",
   workspaceGlob: "Find files",
   workspaceGrep: "Search text",
   workspaceListFiles: "List files",

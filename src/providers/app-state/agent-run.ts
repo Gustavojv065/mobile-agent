@@ -140,6 +140,7 @@ const FOLDER_BOUND_TOOL_NAMES = new Set([
 
 const WORKSPACE_AUTO_APPROVED_BUILT_IN_TOOL_NAMES = new Set([
   "analyzeAudio",
+  "browser",
   "createFile",
   "edit",
   "fetchPage",
@@ -152,7 +153,6 @@ const WORKSPACE_AUTO_APPROVED_BUILT_IN_TOOL_NAMES = new Set([
   "previewScene",
   "read",
   "renderVideo",
-  "screenshotPage",
   "textToSpeech",
   "transcribeAudio",
   "write",
@@ -1336,7 +1336,7 @@ export async function executeClaimedAgentRun(
               pickEnabledTools(workspaceDiscoveryTools, [
                 ["listFiles", enabledFor("workspaceListFiles")],
                 ["fetchPage", enabledFor("workspaceFetchPage")],
-                ["screenshotPage", enabledFor("workspaceFetchPage")],
+                ["browser", enabledFor("workspaceFetchPage")],
                 // Video rendering/inspection are workspace-backed but not
                 // folder-scoped: folder chats still need them, otherwise the
                 // skill references tools the model cannot see.
@@ -1381,7 +1381,7 @@ export async function executeClaimedAgentRun(
                 ["previewScene", enabledFor("workspaceRenderVideo")],
                 ["read", enabledFor("workspaceRead")],
                 ["renderVideo", enabledFor("workspaceRenderVideo")],
-                ["screenshotPage", enabledFor("workspaceFetchPage")],
+                ["browser", enabledFor("workspaceFetchPage")],
                 ["splitDocument", enabledFor("workspaceCreateFile")],
                 ["splitPdf", enabledFor("workspaceCreateFile")],
                 ["textToSpeech", enabledFor("workspaceRenderVideo")],

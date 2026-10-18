@@ -87,7 +87,7 @@ export const BUILT_IN_FILE_TOOL_CONTROLS: Array<{
     keys: ["workspaceGrep", "folderGrep"],
   },
   {
-    label: "Fetch web page / screenshot",
+    label: "Browse web pages",
     keys: ["workspaceFetchPage"],
   },
   {

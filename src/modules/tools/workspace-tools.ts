@@ -17,8 +17,8 @@ import {
   buildSelectedFilesInlineContext,
   buildWorkspaceSystemPrompt,
 } from "@/modules/tools/built-in/prompts";
+import { createBrowserTool } from "@/modules/tools/built-in/browser";
 import { createReadTool } from "@/modules/tools/built-in/read";
-import { createScreenshotPageTool } from "@/modules/tools/built-in/screenshot-page";
 import { createRenderVideoTool } from "@/modules/tools/built-in/render-video";
 import { createSplitDocumentTool } from "@/modules/tools/built-in/split-document";
 import { createSplitPdfTool } from "@/modules/tools/built-in/split-pdf";
@@ -39,6 +39,7 @@ export function createWorkspaceTools(
   return {
     tools: {
       analyzeAudio: createAnalyzeAudioTool(params),
+      browser: createBrowserTool(params),
       createFile: createCreateFileTool(params),
       downloadFile: createDownloadFileTool({ ...params, session: params.session }),
       edit: createEditTool(params),
@@ -55,7 +56,6 @@ export function createWorkspaceTools(
       previewMix: createPreviewMixTool(params),
       read: createReadTool(params),
       renderVideo: createRenderVideoTool(params),
-      screenshotPage: createScreenshotPageTool(params),
       splitDocument: createSplitDocumentTool(params),
       splitPdf: createSplitPdfTool(params),
       textToSpeech: createTextToSpeechTool(params),
