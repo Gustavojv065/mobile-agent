@@ -398,7 +398,30 @@ describe("inlineAudioAssets", () => {
   const schedule = (id: string) =>
     `<script>window.MOBILE_AGENT_VIDEO = { audio: { tracks: [{ file: "workspace://${id}" }] } };</script>`;
 
-  it("replaces audio-track references with data URIs", async () => {
+  it("serves audio-track references over the loopback server when available", async () => {
+    serverMocks.baseUrl = "http://127.0.0.1:9999";
+    workspaceFile("song.mp3", "audio/mpeg");
+    // Stat-only gate: even a 40 MB track must not be read into the heap.
+    mocks.resolveWorkspaceFile.mockReturnValue({
+      exists: true,
+      size: 40 * 1024 * 1024,
+      bytes: async () => {
+        throw new Error("bytes() must not be called on the served lane");
+      },
+    });
+
+    const { html: out, audioFiles } = await inlineAudioAssets(
+      schedule("song-1"),
+      repository(),
+    );
+
+    expect(audioFiles).toEqual(["song.mp3"]);
+    expect(out).not.toContain("workspace://");
+    expect(out).not.toContain("data:audio");
+    expect(out).toContain("http://127.0.0.1:9999/files/song-1/song.mp3");
+  });
+
+  it("falls back to data URIs when the server is unavailable", async () => {
     workspaceFile("song.mp3", "audio/mpeg");
 
     const { html: out, audioFiles } = await inlineAudioAssets(
@@ -433,6 +456,30 @@ describe("inlineAudioAssets", () => {
     await expect(
       inlineAudioAssets(schedule("gone"), repository()),
     ).rejects.toThrow(/no longer available/);
+  });
+
+  it("fails fast on an over-budget file in either lane", async () => {
+    // Served lane budgets at 200 MB; bytes() must never be called.
+    serverMocks.baseUrl = "http://127.0.0.1:9999";
+    workspaceFile("huge.mp3", "audio/mpeg");
+    mocks.resolveWorkspaceFile.mockReturnValue({
+      exists: true,
+      size: 300 * 1024 * 1024,
+      bytes: async () => {
+        throw new Error("bytes() must not be called for oversize audio");
+      },
+    });
+    await expect(
+      inlineAudioAssets(schedule("huge"), repository()),
+    ).rejects.toThrow(/too large/);
+
+    // Data-URI fallback keeps the strict 15 MB budget.
+    serverMocks.baseUrl = null;
+    workspaceFile("huge.mp3", "audio/mpeg");
+    mocks.bytes = new Uint8Array(16 * 1024 * 1024);
+    await expect(
+      inlineAudioAssets(schedule("huge"), repository()),
+    ).rejects.toThrow(/Keep audio files under 15\.0 MB/);
   });
 });
 

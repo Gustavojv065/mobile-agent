@@ -5,6 +5,7 @@ import { resolveWorkspaceFile } from "@/core/services/workspace-file-service";
 import {
   assertAudioFileUsable,
   buildAudioDataUri,
+  MAX_SERVED_AUDIO_FILE_BYTES,
 } from "@/modules/preview/video-audio";
 import { requestAudioAnalysis } from "@/modules/preview/video-audio-analysis-job";
 import {
@@ -20,7 +21,9 @@ import type { WorkspaceToolFactoryParams } from "@/modules/tools/built-in/types"
  *
  * The decode + analysis happens in the hidden WebView host using the same
  * engine the recorder uses, so the numbers match the live `audio` object a page
- * sees at render time.
+ * sees at render time. The file is served over the loopback asset server when
+ * available (long tracks stream from disk instead of being base64-inlined into
+ * the request), with a data-URI fallback on builds without the server.
  */
 export function createAnalyzeAudioTool({
   onRecord,
@@ -28,7 +31,7 @@ export function createAnalyzeAudioTool({
 }: WorkspaceToolFactoryParams) {
   return tool({
     description:
-      "Analyze an audio file already saved in the workspace and get its musical/structural features before authoring a video or animation that should follow it. Returns duration, an estimated bpm (or null), detected onset times in seconds (`beats`), downsampled energy/band curves (0..1) you can use to place cuts, text, or beats, plus the dominant-pitch melody: a `pitch` curve in Hz (0 when unvoiced), `notes` with start/end/MIDI/note-name/freq, the implied `key` with confidence, `tuningCents`, and `voicedRatio` (fraction of time with confident pitch — below ~0.3 there is no usable melody). Pitch follows the loudest voice only; it cannot separate chord tones or identify instruments. Video files (MP4, MOV, WebM) are accepted too — only their audio track is decoded and analyzed. Use this when the user gives you an audio file and asks for visuals 'as per the audio', so you are not guessing the rhythm or the tune. The same features are also available live inside a video render as the fourth `render` argument (`audio`), so you can either hard-code the timings here or react in-scene. Decoding happens on device; files up to 15 MB are supported.",
+      "Analyze an audio file already saved in the workspace and get its musical/structural features before authoring a video or animation that should follow it. Returns duration, an estimated bpm (or null), detected onset times in seconds (`beats`), downsampled energy/band curves (0..1) you can use to place cuts, text, or beats, plus the dominant-pitch melody: a `pitch` curve in Hz (0 when unvoiced), `notes` with start/end/MIDI/note-name/freq, the implied `key` with confidence, `tuningCents`, and `voicedRatio` (fraction of time with confident pitch — below ~0.3 there is no usable melody). Pitch follows the loudest voice only; it cannot separate chord tones or identify instruments. Video files (MP4, MOV, WebM) are accepted too — only their audio track is decoded and analyzed. Use this when the user gives you an audio file and asks for visuals 'as per the audio', so you are not guessing the rhythm or the tune. The same features are also available live inside a video render as the fourth `render` argument (`audio`), so you can either hard-code the timings here or react in-scene. Decoding happens on device and the file is served from disk rather than inlined; `maxSeconds` caps how much of the track is analyzed (default 90, up to 3600).",
     inputSchema: z.object({
       fileId: z
         .string()
@@ -39,10 +42,10 @@ export function createAnalyzeAudioTool({
       maxSeconds: z
         .number()
         .min(1)
-        .max(180)
+        .max(3600)
         .optional()
         .describe(
-          "Only analyze the first N seconds (default 90). Use a larger value for long tracks.",
+          "Only analyze the first N seconds (default 90). Raise it for long tracks; the part beyond this window is ignored.",
         ),
     }),
     execute: async ({ fileId, maxSeconds }, { abortSignal }) => {
@@ -64,15 +67,36 @@ export function createAnalyzeAudioTool({
           );
         }
 
-        const bytes = await file.bytes();
-        const mimeType = assertAudioFileUsable(
-          record.displayName,
-          record.mimeType,
-          bytes.length,
+        // Served lane first: the WebView fetches the file over loopback HTTP,
+        // so the tool never reads a long track into the JS heap and the
+        // document stays tiny. Only the data-URI fallback reads bytes (strict
+        // 15 MB budget).
+        const { ensureAssetServer, workspaceFileUrl } = await import(
+          "@/modules/preview/asset-server"
         );
+        const baseUrl = await ensureAssetServer().catch(() => null);
+        let src: string;
+        if (baseUrl) {
+          const statSize = typeof file.size === "number" ? file.size : null;
+          assertAudioFileUsable(
+            record.displayName,
+            record.mimeType,
+            statSize,
+            MAX_SERVED_AUDIO_FILE_BYTES,
+          );
+          src = workspaceFileUrl(baseUrl, record.relativePath);
+        } else {
+          const bytes = await file.bytes();
+          const mimeType = assertAudioFileUsable(
+            record.displayName,
+            record.mimeType,
+            bytes.length,
+          );
+          src = buildAudioDataUri(mimeType, bytes);
+        }
 
         const { summary } = await requestAudioAnalysis({
-          src: buildAudioDataUri(mimeType, bytes),
+          src,
           maxSeconds: maxSeconds ?? 90,
           sampleRate: 22050,
           signal: abortSignal,

@@ -201,13 +201,15 @@ Track fields (both kinds): `start` (seconds into the video, default 0),
 File tracks:
 
 - Must reference an audio file **already in the workspace**: MP3, WAV, M4A,
-  AAC, OGG, or WebM, max 15 MB. Ask the user to attach it, or use one they
-  already gave you — never invent a `workspace://` id.
+  AAC, OGG, or WebM. Tracks load from the device over loopback HTTP — no size
+  inflation — up to 200 MB; only on builds without the loopback server does a
+  data-URI fallback apply the strict 15 MB cap. Ask the user to attach it, or
+  use one they already gave you — never invent a `workspace://` id.
 - In folder-scoped chats the reference media may live in the external folder,
   which audio tools cannot read: import it first with
   `importFolderFileToWorkspace`, then use the returned workspace fileId for
   `analyzeAudio`, `transcribeAudio`, and `file:` tracks.
-- The tool inlines the file automatically. A missing, unreadable, or
+- The tool serves or inlines the file automatically. A missing, unreadable, or
   oversized file fails the render with a clear error before recording starts.
 
 Voiceover / narration (never tell the user voiceover is impossible):
@@ -244,8 +246,8 @@ Voiceover / narration (never tell the user voiceover is impossible):
 Images and video clips in scenes (user-provided visuals):
 
 - Reference workspace files directly in the scene DOM: images inline
-  automatically (JPEG/PNG/WebP/GIF, max 15 MB each — same cap as audio),
-  while clips (MP4/WebM/MOV) load from the device over loopback HTTP —
+  automatically (JPEG/PNG/WebP/GIF, max 15 MB each), while clips
+  (MP4/WebM/MOV) load from the device over loopback HTTP —
   no size inflation, seeking works, any length plays: files up to 1 GB
   serve at full quality with no warning. Absurd files compress on-device
   and MOV auto-converts to MP4 the same way (audio dropped
@@ -448,7 +450,10 @@ Rules:
   the **`analyzeAudio` tool** on the same `workspace://` file id; then
   hard-code those times/notes or rely on the live `audio` object at render
   time. Video files (MP4/MOV/WebM) are accepted too — only the soundtrack
-  is decoded. Its `voicedRatio` tells you whether a usable melody exists (below
+  is decoded — and long tracks are fine: the file is served from disk rather
+  than inlined and `maxSeconds` (default 90, up to 3600 s) caps how much of it
+  is analyzed. Its `voicedRatio` tells you whether a usable melody exists
+  (below
   ~0.3 there is none — say so, do not invent notes). Pitch follows the
   loudest voice only; never claim chord separations or instruments.
 
@@ -643,7 +648,7 @@ inside one canvas scene.
 - [ ] if the user asked for the file directly: called `renderVideo` with the
       full HTML and reported the returned MP4 (do **not** rely on a meta tag)
 - [ ] if audio was requested: every `file:` id exists in the workspace
-      (MP3/WAV/M4A/AAC/OGG/WebM, ≤ 15 MB), cues fit inside `duration`, volumes
+      (MP3/WAV/M4A/AAC/OGG/WebM), cues fit inside `duration`, volumes
       sum near 1, and `hasAudio` came back true (otherwise told the user why
       the video is silent)
 - [ ] if the user asked for visuals "to the audio": ran `analyzeAudio` on the

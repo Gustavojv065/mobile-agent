@@ -3,13 +3,36 @@
  *
  * A video's `MOBILE_AGENT_VIDEO.audio` schedule can reference workspace audio
  * files with `file: "workspace://<id>"`. The hidden render WebView cannot read
- * the workspace itself, so the `renderVideo` tool inlines each referenced file
- * as a data URI before the document is recorded. The helpers here are pure
- * (no react-native imports) so they can be unit-tested in Node; the in-WebView
- * audio engine lives in the recorder string in video-recorder.ts.
+ * the workspace itself, so the `renderVideo` tool serves each referenced file
+ * over the loopback asset server (`inlineAudioAssets`), or falls back to a
+ * data URI when that server is unavailable on the build. The helpers here are
+ * pure (no react-native imports) so they can be unit-tested in Node; the
+ * in-WebView audio engine lives in the recorder string in video-recorder.ts.
  */
 
+/**
+ * Data-URI lane budget. Every byte here also lives in the document string
+ * (base64 adds ~33%) plus the JS heap, so this stays the small fallback cap
+ * for builds with no loopback server.
+ */
 export const MAX_AUDIO_FILE_BYTES = 15 * 1024 * 1024;
+
+/**
+ * Loopback-served lane budget. Served audio streams from disk, so nothing is
+ * copied into the document or the JS heap on the way in and base64 inflation
+ * never applies — the remaining ceiling is the decoded float32 PCM that
+ * `decodeAudioData` materializes for the whole file (4 bytes per sample per
+ * channel), which grows with the track's *duration*, not its container size.
+ * A high-bitrate container buys minutes (a 200 MB WAV is ~19 min, a few
+ * hundred MB of decoded PCM); a low-bitrate one buys hours, which is where
+ * device memory — not this constant — becomes the limit. Kept generous on
+ * purpose: a long legitimate soundtrack should not be rejected up front, and
+ * when memory does run out the WebView dies loudly (the job rejects) instead
+ * of producing a silent, wrong render. (Chromium's WebView guidance is
+ * explicit that the `file://` frame access flags are deprecated and unsafe;
+ * serving over `http://127.0.0.1` keeps the standard web security model.)
+ */
+export const MAX_SERVED_AUDIO_FILE_BYTES = 200 * 1024 * 1024;
 
 const SUPPORTED_AUDIO_MIME_TYPES = new Set([
   "audio/mpeg",
@@ -90,10 +113,16 @@ export function resolveAudioMimeType(
   return AUDIO_MIME_BY_EXTENSION[extension] ?? null;
 }
 
+/**
+ * Validates format and (when the size is known) budget. `sizeBytes` is null
+ * on the served lane when the file stat was unavailable — format is still
+ * enforced, and the caller has already avoided reading the file at all.
+ */
 export function assertAudioFileUsable(
   displayName: string,
   mimeType: string | null | undefined,
-  sizeBytes: number,
+  sizeBytes: number | null,
+  maxBytes: number = MAX_AUDIO_FILE_BYTES,
 ): string {
   const resolved = resolveAudioMimeType(mimeType, displayName);
   if (!resolved) {
@@ -101,12 +130,15 @@ export function assertAudioFileUsable(
       `Audio file "${displayName}" is not a supported format. Use MP3, WAV, M4A, AAC, OGG, or WebM audio — or a video file (MP4, MOV, WebM) to analyze its soundtrack.`,
     );
   }
+  if (sizeBytes == null) {
+    return resolved;
+  }
   if (!Number.isFinite(sizeBytes) || sizeBytes <= 0) {
     throw new Error(`Audio file "${displayName}" appears to be empty.`);
   }
-  if (sizeBytes > MAX_AUDIO_FILE_BYTES) {
+  if (sizeBytes > maxBytes) {
     throw new Error(
-      `Audio file "${displayName}" is too large (${formatBytes(sizeBytes)}). Keep audio files under ${formatBytes(MAX_AUDIO_FILE_BYTES)}.`,
+      `Audio file "${displayName}" is too large (${formatBytes(sizeBytes)}). Keep audio files under ${formatBytes(maxBytes)}.`,
     );
   }
   return resolved;

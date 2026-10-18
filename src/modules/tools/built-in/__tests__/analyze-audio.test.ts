@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ToolExecutionRecord } from "@/core/types/app-state";
 import type { AudioAnalysisSummary } from "@/modules/preview/video-audio-analysis";
@@ -7,16 +7,25 @@ const mocks = vi.hoisted(() => ({
   exists: true,
   bytes: new Uint8Array([0x49, 0x44, 0x33, 0x03, 0x00]),
   getById: vi.fn(),
+  resolveWorkspaceFile: vi.fn(),
 }));
 
 vi.mock("@/core/services/workspace-file-service", () => ({
-  resolveWorkspaceFile: () => ({
-    get exists() {
-      return mocks.exists;
-    },
-    bytes: async () => mocks.bytes,
-  }),
+  resolveWorkspaceFile: mocks.resolveWorkspaceFile,
 }));
+
+const serverMocks = vi.hoisted(() => ({
+  baseUrl: null as string | null,
+}));
+
+vi.mock("@/modules/preview/asset-server", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/modules/preview/asset-server")>();
+  return {
+    ...actual,
+    ensureAssetServer: async () => serverMocks.baseUrl,
+  };
+});
 
 const { createAnalyzeAudioTool } = await import(
   "@/modules/tools/built-in/analyze-audio"
@@ -63,11 +72,22 @@ const mp3Record = {
 describe("analyzeAudio tool", () => {
   let unsubscribe: (() => void) | null = null;
 
+  beforeEach(() => {
+    serverMocks.baseUrl = null;
+    mocks.resolveWorkspaceFile.mockImplementation(() => ({
+      get exists() {
+        return mocks.exists;
+      },
+      bytes: async () => mocks.bytes,
+    }));
+  });
+
   afterEach(() => {
     unsubscribe?.();
     unsubscribe = null;
     mocks.exists = true;
     mocks.getById.mockReset();
+    mocks.resolveWorkspaceFile.mockReset();
   });
 
   it("rejects an unknown file id", async () => {
@@ -161,5 +181,65 @@ describe("analyzeAudio tool", () => {
     await expect(tool.execute!({ fileId: "file-1" }, {} as never)).rejects.toThrow(
       /only available on builds/,
     );
+  });
+
+  it("serves the audio over the loopback server without reading it", async () => {
+    serverMocks.baseUrl = "http://127.0.0.1:9999";
+    let src: string | null = null;
+    unsubscribe = subscribeAudioAnalysis((job) => {
+      src = job.src;
+      job.resolve({ summary: SUMMARY });
+    });
+    // A 40 MB track must never be read into the JS heap just to be analyzed.
+    mocks.resolveWorkspaceFile.mockReturnValue({
+      exists: true,
+      size: 40 * 1024 * 1024,
+      bytes: async () => {
+        throw new Error("bytes() must not be called on the served lane");
+      },
+    });
+    const tool = createAnalyzeAudioTool({
+      repository: repository(mp3Record),
+      onRecord: () => {},
+    });
+
+    await tool.execute!({ fileId: "file-1" }, {} as never);
+
+    expect(src).toBe("http://127.0.0.1:9999/files/audio/song.mp3");
+  });
+
+  it("rejects an over-budget file on the served lane without reading it", async () => {
+    serverMocks.baseUrl = "http://127.0.0.1:9999";
+    mocks.resolveWorkspaceFile.mockReturnValue({
+      exists: true,
+      size: 300 * 1024 * 1024,
+      bytes: async () => {
+        throw new Error("bytes() must not be called for oversize audio");
+      },
+    });
+    const tool = createAnalyzeAudioTool({
+      repository: repository(mp3Record),
+      onRecord: () => {},
+    });
+
+    await expect(tool.execute!({ fileId: "file-1" }, {} as never)).rejects.toThrow(
+      /too large/,
+    );
+  });
+
+  it("falls back to a data URI when the loopback server is unavailable", async () => {
+    let src: string | null = null;
+    unsubscribe = subscribeAudioAnalysis((job) => {
+      src = job.src;
+      job.resolve({ summary: SUMMARY });
+    });
+    const tool = createAnalyzeAudioTool({
+      repository: repository(mp3Record),
+      onRecord: () => {},
+    });
+
+    await tool.execute!({ fileId: "file-1" }, {} as never);
+
+    expect(src).toMatch(/^data:audio\/mpeg;base64,/);
   });
 });

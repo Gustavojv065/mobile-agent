@@ -4,6 +4,7 @@ import {
   assertAudioFileUsable,
   buildAudioDataUri,
   extractWorkspaceAudioIds,
+  MAX_SERVED_AUDIO_FILE_BYTES,
 } from "@/modules/preview/video-audio";
 import type { File } from "expo-file-system";
 
@@ -13,9 +14,12 @@ import type { File } from "expo-file-system";
  * A scene draws user-provided workspace files with plain DOM elements —
  * `<img src="workspace://<id>">` painted via `drawImage`, or a muted
  * `<video src="workspace://<id>">` driven by scene JS — and the `renderVideo`
- * tool inlines each referenced file as a data URI before recording (the
- * hidden render WebView cannot read the workspace itself, and data URIs keep
- * the canvas readback clean, which export frame capture requires).
+ * tool rewrites each reference into something the hidden render WebView can
+ * load, because that WebView cannot read the workspace itself. Clips and
+ * audio tracks stream over the loopback asset server (no heap cost, no
+ * document bloat); images, and every kind on builds without the server, fall
+ * back to data URIs (which also keep the canvas readback clean, as export
+ * frame capture requires).
  *
  * Extraction is scoped to the element (`<img>` vs `<video>`/`<source>`) so
  * asset kinds are never confused with each other or with `file:` audio
@@ -457,19 +461,67 @@ async function inlineClipRefs(
 }
 
 /**
- * Replaces every `workspace://<id>` audio-track reference with a data URI the
- * export/preview WebViews can fetch. Shared by the `renderVideo` tool and the
- * manual export button so both produce the same soundtrack.
+ * Replaces every `workspace://<id>` audio-track reference with something the
+ * export/preview WebViews can fetch. Shared by the `renderVideo` tool, the
+ * `analyzeAudio` tool and the manual export button so all lanes behave the
+ * same.
+ *
+ * Served lane (loopback asset server present): the reference becomes an
+ * `http://127.0.0.1:<port>/files/…` URL — the same mechanism clips already
+ * use. The file streams straight from disk, the tool never reads it into the
+ * JS heap, and the document stays small no matter how long the soundtrack is;
+ * that is what makes the larger `MAX_SERVED_AUDIO_FILE_BYTES` budget
+ * practical.
+ * Fallback lane (server unavailable): today's data URI, with the strict
+ * `MAX_AUDIO_FILE_BYTES` budget that keeps the document small.
  */
-export function inlineAudioAssets(
+export async function inlineAudioAssets(
   html: string,
   repository: WorkspaceRepository,
 ): Promise<{ html: string; audioFiles: string[] }> {
   const ids = extractWorkspaceAudioIds(html);
   if (ids.length === 0) {
-    return Promise.resolve({ html, audioFiles: [] });
+    return { html, audioFiles: [] };
   }
-  return inlineAssetUris(html, repository, ids, "audio", assertAudioFileUsable).then(
-    ({ html: inlined, files }) => ({ html: inlined, audioFiles: files }),
+
+  const { ensureAssetServer, workspaceFileUrl } = await import(
+    "@/modules/preview/asset-server"
   );
+  const baseUrl = await ensureAssetServer().catch(() => null);
+  if (!baseUrl) {
+    return inlineAssetUris(html, repository, ids, "audio", assertAudioFileUsable).then(
+      ({ html: inlined, files }) => ({ html: inlined, audioFiles: files }),
+    );
+  }
+
+  const files: string[] = [];
+  let next = html;
+  for (const id of ids) {
+    const record = await repository.getById(id);
+    if (!record) {
+      throw new Error(
+        `No workspace audio file found with id ${id}. Save it to the workspace first, or remove its reference from the scene.`,
+      );
+    }
+    const file = resolveWorkspaceFile(record.relativePath);
+    if (!file.exists) {
+      throw new Error(
+        `File "${record.displayName}" is no longer available locally.`,
+      );
+    }
+    // Stat-only gate: a 200 MB soundtrack must never be read into the JS
+    // heap just to be validated. Unknown size still checks the format.
+    const statSize = typeof file.size === "number" ? file.size : null;
+    assertAudioFileUsable(
+      record.displayName,
+      record.mimeType,
+      statSize,
+      MAX_SERVED_AUDIO_FILE_BYTES,
+    );
+    files.push(record.displayName);
+    next = next
+      .split(`workspace://${id}`)
+      .join(workspaceFileUrl(baseUrl, record.relativePath));
+  }
+  return { html: next, audioFiles: files };
 }

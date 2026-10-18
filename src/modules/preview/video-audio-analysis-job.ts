@@ -1,7 +1,8 @@
 /**
  * Tool-driven audio-analysis queue.
  *
- * The `analyzeAudio` tool hands a workspace audio file (as a data URI) to
+ * The `analyzeAudio` tool hands a workspace audio file (a loopback `http://`
+ * URL when the asset server is available, otherwise a data URI) to
  * {@link requestAudioAnalysis}. The promise stays pending until the app-level
  * {@link AudioAnalysisHost} (mounted in the root layout) decodes and analyzes it
  * in a hidden WebView and resolves it with a compact JSON summary. When the
@@ -31,7 +32,7 @@ export type AudioAnalysisJobResult = {
 
 export type AudioAnalysisJob = {
   id: string;
-  /** Data URI of the audio to decode and analyze. */
+  /** Source the WebView can fetch: a loopback `http://` URL or a data URI. */
   src: string;
   maxSeconds: number;
   sampleRate: number;
@@ -66,7 +67,7 @@ export function hasAudioAnalysisHost(): boolean {
 }
 
 export type RequestAudioAnalysisParams = {
-  /** Data URI of the audio to analyze. */
+  /** Source the WebView can fetch: a loopback `http://` URL or a data URI. */
   src: string;
   /** Analyze at most this many seconds (default 90). */
   maxSeconds?: number;
