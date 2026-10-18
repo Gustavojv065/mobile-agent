@@ -16,6 +16,10 @@ import {
 import { buildVideoExportDocument } from "@/modules/preview/video-recorder";
 import { createSceneDocument } from "@/modules/preview/scene-document";
 import { VideoExportController } from "@/modules/preview/video-export-messages";
+import {
+  RENDER_PAGE_SILENCE_MS,
+  renderPageInactivityError,
+} from "@/modules/preview/video-job-bounds";
 import { getHtmlVideoExportModule } from "html-video-export";
 
 const KEEP_AWAKE_TAG = "mobile-agent-video-render";
@@ -51,11 +55,19 @@ export function VideoRenderHost() {
   const lastPercentRef = useRef(-1);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const configReceivedRef = useRef(false);
+  const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const clearRetries = useCallback(() => {
     if (retryTimerRef.current) {
       clearTimeout(retryTimerRef.current);
       retryTimerRef.current = null;
+    }
+  }, []);
+
+  const disarmPageSilenceWatch = useCallback(() => {
+    if (silenceTimerRef.current) {
+      clearTimeout(silenceTimerRef.current);
+      silenceTimerRef.current = null;
     }
   }, []);
 
@@ -103,12 +115,13 @@ export function VideoRenderHost() {
     jobRef.current = null;
     lastPercentRef.current = -1;
     configReceivedRef.current = false;
+    disarmPageSilenceWatch();
     clearRetries();
     setVideoRenderStatus(null);
     setDocumentUri(null);
     setActive(false);
     releaseKeepAwake();
-  }, [clearRetries, releaseKeepAwake]);
+  }, [clearRetries, disarmPageSilenceWatch, releaseKeepAwake]);
 
   const stopActive = useCallback(
     (error: Error) => {
@@ -122,6 +135,35 @@ export function VideoRenderHost() {
       finishJob();
     },
     [abortCurrentFile, finishJob, settle],
+  );
+
+  // The only unbounded silence in a healthy render is per-segment audio prep
+  // (fetch + whole-file decode + offline render happen before the first frame
+  // posts), bounded for inputs that fit renderer memory; every other gap is
+  // sub-second frame posts, segment concat, or page boot. So silence itself is
+  // the hang signature: no page message for the whole bound means the export
+  // page is stuck, and this fails the job loud while the run stays alive.
+  // The timer resets on every page message and every segment page load (see
+  // handleLoadEnd), making this event-driven hang detection, not a deadline.
+  const armPageSilenceWatch = useCallback(
+    (job: VideoRenderJob) => {
+      if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+      silenceTimerRef.current = setTimeout(() => {
+        if (jobRef.current !== job) return;
+        const segment = job.segment;
+        stopActive(
+          renderPageInactivityError({
+            progressPercent: Math.max(0, lastPercentRef.current),
+            html: job.html,
+            segment:
+              segment && segment.length > 0
+                ? `segment ${segment.offset}-${segment.offset + segment.length}s`
+                : null,
+          }),
+        );
+      }, RENDER_PAGE_SILENCE_MS);
+    },
+    [stopActive],
   );
 
   const beginRender = useCallback(
@@ -156,6 +198,7 @@ export function VideoRenderHost() {
       lastPercentRef.current = -1;
       configReceivedRef.current = false;
       clearRetries();
+      armPageSilenceWatch(job);
 
       const controller = new VideoExportController({
         outputPath: file.uri,
@@ -165,6 +208,8 @@ export function VideoRenderHost() {
         ),
         onProgress: (progress) => {
           job.onProgress?.(progress);
+          // Native-side progress is forward motion even without page posts.
+          armPageSilenceWatch(job);
           const percent = Math.round(progress * 100);
           if (percent !== lastPercentRef.current) {
             lastPercentRef.current = percent;
@@ -244,7 +289,7 @@ export function VideoRenderHost() {
         void activateKeepAwakeAsync(KEEP_AWAKE_TAG).catch(() => {});
       }
     },
-    [abortCurrentFile, clearRetries, finishJob, settle, stopActive],
+    [abortCurrentFile, armPageSilenceWatch, clearRetries, finishJob, settle, stopActive],
   );
 
   // Drain the queue one render at a time.
@@ -286,11 +331,12 @@ export function VideoRenderHost() {
       }
       void controllerRef.current?.cancel();
       abortCurrentFile();
+      disarmPageSilenceWatch();
       clearRetries();
       setVideoRenderStatus(null);
       releaseKeepAwake();
     };
-  }, [abortCurrentFile, clearRetries, releaseKeepAwake, settle]);
+  }, [abortCurrentFile, clearRetries, disarmPageSilenceWatch, releaseKeepAwake, settle]);
 
   const attemptStart = useCallback(
     (triesLeft: number) => {
@@ -343,7 +389,16 @@ export function VideoRenderHost() {
 
   const handleMessage = useCallback((event: WebViewMessageEvent) => {
     void controllerRef.current?.handleMessage(event);
-  }, []);
+    // Any page post is proof of life; push the stall bound out again.
+    const job = jobRef.current;
+    if (job) armPageSilenceWatch(job);
+  }, [armPageSilenceWatch]);
+
+  const handleLoadEnd = useCallback(() => {
+    attemptStart(8);
+    const job = jobRef.current;
+    if (job) armPageSilenceWatch(job);
+  }, [armPageSilenceWatch, attemptStart]);
 
   if (!canRender) return null;
 
@@ -366,7 +421,7 @@ export function VideoRenderHost() {
         mediaPlaybackRequiresUserAction={false}
         allowFileAccess
         originWhitelist={["file://*", "http://*", "https://*"]}
-        onLoadEnd={() => attemptStart(8)}
+        onLoadEnd={handleLoadEnd}
         onMessage={handleMessage}
         onError={handleWebViewError}
         onHttpError={handleWebViewError}

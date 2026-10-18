@@ -10,10 +10,10 @@ import {
   type MixCheckJob,
   type MixCheckStats,
 } from "@/modules/preview/video-mix";
+import { MIX_JOB_TIMEOUT_MS, mixJobTimeoutError } from "@/modules/preview/video-job-bounds";
 
 const START_ATTEMPTS = 8;
 const START_RETRY_MS = 200;
-const MIX_JOB_TIMEOUT_MS = 60_000;
 
 type MixMessage =
   | { type: "mobileAgentMixDone"; stats?: MixCheckStats | null; warnings?: string[] }
@@ -116,9 +116,7 @@ export function MixCheckHost() {
       }
 
       deadlineRef.current = setTimeout(() => {
-        if (jobRef.current === job) stopActive(new Error(
-          `Mix check timed out after 60s (${job.html.length}-char document). Try a smaller audio schedule.`,
-        ));
+        if (jobRef.current === job) stopActive(mixJobTimeoutError(job));
       }, MIX_JOB_TIMEOUT_MS);
       try {
         const document = createSceneDocument(
