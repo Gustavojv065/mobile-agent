@@ -101,6 +101,13 @@ The tool waits for the recording to finish and returns the saved MP4
 user interaction. Rendering is real time: a 10-second video takes ~10 seconds,
 so call it once with a finished scene and do not retry needlessly.
 
+One exception — retry **the same call** on a stalled render: if the tool
+fails with "Video render stalled: no page activity for …, finished segments
+resume on retry", the export page hung (not a scene bug — long render, heavy
+soundtrack, or device pressure). Re-running it re-encodes only the segments
+that had not already finished. Retry once or twice, then shorten the scene or
+reduce loud media.
+
 The result also returns `sourceFileId` / `sourceLink`: the exact HTML you
 rendered, saved as `<name>.source.html` in the workspace. You do not need to
 keep the HTML yourself.
