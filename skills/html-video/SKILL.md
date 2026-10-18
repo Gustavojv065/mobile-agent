@@ -245,11 +245,12 @@ Voiceover / narration (never tell the user voiceover is impossible):
 
 Images and video clips in scenes (user-provided visuals):
 
-- Reference workspace files directly in the scene DOM: images inline
-  automatically (JPEG/PNG/WebP/GIF, max 15 MB each), while clips
-  (MP4/WebM/MOV) load from the device over loopback HTTP —
-  no size inflation, seeking works, any length plays: files up to 1 GB
-  serve at full quality with no warning. Absurd files compress on-device
+- Reference workspace files directly in the scene DOM: images
+  (JPEG/PNG/WebP/GIF, up to 100 MB) and clips (MP4/WebM/MOV) both load from
+  the device over loopback HTTP — no size inflation, seeking works, any
+  length plays: clips up to 1 GB serve at full quality with no warning (a
+  15 MB data-URI fallback applies to both kinds only on builds without the
+  loopback server). Absurd clips compress on-device
   and MOV auto-converts to MP4 the same way (audio dropped
   since clips play muted) with a warning naming the new size — tell the
   user when it happens instead of hiding it. Never invent a

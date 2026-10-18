@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -582,5 +582,130 @@ describe("inlineVideoAssets served URLs", () => {
       repository(),
     );
     expect(out).toContain("data:video/mp4;base64,");
+  });
+});
+
+describe("inlineImageAssets served URLs", () => {
+  beforeEach(() => {
+    serverMocks.baseUrl = "http://127.0.0.1:9999";
+  });
+
+  afterEach(() => {
+    serverMocks.baseUrl = null;
+  });
+
+  it("serves images by URL with cross-origin approval and never reads bytes", async () => {
+    let bytesRead = false;
+    mocks.getById.mockImplementation(async (id: string) => ({
+      id,
+      displayName: "photo.png",
+      mimeType: "image/png",
+      relativePath: `${id}/photo.png`,
+    }));
+    mocks.resolveWorkspaceFile.mockReturnValue({
+      get exists() {
+        return true;
+      },
+      size: 40 * 1024 * 1024,
+      bytes: async () => {
+        bytesRead = true;
+        return new Uint8Array([1, 2, 3]);
+      },
+    });
+
+    const { html: out, imageFiles } = await inlineImageAssets(
+      `<img id="bg" src="workspace://img-1">`,
+      repository(),
+    );
+
+    expect(bytesRead).toBe(false);
+    expect(imageFiles).toEqual(["photo.png"]);
+    expect(out).toContain('src="http://127.0.0.1:9999/files/img-1/photo.png"');
+    // Without the attribute the export canvas would be tainted and
+    // `toDataURL` would throw while capturing frames.
+    expect(out).toMatch(/<img[^>]*crossorigin="anonymous"[^>]*>/);
+    expect(out).not.toContain("data:image");
+  });
+
+  it("annotates a `<source>`-based video and leaves external media alone", async () => {
+    mocks.getById.mockImplementation(async (id: string) => ({
+      id,
+      displayName: "clip.mp4",
+      mimeType: "video/mp4",
+      relativePath: `${id}/clip.mp4`,
+    }));
+    mocks.resolveWorkspaceFile.mockReturnValue({
+      get exists() {
+        return true;
+      },
+      size: 8 * 1024 * 1024,
+      bytes: async () => new Uint8Array([1]),
+    });
+
+    const { html: out } = await inlineVideoAssets(
+      `<video muted playsinline><source src="workspace://vid-1"></video><video src="https://example.com/x.mp4"></video>`,
+      repository(),
+    );
+
+    expect(out).toContain("http://127.0.0.1:9999/files/vid-1/clip.mp4");
+    const tags = out.match(/<video\b[^>]*>/gi) ?? [];
+    expect(tags).toHaveLength(2);
+    // The workspace clip (served via a child <source>) is CORS-approved…
+    expect(tags[0]).toContain('crossorigin="anonymous"');
+    // …while external media the scene author linked is left untouched.
+    expect(tags[1]).not.toContain("crossorigin");
+  });
+
+  it("rejects a file over the 100 MB served budget without reading it", async () => {
+    mocks.getById.mockResolvedValue({
+      id: "img-1",
+      displayName: "huge.png",
+      mimeType: "image/png",
+      relativePath: "img-1/huge.png",
+    });
+    mocks.resolveWorkspaceFile.mockReturnValue({
+      exists: true,
+      size: 150 * 1024 * 1024,
+      bytes: async () => {
+        throw new Error("bytes() must not be called for oversize images");
+      },
+    });
+
+    await expect(
+      inlineImageAssets(`<img src="workspace://img-1">`, repository()),
+    ).rejects.toThrow(/Keep scene images under 100\.0 MB/);
+  });
+
+  it("keeps the 15 MB data-URI budget when the server is unavailable", async () => {
+    serverMocks.baseUrl = null;
+    mocks.getById.mockResolvedValue({
+      id: "img-1",
+      displayName: "photo.png",
+      mimeType: "image/png",
+      relativePath: "img-1/photo.png",
+    });
+    mocks.resolveWorkspaceFile.mockReturnValue({
+      exists: true,
+      size: 40 * 1024 * 1024,
+      // The data-URI lane reads the file and budgets on the actual bytes.
+      bytes: async () => new Uint8Array(16 * 1024 * 1024),
+    });
+
+    await expect(
+      inlineImageAssets(`<img src="workspace://img-1">`, repository()),
+    ).rejects.toThrow(/Keep scene images under 15\.0 MB/);
+  });
+
+  it("falls back to data URIs with no CORS attribute when the server is unavailable", async () => {
+    serverMocks.baseUrl = null;
+    workspaceFile("photo.png", "image/png");
+
+    const { html: out } = await inlineImageAssets(
+      `<img src="workspace://img-1">`,
+      repository(),
+    );
+
+    expect(out).toContain("data:image/png;base64,");
+    expect(out).not.toContain("crossorigin");
   });
 });

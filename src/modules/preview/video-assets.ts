@@ -28,6 +28,18 @@ import type { File } from "expo-file-system";
  */
 
 export const MAX_IMAGE_FILE_BYTES = 15 * 1024 * 1024;
+/**
+ * Served-image budget. Serving costs nothing (the file streams from disk in
+ * 64 KB chunks), so this number is not a document or heap budget — it bounds
+ * what we hand the renderer's image decoder. Unlike clips, which stream
+ * ranges and are never materialized, an image is decoded eagerly into an RGBA
+ * bitmap whose cost grows with pixel area, not file size, which is why this
+ * stays far below the clip budget. Kept conservative on purpose: a decode that
+ * fails inside a live renderer reports as `naturalWidth === 0`, and a scene
+ * following the documented `complete && naturalWidth` guard would then skip
+ * the draw and render that visual blank rather than fail.
+ */
+export const MAX_SERVED_IMAGE_FILE_BYTES = 100 * 1024 * 1024;
 export const MAX_VIDEO_FILE_BYTES = 15 * 1024 * 1024;
 /**
  * Served clips bypass the heap entirely (loopback HTTP + range requests),
@@ -159,10 +171,16 @@ function formatBytes(bytes: number): string {
   return `${Math.max(1, Math.round(bytes / 1024))} KB`;
 }
 
+/**
+ * Validates format and (when the size is known) budget. `sizeBytes` is null on
+ * the served lane when the file stat was unavailable — format is still
+ * enforced, and the caller has already avoided reading the file at all.
+ */
 export function assertImageFileUsable(
   displayName: string,
   mimeType: string | null | undefined,
-  sizeBytes: number,
+  sizeBytes: number | null,
+  maxBytes: number = MAX_IMAGE_FILE_BYTES,
 ): string {
   const resolved = resolveImageMimeType(mimeType, displayName);
   if (!resolved) {
@@ -170,12 +188,15 @@ export function assertImageFileUsable(
       `File "${displayName}" is not a supported image. Use JPEG, PNG, WebP, or GIF images.`,
     );
   }
+  if (sizeBytes == null) {
+    return resolved;
+  }
   if (!Number.isFinite(sizeBytes) || sizeBytes <= 0) {
     throw new Error(`File "${displayName}" appears to be empty.`);
   }
-  if (sizeBytes > MAX_IMAGE_FILE_BYTES) {
+  if (sizeBytes > maxBytes) {
     throw new Error(
-      `File "${displayName}" is too large (${formatBytes(sizeBytes)}). Keep scene images under ${formatBytes(MAX_IMAGE_FILE_BYTES)}.`,
+      `File "${displayName}" is too large (${formatBytes(sizeBytes)}). Keep scene images under ${formatBytes(maxBytes)}.`,
     );
   }
   return resolved;
@@ -273,21 +294,125 @@ async function inlineAssetUris(
   return { html: next, files };
 }
 
+const WORKSPACE_IMAGE_SRC_PATTERN = /<img\b[^>]*>/gi;
+const IMG_SRC_VALUE_PATTERN = /\bsrc\s*=\s*(["'])([^"']*)\1/i;
+const WORKSPACE_SRC_ID_PATTERN = /^workspace:\/\/([A-Za-z0-9][A-Za-z0-9_-]*)/;
+
 /**
- * Inlines `<img>`-referenced workspace files as data URIs. Pure apart from
- * the workspace read, mirroring the audio inliner below.
+ * Adds `crossorigin="anonymous"` to a tag that points at a served asset.
+ *
+ * This is not cosmetic: the export captures frames with `canvas.toDataURL`,
+ * and drawing an asset that was loaded cross-origin *without* CORS approval
+ * taints the canvas, which makes that read throw a `SecurityError` (MDN, "Use
+ * cross-origin images in a canvas"). The loopback server answers every
+ * `/files` and `/cache` response with `Access-Control-Allow-Origin: *`, which
+ * approves an anonymous (non-credentialed) CORS fetch — `anonymous` is exactly
+ * the mode that omits credentials, so `*` is a valid response — and the canvas
+ * stays readable. This matters for the `file://` documents (preview and its
+ * in-page export), which are opaque origins: Chromium's WebView CORS guidance
+ * states opaque origins require `*` or `null` in the response header, which is
+ * what we send. The same-origin render host is unaffected either way.
  */
-export function inlineImageAssets(
+function withCrossOrigin(tag: string): string {
+  if (/\bcrossorigin\b/i.test(tag)) return tag;
+  return tag.replace(/^<(img|video)\b/i, '<$1 crossorigin="anonymous"');
+}
+
+function workspaceIdFromSrc(src: string): string | null {
+  const match = WORKSPACE_SRC_ID_PATTERN.exec(src.trim());
+  return match ? match[1] : null;
+}
+
+/**
+ * Rewrites served `<img>` sources and marks them CORS-approved in one pass, so
+ * the canvas stays readable during export. Only tags we actually rewrote are
+ * touched — data-URI and external images are left exactly as authored.
+ */
+function serveImageTags(html: string, servedById: Map<string, string>): string {
+  return html.replace(WORKSPACE_IMAGE_SRC_PATTERN, (tag) => {
+    const match = IMG_SRC_VALUE_PATTERN.exec(tag);
+    if (!match) return tag;
+    const id = workspaceIdFromSrc(match[2]);
+    if (!id) return tag;
+    const served = servedById.get(id);
+    if (!served) return tag;
+    return withCrossOrigin(tag.replace(match[0], `src=${match[1]}${served}${match[1]}`));
+  });
+}
+
+/**
+ * Marks every `<video>` tag that points at a served URL, covering both
+ * `<video src="…">` and `<video><source src="…"></video>` (the CORS setting
+ * attribute lives on the media element, not on `<source>`).
+ */
+function serveVideoCrossOrigin(html: string, servedUrls: string[]): string {
+  if (servedUrls.length === 0) return html;
+  const touches = (chunk: string) => servedUrls.some((url) => chunk.includes(url));
+  const blocks = html.replace(/<video\b[^>]*>[\s\S]*?<\/video>/gi, (block) =>
+    touches(block) ? withCrossOrigin(block) : block,
+  );
+  return blocks.replace(/<video\b[^>]*>/gi, (tag) =>
+    touches(tag) ? withCrossOrigin(tag) : tag,
+  );
+}
+
+/**
+ * Rewrites `<img>`-referenced workspace files for the scene WebViews.
+ *
+ * Served lane (loopback asset server present): the reference becomes an
+ * `http://127.0.0.1:<port>/files/…` URL and the tag gains
+ * `crossorigin="anonymous"`, so a large image streams from disk instead of
+ * bloating the document and still leaves the export canvas readable.
+ * Fallback lane (server unavailable): today's data URI (15 MB budget), which
+ * needs no CORS attribute because data URLs never taint a canvas.
+ */
+export async function inlineImageAssets(
   html: string,
   repository: WorkspaceRepository,
 ): Promise<{ html: string; imageFiles: string[] }> {
   const ids = extractWorkspaceImageIds(html);
   if (ids.length === 0) {
-    return Promise.resolve({ html, imageFiles: [] });
+    return { html, imageFiles: [] };
   }
-  return inlineAssetUris(html, repository, ids, "image", assertImageFileUsable).then(
-    ({ html: inlined, files }) => ({ html: inlined, imageFiles: files }),
+
+  const { ensureAssetServer, workspaceFileUrl } = await import(
+    "@/modules/preview/asset-server"
   );
+  const baseUrl = await ensureAssetServer().catch(() => null);
+  if (!baseUrl) {
+    return inlineAssetUris(html, repository, ids, "image", assertImageFileUsable).then(
+      ({ html: inlined, files }) => ({ html: inlined, imageFiles: files }),
+    );
+  }
+
+  const servedById = new Map<string, string>();
+  const imageFiles: string[] = [];
+  for (const id of ids) {
+    const record = await repository.getById(id);
+    if (!record) {
+      throw new Error(
+        `No workspace image file found with id ${id}. Save it to the workspace first, or remove its reference from the scene.`,
+      );
+    }
+    const file = resolveWorkspaceFile(record.relativePath);
+    if (!file.exists) {
+      throw new Error(
+        `File "${record.displayName}" is no longer available locally.`,
+      );
+    }
+    // Stat-only gate: a 100 MB image must never be read into the JS heap.
+    const statSize = typeof file.size === "number" ? file.size : null;
+    assertImageFileUsable(
+      record.displayName,
+      record.mimeType,
+      statSize,
+      MAX_SERVED_IMAGE_FILE_BYTES,
+    );
+    imageFiles.push(record.displayName);
+    servedById.set(id, workspaceFileUrl(baseUrl, record.relativePath));
+  }
+
+  return { html: serveImageTags(html, servedById), imageFiles };
 }
 
 /**
@@ -418,6 +543,7 @@ async function inlineClipRefs(
     return inlineAssetUris(html, repository, ids, "clip", assertVideoFileUsable, warnings);
   }
   const files: string[] = [];
+  const servedUrls: string[] = [];
   let next = html;
   for (const id of ids) {
     const record = await repository.getById(id);
@@ -446,18 +572,20 @@ async function inlineClipRefs(
       isTranscodeOnlyVideoMimeType(resolved) ||
       (statSize != null && statSize > MAX_DIRECT_SERVE_BYTES);
     if (!convert) {
-      next = next
-        .split(`workspace://${id}`)
-        .join(workspaceFileUrl(baseUrl, record.relativePath));
+      const servedUrl = workspaceFileUrl(baseUrl, record.relativePath);
+      next = next.split(`workspace://${id}`).join(servedUrl);
+      servedUrls.push(servedUrl);
       continue;
     }
     const prepared = await prepareClipBytes(record.id, record.displayName, record.mimeType, file, statSize ?? 0, false);
-    next = next
-      .split(`workspace://${id}`)
-      .join(cacheFileUrl(baseUrl, prepared.cacheName));
+    const cacheUrl = cacheFileUrl(baseUrl, prepared.cacheName);
+    next = next.split(`workspace://${id}`).join(cacheUrl);
+    servedUrls.push(cacheUrl);
     if (prepared.warning) warnings.push(prepared.warning);
   }
-  return { html: next, files };
+  // A `file://` document loads these cross-origin, and drawing one would
+  // taint the export canvas, so mark every served video CORS-approved.
+  return { html: serveVideoCrossOrigin(next, servedUrls), files };
 }
 
 /**
