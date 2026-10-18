@@ -1,6 +1,7 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { PanResponder, View } from "react-native";
 
+import { computeSliderValue } from "@/components/ui/slider-math";
 import { useTheme } from "@/hooks/use-theme";
 import { cn } from "@/core/utils";
 
@@ -9,6 +10,8 @@ export function Slider({
   disabled = false,
   maximumValue = 1,
   minimumValue = 0,
+  onSlidingComplete,
+  onSlidingStart,
   onValueChange,
   step = 0.01,
   value,
@@ -17,54 +20,68 @@ export function Slider({
   disabled?: boolean;
   maximumValue?: number;
   minimumValue?: number;
+  onSlidingComplete?: (value: number) => void;
+  onSlidingStart?: () => void;
   onValueChange: (value: number) => void;
   step?: number;
   value: number;
 }) {
   const theme = useTheme();
   const trackWidthRef = useRef(0);
+  const trackLeftRef = useRef(0);
   const [trackWidth, setTrackWidth] = useState(0);
 
-  const clampValue = (raw: number) => {
-    const stepped = Math.round(raw / step) * step;
-    const clamped = Math.min(
-      maximumValue,
-      Math.max(minimumValue, stepped),
-    );
-    return Number(clamped.toFixed(4));
-  };
+  // The pan handlers are created once below, so they read everything except
+  // geometry through this ref: props/state captured directly closed over the
+  // first render (notably trackWidth === 0), which made drags jump to the end
+  // and taps seek the wrong place.
+  const latest = useRef({ disabled, maximumValue, minimumValue, onValueChange, onSlidingComplete, onSlidingStart, step });
+  useEffect(() => {
+    latest.current = { disabled, maximumValue, minimumValue, onValueChange, onSlidingComplete, onSlidingStart, step };
+  });
+  const lastValueRef = useRef(value);
+  const nodeRef = useRef<View | null>(null);
 
-  const valueToOffset = (v: number) => {
-    if (maximumValue === minimumValue) return 0;
-    return (v - minimumValue) / (maximumValue - minimumValue);
+  const applyFromPageX = (pageX: number) => {
+    const props = latest.current;
+    if (props.disabled) return;
+    // The ref callback measures after layout, so geometry is normally cached;
+    // grant (below) re-measures, keeping this safe after layout shifts.
+    const relative = pageX - trackLeftRef.current;
+    const next = computeSliderValue(relative, trackWidthRef.current, props);
+    lastValueRef.current = next;
+    props.onValueChange(next);
   };
 
   const panResponder = useRef(
     PanResponder.create({
-      onStartShouldSetPanResponder: () => !disabled,
-      onMoveShouldSetPanResponder: () => !disabled,
+      onStartShouldSetPanResponder: () => !latest.current.disabled,
+      onMoveShouldSetPanResponder: () => !latest.current.disabled,
       onPanResponderGrant: (event) => {
-        const locationX = event.nativeEvent.locationX;
-        onValueChange(
-          clampValue(
-            minimumValue +
-              valueToOffset(locationX) * (maximumValue - minimumValue),
-          ),
-        );
+        const props = latest.current;
+        if (props.disabled) return;
+        props.onSlidingStart?.();
+        // Re-measure at grant: layout may have moved since the callback ran.
+        nodeRef.current?.measureInWindow((x, _y, width) => {
+          if (width > 0) trackWidthRef.current = width;
+          if (x >= 0) trackLeftRef.current = x;
+          applyFromPageX(event.nativeEvent.pageX);
+        });
       },
       onPanResponderMove: (event) => {
-        const locationX = event.nativeEvent.locationX;
-        const next = clampValue(
-          minimumValue +
-            (locationX / Math.max(trackWidth, 1)) *
-              (maximumValue - minimumValue),
-        );
-        onValueChange(next);
+        applyFromPageX(event.nativeEvent.pageX);
+      },
+      onPanResponderRelease: () => {
+        latest.current.onSlidingComplete?.(lastValueRef.current);
+      },
+      onPanResponderTerminate: () => {
+        latest.current.onSlidingComplete?.(lastValueRef.current);
       },
     }),
   ).current;
 
-  const progress = valueToOffset(value);
+  const progress =
+    maximumValue === minimumValue ? 0 : (value - minimumValue) / (maximumValue - minimumValue);
   const normalized = Math.max(0, Math.min(1, progress));
   const thumbRadius = 10;
   const fillWidth = normalized * trackWidth;
@@ -81,12 +98,14 @@ export function Slider({
     >
       <View
         ref={(node) => {
+          nodeRef.current = node;
           if (node) {
-            node.measureInWindow((_x, _y, measuredWidth) => {
+            node.measureInWindow((x, _y, measuredWidth) => {
               if (measuredWidth > 0 && measuredWidth !== trackWidthRef.current) {
                 trackWidthRef.current = measuredWidth;
                 setTrackWidth(measuredWidth);
               }
+              trackLeftRef.current = x;
             });
           }
         }}

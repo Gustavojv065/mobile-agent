@@ -38,9 +38,29 @@ export type VideoExportMessage =
   | { type: "mobileAgentVideoAudioPcmChunk"; pts: number; base64: string; requestId?: number }
   | { type: "mobileAgentVideoAudioUnsupported"; reason?: string }
   | { type: "mobileAgentVideoAudioWarning"; reason?: string }
-  | { type: "mobileAgentVideoDone"; emitted?: number }
+  | {
+      type: "mobileAgentVideoDone";
+      emitted?: number;
+      timings?: VideoExportTimings;
+    }
   | { type: "mobileAgentVideoUnsupported" }
   | { type: "mobileAgentVideoError"; message: string };
+
+/**
+ * Per-stage wall-clock cost of the export, measured in the recording page for
+ * one segment: page seek/render work per frame, JPEG capture, and how long the
+ * native encoder took to acknowledge each frame. Instrumentation only — the
+ * goal is to see which stage a slow export belongs to, never to gate on it.
+ */
+export type VideoExportTimings = {
+  frames: number;
+  prepareAvgMs: number;
+  prepareMaxMs: number;
+  captureAvgMs: number;
+  captureMaxMs: number;
+  bridgeAvgMs: number;
+  bridgeMaxMs: number;
+};
 
 export type VideoExportResult = {
   uri: string;
@@ -51,7 +71,48 @@ export type VideoExportResult = {
   audioDurationUs: number;
   /** Non-fatal audio notes (skipped cues, blocked playback, ...). */
   audioWarnings: string[];
+  /** Per-stage timing summary, when the page reported it. */
+  timings?: VideoExportTimings;
+  /** Non-fatal performance notes derived from the timings. */
+  perfWarnings?: string[];
 };
+
+/**
+ * Turns the page's timing summary into actionable notes. The only broken
+ * promise an export can make is real-time capture, so a warning fires when the
+ * per-frame work (seek/render + capture + native ack) exceeds the frame budget
+ * by a clear margin — not on transient spikes.
+ */
+export function summarizeExportTimings(
+  timings: VideoExportTimings,
+  fps: number,
+): string[] {
+  if (!Number.isFinite(timings.frames) || timings.frames < 60) return [];
+  const budget =
+    Number.isFinite(fps) && fps > 0 ? 1000 / fps : 1000 / 30;
+  const total =
+    timings.prepareAvgMs + timings.captureAvgMs + timings.bridgeAvgMs;
+  if (!Number.isFinite(total) || total <= budget * 1.25) return [];
+  const notes: string[] = [];
+  const stages: [string, number][] = [
+    ["scene seek/render", timings.prepareAvgMs],
+    ["canvas JPEG capture", timings.captureAvgMs],
+    ["native encoder handoff", timings.bridgeAvgMs],
+  ];
+  for (const [label, value] of stages) {
+    if (value > budget * 0.5) {
+      notes.push(
+        `Slow render: ${label} averaged ${Math.round(value)} ms/frame against a ${Math.round(budget)} ms budget (${timings.frames} frames measured).`,
+      );
+    }
+  }
+  if (notes.length === 0) {
+    notes.push(
+      `Slow render: per-frame work averaged ${Math.round(total)} ms against a ${Math.round(budget)} ms budget, so the export ran longer than the video.`,
+    );
+  }
+  return notes;
+}
 
 export function isVideoExportMessage(value: unknown): value is VideoExportMessage {
   if (typeof value !== "object" || value === null) return false;
@@ -248,10 +309,17 @@ export class VideoExportController {
           this.audioWarnings.push(reason);
           console.warn(`[video-export] ${reason}`);
         }
+        // Timing instrumentation: keep the raw numbers and surface outliers.
+        const timings =
+          message.timings && Number.isFinite(message.timings.frames)
+            ? message.timings
+            : undefined;
         await this.onResult({
           ...result,
           audioDurationUs,
           audioWarnings: this.audioWarnings,
+          timings,
+          perfWarnings: timings && this.config ? summarizeExportTimings(timings, this.config.fps) : [],
         });
         return;
       }

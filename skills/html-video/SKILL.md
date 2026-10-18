@@ -34,10 +34,12 @@ Under the hood the recorder:
 1. Finds the page's canvas and resizes it to the export resolution.
 2. Calls `render(t, canvas, ctx, audio, speech)` once per frame at the requested
    FPS.
-3. Captures the canvas with the GPU (`VideoFrame` + the hardware WebCodecs
-   `VideoEncoder`) and streams the H.264 chunks to a native MP4 muxer. On
-   WebViews without WebCodecs it falls back to JPEG frames re-encoded on the
-   native hardware encoder.
+3. Captures each drawn frame as a JPEG straight off the canvas
+   (`canvas.toDataURL`) and hands it over the bridge to native, where the
+   hardware MediaCodec H.264 encoder writes it into the MP4 (the soundtrack is
+   mixed offline and encoded natively as AAC). Frames never touch a GPU video
+   encoder, so export speed is bounded by canvas paint + JPEG encode per frame
+   — keeping `render` under ~16 ms is what keeps the export real-time.
 
 ## Contract
 
@@ -75,8 +77,10 @@ The recorder picks `document.getElementById(canvasId)`, or the first visible
 ### In-app playback (no debug UI in the scene)
 
 Tapping a scene HTML file in the app opens it in a built-in player:
-play/pause, a seek timeline with time labels, and a silent preview (sound
-only plays after render). Never author your own preview/scrub/time-slider
+play/pause, a seek timeline with time labels, fullscreen, and the scene's
+soundtrack plays live in the preview too (the same cue scheduler the render
+mixes with; visuals stay deterministic). Never author your own
+preview/scrub/time-slider
 or other debug chrome inside the scene — it duplicates the player and
 ships scaffolding into the file. Keep the page to the canvas plus whatever
 the video itself shows. Your scene only needs to honor `render(t, ...)`
@@ -291,6 +295,38 @@ Images and video clips in scenes (user-provided visuals):
   Pick per scene and never promise both.
 - Before authoring around a clip, look at it first with `getVideoFrame`
   (poster at a few timestamps) so framing and motion match the footage.
+- **Clip invisible in the render (shows in preview but blank in the MP4)** —
+  the cause is almost always scene code that owns `currentTime` when the
+  export does. Follow this recipe and clips cannot be invisible:
+  1. Create the element once at top level, in the DOM and decode-ready:
+     `<video muted playsinline preload="auto" src="workspace://<id>">`.
+     Keep it `opacity: 0`/absolute behind the canvas (or 1×1 px) — **not
+     `display: none`**, which can stop frame decode on some WebViews.
+  2. Do **not** call `video.play()` anywhere and do **not** gate the draw on
+     the scene's own time bookkeeping (`if (video.currentTime === t - start)`),
+     `ontimeupdate`, or a self-driven rAF loop. While exporting, the
+     recorder itself pauses every `<video>` and seeks it to the exact video
+     time each frame before calling `render`, then waits for the decode
+     (`readyState >= 2`, not seeking). Your job in `render` is only to paint
+     what is already there: `if (video.readyState >= 2 && video.videoWidth)
+     drawImage(video, ...)`, else paint the poster/background — so the frame
+     after a slow seek is a background frame, not knowledge the clip never
+     existed.
+  3. One clip filling the whole timeline? Then the recorder's seek **is** the
+     timing: draw unconditionally on the ready guard above and let `video.loop`
+     handle footage shorter than the scene. Do not subtract your own offsets —
+     that is the #1 reason a clip renders blank.
+  4. Multiple clips, a clip that starts mid-timeline, time-remap, or any custom
+     mapping of scene time onto clip time: implement
+     `prepareFrame: function (t) { /* seek the right clip to the right offset
+     and return a Promise that resolves on 'seeked' */ }` on the contract.
+     The recorder awaits it with the same 15 s watchdog instead of its default
+     seek, so your offsets and the exporter's decode-wait stay in sync.
+     Inside `prepareFrame` you may set `currentTime` freely — it runs outside
+     `render`, so determinism still holds.
+  5. Verify with stills: `previewScene` at the clip's start, middle, and end
+     times before rendering (stills show settled frames, so a clip that draws
+     in the preview is confirmed — anything blank there is blank in the MP4).
 - Chroma key (green/blue screen): a clip shot against a flat screen is
   keyed at draw time through the in-page helper (present in every render
   and preview page — no tool call). Never hand-roll a `getImageData`
@@ -690,9 +726,11 @@ inside one canvas scene.
       `textToSpeech` (or the endpoint fallback), scheduled every part as a
       `file:` track at its `start`, and captioned it via `transcribeAudio`
 - [ ] if the scene uses user images/clips: every `workspace://` id exists,
-      files are within type/size limits, `<video>` is muted, draws are
-      guarded (`img.complete`, `readyState`), and the result reports them
-      in `imageFiles`/`videoFiles`
+      files are within type/size limits, `<video>` is muted + `playsinline` +
+      `preload="auto"`, nothing calls `video.play()` or gates draws on its own
+      `currentTime` bookkeeping (the exporter owns seeks — see the clip
+      recipe), draws are guarded (`img.complete`, `readyState >= 2 &&
+      videoWidth`), and the result reports them in `imageFiles`/`videoFiles`
 - [ ] if the scene has sound: ran `previewMix` and cleared its warning
       (volumes near 1, no clipping, ducking lands on the voice)
 - [ ] if the scene is new or complex: reviewed a `previewScene` storyboard

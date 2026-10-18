@@ -1,4 +1,4 @@
-import { File, Paths } from "expo-file-system";
+import { File } from "expo-file-system";
 import { tool } from "ai";
 import { z } from "zod";
 
@@ -10,7 +10,10 @@ import {
   inlineImageAssets,
   inlineVideoAssets,
 } from "@/modules/preview/video-assets";
-import { requestVideoRender } from "@/modules/preview/video-render";
+import {
+  renderSegments,
+  type SegmentRenderResult,
+} from "@/modules/preview/render-segments";
 import {
   createRecord,
   summarizeValue,
@@ -18,124 +21,12 @@ import {
 import type { WorkspaceToolFactoryParams } from "@/modules/tools/built-in/types";
 
 const MAX_HTML_CHARS = 2_000_000;
-/** Segments stay inside the validated per-render envelope (frames, bridge, abort headroom). */
-const SEGMENT_SECONDS = 30;
 
-export type SegmentRenderResult = {
-  uri: string;
-  hasAudio: boolean;
-  audioWarnings: string[];
-  warnings: string[];
-};
-
-/**
- * Renders the document, segmenting timelines over SEGMENT_SECONDS into
- * ordinary render jobs and concatenating the MP4s natively. Short videos
- * take the legacy single render (zero behavior change). Segment files live
- * in cache keyed by source so a failed run resumes by re-rendering only
- * the missing pieces — exports are deterministic, so resumed segments are
- * byte-identical to a clean run.
- */
-export async function renderSegments(options: {
-  abortSignal?: AbortSignal;
-  contractDuration: number | null;
-  documentHtml: string;
-  onProgress?: (progress: { bytesWritten: number; totalBytes: number }) => void;
-  sourceFileId: string;
-}): Promise<SegmentRenderResult> {
-  const { abortSignal, contractDuration, documentHtml, onProgress, sourceFileId } = options;
-  const reportProgress = (done: number, total: number, segProgress: number) => {
-    const overall = total <= 0 ? 0 : Math.max(0, Math.min(1, (done + segProgress) / total));
-    onProgress?.({ bytesWritten: Math.round(overall * 100), totalBytes: 100 });
-  };
-  const runOne = (
-    segment: { offset: number; length: number } | undefined,
-    segIndex: number,
-    segTotal: number,
-  ) => {
-    const done = segIndex;
-    return requestVideoRender(documentHtml, {
-      signal: abortSignal,
-      onProgress: (progress) => reportProgress(done, segTotal, progress),
-      segment: segment,
-    });
-  };
-
-  if (contractDuration == null || contractDuration <= SEGMENT_SECONDS) {
-    const result = await runOne(undefined, 0, 1);
-    return { uri: result.uri, hasAudio: result.hasAudio, audioWarnings: result.audioWarnings, warnings: [] };
-  }
-
-  const total = contractDuration;
-  const count = Math.ceil(total / SEGMENT_SECONDS);
-  const uris: string[] = [];
-  const audioWarnings: string[] = [];
-  let hasAudio = false;
-  const sidecar = (index: number) =>
-    new File(Paths.cache, `render-${sourceFileId}-seg-${index}.json`);
-  for (let i = 0; i < count; i += 1) {
-    const offset = i * SEGMENT_SECONDS;
-    const length = Math.min(SEGMENT_SECONDS, total - offset);
-    const segFile = new File(Paths.cache, `render-${sourceFileId}-seg-${i}.mp4`);
-    if (segFile.exists) {
-      uris.push(segFile.uri);
-      try {
-        const meta = JSON.parse(await sidecar(i).text()) as {
-          hasAudio?: boolean;
-          audioWarnings?: string[];
-        };
-        hasAudio = hasAudio || meta.hasAudio === true;
-        if (Array.isArray(meta.audioWarnings)) audioWarnings.push(...meta.audioWarnings);
-      } catch {
-        // Unreadable sidecar: keep the footage, audio flags stay conservative.
-      }
-      continue;
-    }
-    let result;
-    try {
-      result = await runOne({ offset, length }, i, count);
-    } catch (error) {
-      throw new Error(
-        `Segment ${i + 1}/${count} (t=${offset}-${Math.round((offset + length) * 100) / 100}s) failed: ${error instanceof Error ? error.message : String(error)}. Re-run to resume — finished segments are kept.`,
-      );
-    }
-    hasAudio = hasAudio || result.hasAudio;
-    audioWarnings.push(...result.audioWarnings);
-    await new File(result.uri).move(segFile, { overwrite: true });
-    try {
-      await sidecar(i).write(
-        JSON.stringify({ hasAudio: result.hasAudio, audioWarnings: result.audioWarnings }),
-      );
-    } catch {
-      // Sidecar is resume metadata only; footage is already safe.
-    }
-    uris.push(segFile.uri);
-  }
-
-  const stripScheme = (uri: string) => (uri.startsWith("file://") ? uri.slice("file://".length) : uri);
-  const outFile = new File(Paths.cache, `render-${sourceFileId}-full.mp4`);
-  const { getHtmlVideoExportModule } = await import("html-video-export");
-  const module = getHtmlVideoExportModule();
-  if (!module || typeof module.concatSegments !== "function") {
-    throw new Error("Segmented rendering needs the video export module (concatSegments).");
-  }
-  await module.concatSegments(uris.map(stripScheme), stripScheme(outFile.uri));
-  for (const uri of uris) {
-    try {
-      await new File(uri).delete();
-    } catch {
-      // Best-effort cache cleanup; segments are small and bounded.
-    }
-  }
-  return {
-    uri: outFile.uri,
-    hasAudio,
-    audioWarnings,
-    warnings: [
-      `Rendered in ${count} segments and concatenated; per-segment audio fades up to 50 ms at seams.`,
-    ],
-  };
-}
+// The render engine lives in @/modules/preview/render-segments so the preview
+// dialog's Export button runs the exact same pipeline (same segmentation,
+// same resume cache, same errors). Re-exported for existing imports/tests.
+export { renderSegments };
+export type { SegmentRenderResult };
 
 /**
  * Renders a self-contained HTML document (the `window.MOBILE_AGENT_VIDEO`
@@ -274,9 +165,10 @@ export function createRenderVideoTool({
           audioFiles,
           imageFiles,
           videoFiles,
-          warnings: [...clipWarnings, ...result.warnings],
+          warnings: [...clipWarnings, ...result.warnings, ...(result.perfWarnings ?? [])],
           hasAudio: result.hasAudio,
           audioWarnings: result.audioWarnings,
+          timings: result.timings,
         };
 
         onRecord?.(

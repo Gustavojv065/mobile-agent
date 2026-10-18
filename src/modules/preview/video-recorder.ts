@@ -1237,11 +1237,41 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
     var ready = {}; // index -> base64 jpeg prepared ahead (at most one entry)
     var preparing = false; // a single shared video element/canvas: one prepare at a time
     var sending = false;
+    // Per-stage wall clock (ms): page seek/render, canvas JPEG capture, and
+    // the native encoder's ack of each frame. Attached to the done message so
+    // slow stages are visible in the result instead of guessed at.
+    var timing = {
+      frames: 0,
+      prepare: { sum: 0, max: 0 },
+      capture: { sum: 0, max: 0 },
+      bridge: { sum: 0, max: 0 }
+    };
+    // performance is not part of every WebView/test-harness global set.
+    function clock() {
+      return (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+    }
+    function track(slot, ms) {
+      if (!isFinite(ms) || !(ms >= 0)) return;
+      slot.sum += ms;
+      if (ms > slot.max) slot.max = ms;
+    }
+    function timingSummary() {
+      var frames = Math.max(1, timing.frames);
+      return {
+        frames: timing.frames,
+        prepareAvgMs: Math.round(timing.prepare.sum / frames),
+        prepareMaxMs: Math.round(timing.prepare.max),
+        captureAvgMs: Math.round(timing.capture.sum / frames),
+        captureMaxMs: Math.round(timing.capture.max),
+        bridgeAvgMs: Math.round(timing.bridge.sum / frames),
+        bridgeMaxMs: Math.round(timing.bridge.max)
+      };
+    }
 
     function finish() {
       sendOfflineAudio().then(function () {
         if (cancelled) { teardown(); return; }
-        post({ type: 'mobileAgentVideoDone', emitted: emitted });
+        post({ type: 'mobileAgentVideoDone', emitted: emitted, timings: timingSummary() });
         teardown();
       }).catch(function (error) {
         fail('Soundtrack export failed: ' + String((error && error.message) || error));
@@ -1260,7 +1290,9 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
       var base64 = ready[sendIndex];
       if (base64 === undefined) return;
       sending = true;
+      var bridgeStart = clock();
       postAndWait({ type: 'mobileAgentVideoFrame', index: emitted, frameCount: frameCount, base64: base64 }).then(function () {
+        track(timing.bridge, clock() - bridgeStart);
         sending = false;
         delete ready[sendIndex];
         emitted += 1;
@@ -1285,13 +1317,17 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
       var myIndex = index;
       index += 1;
       var t = clockBase + myIndex / fps;
+      var prepareStart = clock();
       prepareSourceFrame(contract, t, fps).then(function () {
         if (cancelled) { preparing = false; return; }
         if (!renderFrame(contract, canvas, ctx, t)) { preparing = false; return; }
+        track(timing.prepare, clock() - prepareStart);
+        timing.frames += 1;
         // Legacy scenes may call play() inside render(). Export is clocked by
         // frame index instead, so do not let playback advance between frames.
         pauseSourceVideos();
         var dataUrl = null;
+        var captureStart = clock();
         try {
           dataUrl = canvas.toDataURL('image/jpeg', 0.92);
         } catch (error) {
@@ -1299,6 +1335,7 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
           fail('Frame capture failed: ' + String((error && error.message) || error));
           return;
         }
+        track(timing.capture, clock() - captureStart);
         var comma = dataUrl.indexOf(',');
         ready[myIndex] = comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl;
         preparing = false;
@@ -1324,12 +1361,14 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
 
   window.__startMobileAgentVideoExport = start;
   window.__cancelMobileAgentVideoExport = cancel;
-  // Reused by same-page tools (mix check): schedule validation, cue
-  // scheduling, and FX buses without starting a recording.
+  // Reused by same-page tools (mix check) and the live preview player:
+  // schedule validation, per-cue scheduling, cue derivation for resumed
+  // playback positions, and FX buses — without starting a recording.
   window.__mobileAgentAudioEngine = {
     readAudioSchedule: readAudioSchedule,
     scheduleAudioCue: scheduleAudioCue,
-    buildFxBuses: buildFxBuses
+    buildFxBuses: buildFxBuses,
+    deriveSegmentCue: deriveSegmentCue
   };
 })();
 `;

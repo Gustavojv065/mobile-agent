@@ -1,3 +1,7 @@
+import type { VideoExportTimings } from "@/modules/preview/video-export-messages";
+
+export type { VideoExportTimings };
+
 /**
  * Tool-driven video rendering queue.
  *
@@ -20,6 +24,10 @@ export type VideoRenderResult = {
   hasAudio: boolean;
   /** Non-fatal audio notes (skipped cues, blocked playback, ...). */
   audioWarnings: string[];
+  /** Per-stage timing summary, when the page reported one. */
+  timings?: VideoExportTimings;
+  /** Non-fatal performance notes derived from the timings. */
+  perfWarnings?: string[];
 };
 
 export type VideoRenderJob = {

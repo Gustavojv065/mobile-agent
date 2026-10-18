@@ -1,17 +1,21 @@
-import { Download, Monitor, Smartphone, X, Code, Eye, Square } from "lucide-react-native";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Download, Monitor, Smartphone, X, Code, Eye } from "lucide-react-native";
+import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import {
   ActivityIndicator,
   Alert,
+  Modal,
   type LayoutChangeEvent,
   Platform,
   Pressable,
   Text,
   View,
+  type ViewProps,
 } from "react-native";
-import { File, Paths } from "expo-file-system";
+import { BlurView } from "expo-blur";
+import { File } from "expo-file-system";
 import { useSQLiteContext } from "expo-sqlite";
-import { captureRef } from "react-native-view-shot";
+import { captureViewToTmpFile } from "@/modules/preview/view-shot";
+import Svg, { Defs, LinearGradient, Rect, Stop } from "react-native-svg";
 import { WebView, type WebViewMessageEvent } from "react-native-webview";
 
 import {
@@ -42,8 +46,13 @@ import {
   SCENE_PLAYER_MESSAGE_TYPE,
 } from "@/modules/preview/scene-player";
 import { handlePreviewDownloadMessage, PREVIEW_DOWNLOAD_HOOK } from "@/modules/preview/preview-downloads";
+import { hashDocumentKey, renderSegments } from "@/modules/preview/render-segments";
 import { buildVideoExportDocument } from "@/modules/preview/video-recorder";
-import { VideoExportController, type VideoExportResult } from "@/modules/preview/video-export-messages";
+import {
+  getVideoRenderStatus,
+  subscribeVideoRenderStatus,
+} from "@/modules/preview/video-render";
+import { VideoPlayerDialog, type VideoPlayerTarget } from "@/components/ui/video-player-dialog";
 import { getHtmlVideoExportModule } from "html-video-export";
 
 /**
@@ -63,6 +72,93 @@ const MIN_CAPTURE_FEEDBACK_MS = 350;
 
 type Viewport = "desktop" | "mobile";
 type ViewMode = "code" | "preview";
+type SceneExportState = { progress: number; status: "recording" | "finishing" };
+
+/**
+ * Module-scoped singleton for the manual Export. It beats the component
+ * lifecycle on purpose: the render runs in the app-root hidden host (the same
+ * queue the renderVideo tool uses), so minimizing or closing the preview
+ * drawer must not cancel an in-flight export — the finished file still lands
+ * in Downloads and the reopened drawer reattaches to the running progress
+ * instead of queuing a duplicate render. That also gives the manual path the
+ * same "only one render at a time" guarantee the tool path already had.
+ */
+let activeExport: {
+  controller: AbortController;
+  state: SceneExportState;
+  resultFile: File | null;
+} | null = null;
+const exportListeners = new Set<() => void>();
+
+function notifyExport() {
+  for (const listener of [...exportListeners]) listener();
+}
+
+function setExportState(state: SceneExportState) {
+  if (activeExport) activeExport.state = state;
+  notifyExport();
+}
+
+/** Drops the singleton, clearing the Export button back to idle. */
+function releaseSceneExport(deleteResultFile: boolean) {
+  const file = activeExport?.resultFile ?? null;
+  activeExport = null;
+  notifyExport();
+  if (deleteResultFile && file) {
+    try {
+      file.delete();
+    } catch {
+      // The cache file may already be gone.
+    }
+  }
+}
+
+/** Abort in flight and drop the temp/finished file. */
+function cancelSceneExport() {
+  const active = activeExport;
+  if (!active) return;
+  activeExport = null;
+  notifyExport();
+  active.controller.abort();
+  if (active.resultFile) {
+    try {
+      active.resultFile.delete();
+    } catch {
+      // The cache file may already be gone.
+    }
+  }
+}
+
+function useSceneExportState(): SceneExportState | null {
+  const [state, setState] = useState<SceneExportState | null>(
+    activeExport ? activeExport.state : null,
+  );
+  useEffect(() => {
+    const sync = () => setState(activeExport ? activeExport.state : null);
+    // Reattach immediately: a mounted dialog adopts an export started before
+    // this dialog (or before a minimize) even if it is already done.
+    sync();
+    exportListeners.add(sync);
+    return () => {
+      exportListeners.delete(sync);
+    };
+  }, []);
+  return state;
+}
+
+/** True while any render (tool or manual) is recording — the global lock. */
+function useAnyRenderBusy(): boolean {
+  const [busy, setBusy] = useState(() => getVideoRenderStatus() !== null);
+  useEffect(() => {
+    const sync = () => setBusy(getVideoRenderStatus() !== null);
+    sync();
+    const unsubscribe = subscribeVideoRenderStatus(sync);
+    return () => {
+      unsubscribe();
+    };
+  }, []);
+  return busy;
+}
 
 export type CodePreviewDialogProps = {
   /** Complete HTML document, as built by `buildPreviewDocument`. Omit to open straight in source (code) mode. */
@@ -152,10 +248,31 @@ export function CodePreviewContent({
     () => mode === "code" ? buildCodeDocument(code, language, theme) : "",
     [code, language, mode, theme],
   );
-  const [videoExport, setVideoExport] = useState<{
-    progress: number;
-    status: "recording" | "finishing";
-  } | null>(null);
+  const videoExport = useSceneExportState();
+  const anyRenderBusy = useAnyRenderBusy();
+  // Completed export: hand the MP4 to the real player drawer (the same
+  // VideoPlayerDialog the chat uses) instead of duplicating a player here.
+  const [exportedPlayer, setExportedPlayer] = useState<VideoPlayerTarget | null>(null);
+  const exportedUriRef = useRef<string | null>(null);
+  useEffect(() => {
+    exportedUriRef.current = exportedPlayer ? exportedPlayer.localUri : null;
+  }, [exportedPlayer]);
+  // The completed MP4 is a cache file backing the player drawer (the Downloads
+  // copy is independent), so drop it when the player drawer goes away or when
+  // the preview dialog unmounts without ever opening it.
+  useEffect(() => {
+    return () => {
+      const uri = exportedUriRef.current;
+      if (uri) {
+        try {
+          new File(uri).delete();
+        } catch {
+          // The cache file may already be gone.
+        }
+      }
+      exportedUriRef.current = null;
+    };
+  }, []);
   // Video-scene player (play/pause/seek without rendering). Only video
   // scenes — HTML defining window.MOBILE_AGENT_VIDEO — get the transport
   // bar, the render button, and the silent-preview treatment; plain HTML
@@ -223,9 +340,22 @@ export function CodePreviewContent({
   const [playerTime, setPlayerTime] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [playerError, setPlayerError] = useState<string | null>(null);
+  const [audioError, setAudioError] = useState<string | null>(null);
+  // Fullscreen preview layer: a dedicated WebView (separate from the drawer
+  // card) that snaps to the whole screen; the same message stream keeps the
+  // timeline continuous across both.
+  const [fullscreen, setFullscreen] = useState(false);
+  const fullscreenRef = useRef(false);
+  useEffect(() => {
+    fullscreenRef.current = fullscreen;
+  }, [fullscreen]);
+  const modalWebViewRef = useRef<WebView>(null);
+  // While the user's thumb is down, the player page keeps posting `t` (~5/s
+  // while playing); without this gate the message stream yanks the thumb back
+  // mid-drag. Scrubbing also pauses playback, so ticks stop at the source.
+  const scrubbingRef = useRef(false);
+  const scrubSeekRef = useRef({ last: 0, pending: 0 as number | null });
   const webViewRef = useRef<WebView>(null);
-  const exportControllerRef = useRef<VideoExportController | null>(null);
-  const exportFileRef = useRef<File | null>(null);
   // File-backed preview document: multi-MB inlined scenes exceed what
   // `source={{ html }}` can load, so the page reads from cache like the
   // hidden render/preview hosts do.
@@ -260,14 +390,13 @@ export function CodePreviewContent({
       documentRef.current = null;
     };
   }, []);
-  // Set once the export page answers (first progress/finish/result/error).
-  // Start retries keep firing until then: an inlined scene document can take
-  // seconds to parse, long past a fixed small retry budget.
-  const exportStartedRef = useRef(false);
   const canExportVideo = Platform.OS === "android" && getHtmlVideoExportModule() !== null;
 
   const playerCommand = useCallback((command: string) => {
-    webViewRef.current?.injectJavaScript(
+    // Commands route to the fullscreen layer while it is open; the drawer
+    // card stays paused underneath.
+    const target = fullscreenRef.current ? modalWebViewRef.current : webViewRef.current;
+    target?.injectJavaScript(
       `window.__mobileAgentPlayer ? (window.__mobileAgentPlayer.${command}, true) : false;`,
     );
   }, []);
@@ -299,63 +428,83 @@ export function CodePreviewContent({
     setPlaying(true);
   }, [pausePlayer, playerCommand, playerTime, playing, sceneDuration]);
 
-  const seekPlayer = useCallback(
+  // Preview seeks while the thumb is down are throttled (~7/s): each seek is
+  // an injectJavaScript round-trip that retargets the page's canvas, so
+  // flooding them per move-event janks both sides.
+  const flushScrubSeek = useCallback((value: number) => {
+    const state = scrubSeekRef.current;
+    const now = Date.now();
+    if (now - state.last < 140) {
+      state.pending = value;
+      return;
+    }
+    state.last = now;
+    state.pending = null;
+    playerCommand(`seek(${value})`);
+  }, [playerCommand]);
+
+  const handleScrubStart = useCallback(() => {
+    scrubbingRef.current = true;
+    scrubSeekRef.current = { last: Date.now(), pending: null };
+    setPlayerError(null);
+    if (playing) playerCommand("pause()");
+    setPlaying(false);
+  }, [playing, playerCommand]);
+
+  const handleScrubValue = useCallback(
     (value: number) => {
       if (!Number.isFinite(value)) return;
       setPlayerTime(value);
-      setPlayerError(null);
-      playerCommand(`seek(${value})`);
+      flushScrubSeek(value);
     },
-    [playerCommand],
+    [flushScrubSeek],
+  );
+
+  const handleScrubComplete = useCallback(
+    (value: number) => {
+      scrubbingRef.current = false;
+      flushScrubSeek(value);
+      setPlayerTime(value);
+    },
+    [flushScrubSeek],
   );
 
   const installPlayer = useCallback(() => {
     webViewRef.current?.injectJavaScript(`${buildScenePlayerScript()}\ntrue;`);
   }, []);
+  // The fullscreen layer mounts its own WebView, so on load it installs the
+  // player and snap-jumps to the timeline position the drawer card is at —
+  // the two WebViews never share a page, only the shared t state.
+  const installPlayerFullscreen = useCallback(() => {
+    const webView = modalWebViewRef.current;
+    if (!webView) return;
+    webView.injectJavaScript(`${buildScenePlayerScript()}\ntrue;`);
+    const t = Math.max(0, Math.min(playerTimeRef.current, sceneDurationRef.current ?? 0));
+    webView.injectJavaScript(
+      `window.__mobileAgentPlayer ? (window.__mobileAgentPlayer.seek(${t}), true) : false;`,
+    );
+  }, []);
+  const playerTimeRef = useRef(0);
+  const sceneDurationRef = useRef<number | null>(null);
+  useEffect(() => {
+    playerTimeRef.current = playerTime;
+    sceneDurationRef.current = sceneDuration;
+  }, [playerTime, sceneDuration]);
   const previousHtml = useRef(html);
 
-  const cleanupExportFile = useCallback(() => {
-    const file = exportFileRef.current;
-    exportFileRef.current = null;
-    if (file) {
-      try {
-        file.delete();
-      } catch {
-        // The cache file may already be gone.
-      }
-    }
+  const stopExport = useCallback(() => {
+    cancelSceneExport();
   }, []);
 
-  const shareVideo = useCallback(async (file: File) => {
-    try {
-      const Sharing = await import("expo-sharing");
-      await Sharing.shareAsync(file.uri, {
-        dialogTitle: "Share video",
-        mimeType: "video/mp4",
-      });
-    } catch (error) {
-      Alert.alert(
-        "Share failed",
-        error instanceof Error ? error.message : "The video could not be shared.",
-      );
-    } finally {
-      cleanupExportFile();
-    }
-  }, [cleanupExportFile]);
-
-  const stopExport = useCallback(() => {
-    if (!videoExport) return;
-    webViewRef.current?.injectJavaScript(
-      "window.__cancelMobileAgentVideoExport ? (window.__cancelMobileAgentVideoExport(), true) : false;",
-    );
-    void exportControllerRef.current?.cancel();
-    exportControllerRef.current = null;
-    setVideoExport(null);
-    cleanupExportFile();
-  }, [cleanupExportFile, videoExport]);
-
+  // The preview dialog and the renderVideo tool run the SAME pipeline:
+  // renderSegments -> requestVideoRender -> the one hidden export host. One
+  // queue, one native module, identical segmentation/resume/errors/warnings,
+  // so a manual export and an agent render can never fight over the singleton
+  // native session. The singleton export state lives at module scope, so
+  // minimizing or closing this drawer never cancels the render — when it
+  // completes the file lands in Downloads either way.
   const handleExportVideo = useCallback(() => {
-    if (videoExport || mode !== "preview") return;
+    if (videoExport || anyRenderBusy || mode !== "preview") return;
     if (hasWorkspaceRefs(exportHtml)) {
       Alert.alert(
         "Video export unavailable",
@@ -364,94 +513,78 @@ export function CodePreviewContent({
       );
       return;
     }
-    // The recorder drives its own frames: stop the player first so the two
-    // loops never fight over the canvas.
+    if (sceneDuration == null) return;
+    // The hidden host owns the canvas while rendering; stop the visible
+    // player loop first so the two never fight over the page.
     pausePlayer();
-    const module = getHtmlVideoExportModule();
-    if (!module) return;
-
-    cleanupExportFile();
-    const file = new File(Paths.cache, `video-${Date.now()}.mp4`);
-    file.create({ overwrite: true, intermediates: true });
-    exportFileRef.current = file;
-
-    const finishExport = async (result: VideoExportResult) => {
-      setVideoExport({ progress: 1, status: "finishing" });
+    // Drop a previously exported copy so its cache file goes with its drawer.
+    if (exportedUriRef.current) {
       try {
+        new File(exportedUriRef.current).delete();
+      } catch {
+        // Already gone.
+      }
+      setExportedPlayer(null);
+      exportedUriRef.current = null;
+    }
+
+    const controller = new AbortController();
+    const entry = {
+      controller,
+      state: { progress: 0, status: "recording" } as SceneExportState,
+      resultFile: null as File | null,
+    };
+    activeExport = entry;
+    notifyExport();
+
+    void (async () => {
+      try {
+        const result = await renderSegments({
+          abortSignal: controller.signal,
+          contractDuration: sceneDuration,
+          documentHtml: exportHtml,
+          sourceFileId: hashDocumentKey(exportHtml),
+          onProgress: (p) =>
+            setExportState({
+              progress: Math.max(0, Math.min(1, p.bytesWritten / Math.max(1, p.totalBytes))),
+              status: "recording",
+            }),
+        });
+        if (controller.signal.aborted) return;
+        // Keep the MP4 alive for the player drawer the export promotes to.
+        entry.resultFile = new File(result.uri);
+        setExportState({ progress: 1, status: "finishing" });
         const saved = await downloadFile(result.uri, exportVideoName(exportFileName), "video/mp4");
         if (!saved) throw new Error("The video could not be saved to Downloads.");
-        Alert.alert("Video saved", `${saved.name} has been saved to Downloads${result.hasAudio ? " with audio" : ""}.`, [
-          { text: "Share", onPress: () => void shareVideo(file) },
-          { text: "OK", onPress: () => cleanupExportFile() },
-        ]);
-      } catch (error) {
-        Alert.alert(
-          "Export failed",
-          error instanceof Error ? error.message : "The video could not be saved.",
-        );
-      }
-    };
-
-    const controller = new VideoExportController({
-      onConsumed: (id) => webViewRef.current?.injectJavaScript(
-        `window.__mobileAgentExportConsumed?.(${id}); true;`,
-      ),
-      outputPath: file.uri,
-      module,
-      onConfig: () => { exportStartedRef.current = true; },
-      onProgress: (progress) => {
-        exportStartedRef.current = true;
-        setVideoExport({ progress, status: "recording" });
-      },
-      onFinishing: () => {
-        exportStartedRef.current = true;
-        setVideoExport({ progress: 1, status: "finishing" });
-      },
-      onResult: (result) => {
-        exportStartedRef.current = true;
-        void finishExport(result).finally(() => {
-          exportControllerRef.current = null;
-          setVideoExport(null);
+        // Done: swap the blurred fake player for the real player drawer.
+        setExportedPlayer({
+          displayName: saved.name,
+          localUri: result.uri,
+          mimeType: "video/mp4",
         });
-      },
-      onError: (message) => {
-        exportStartedRef.current = true;
-        exportControllerRef.current = null;
-        setVideoExport(null);
-        cleanupExportFile();
-        Alert.alert("Video export failed", message);
-      },
-    });
-    exportControllerRef.current = controller;
-    exportStartedRef.current = false;
-    setVideoExport({ progress: 0, status: "recording" });
-
-    // The recorder script ships inside the document, so injectJavaScript may
-    // run before the page evaluated it — especially with an inlined multi-MB
-    // scene that needs seconds to parse. Retrying is safe: `start` ignores
-    // calls while an export is already running. Retries stop once the page
-    // answers, when the user stops, or after ~15 s with a loud failure
-    // instead of a silent hang at 0%.
-    const attemptStart = (triesLeft: number) => {
-      if (exportControllerRef.current !== controller) return;
-      if (exportStartedRef.current) return;
-      webViewRef.current?.injectJavaScript(
-        "window.__startMobileAgentVideoExport ? (window.__startMobileAgentVideoExport(), true) : false;",
-      );
-      if (triesLeft > 0) {
-        setTimeout(() => attemptStart(triesLeft - 1), 200);
-      } else {
-        exportControllerRef.current = null;
-        setVideoExport(null);
-        cleanupExportFile();
-        Alert.alert(
-          "Video export failed",
-          "The export page did not start. Close the preview and try again, or ask the agent to render it with renderVideo.",
-        );
+      } catch (error) {
+        if (!controller.signal.aborted) {
+          Alert.alert(
+            "Video export failed",
+            error instanceof Error ? error.message : "The video could not be exported.",
+          );
+          // The file never reached the user; drop the temp copy.
+          if (entry.resultFile) {
+            try {
+              entry.resultFile.delete();
+            } catch {
+              // Already gone.
+            }
+          }
+        }
+      } finally {
+        // Back the button to idle once the work is over (or was cancelled —
+        // cancelSceneExport already dropped the singleton in that case).
+        if (activeExport === entry) releaseSceneExport(false);
+        notifyExport();
       }
-    };
-    attemptStart(75);
-  }, [cleanupExportFile, exportFileName, exportHtml, mode, pausePlayer, sceneAssetsError, shareVideo, videoExport]);
+    })();
+  }, [anyRenderBusy, exportFileName, exportHtml, mode, pausePlayer, sceneAssetsError, sceneDuration, videoExport]);
 
   const handleMessage = useCallback((event: WebViewMessageEvent) => {
     try {
@@ -460,8 +593,14 @@ export function CodePreviewContent({
         t?: unknown;
         playing?: unknown;
         error?: unknown;
+        audioError?: unknown;
       } | null;
       if (payload && typeof payload === "object" && payload.type === SCENE_PLAYER_MESSAGE_TYPE) {
+        if (scrubbingRef.current) {
+          // Ignore the page's ticking clock while the user is dragging the
+          // timeline; the scrub handlers drive the value instead.
+          return;
+        }
         if (typeof payload.t === "number" && Number.isFinite(payload.t)) {
           setPlayerTime(payload.t);
         }
@@ -471,28 +610,25 @@ export function CodePreviewContent({
         if (typeof payload.error === "string" && payload.error) {
           setPlayerError(payload.error);
         }
+        if (typeof payload.audioError === "string") {
+          setAudioError(payload.audioError || null);
+        }
         return;
       }
     } catch {
       // Not a player message: fall through to the other handlers.
     }
     void handlePreviewDownloadMessage(event);
-    void exportControllerRef.current?.handleMessage(event);
   }, []);
 
-  // A new message replaces the document, so any in-flight export is stale.
+  // A new message replaces the preview document and the player page — but the
+  // in-flight export is decoupled from this WebView (it renders a snapshot of
+  // the exported HTML in the hidden host), so it keeps running.
   useEffect(() => {
     if (previousHtml.current === html) return;
     previousHtml.current = html;
     resetPlayer();
-    webViewRef.current?.injectJavaScript(
-      "window.__cancelMobileAgentVideoExport ? (window.__cancelMobileAgentVideoExport(), true) : false;",
-    );
-    void exportControllerRef.current?.cancel();
-    exportControllerRef.current = null;
-    setVideoExport(null);
-    cleanupExportFile();
-  }, [cleanupExportFile, html, resetPlayer]);
+  }, [html, resetPlayer]);
 
   // Leaving preview mode tears down the player page.
   useEffect(() => {
@@ -500,15 +636,13 @@ export function CodePreviewContent({
     resetPlayer();
   }, [mode, resetPlayer]);
 
-  // Tear down the export and its temp file when the preview unmounts.
+  // The export outlives this drawer by design (module-scoped pipeline + hidden
+  // host), so unmount must not cancel it — only the preview player stops.
   useEffect(() => {
     return () => {
       playerCommand("pause()");
-      void exportControllerRef.current?.cancel();
-      exportControllerRef.current = null;
-      cleanupExportFile();
     };
-  }, [cleanupExportFile, playerCommand]);
+  }, [playerCommand]);
 
   const handleSave = useCallback(async () => {
     if (saving || !frameRef.current) {
@@ -530,11 +664,14 @@ export function CodePreviewContent({
         if (result) Alert.alert("Code saved", `${result.name} has been saved to Downloads.`);
         return;
       }
-      const uri = await captureRef(frameRef, {
-        format: "png",
-        quality: 1,
-        result: "tmpfile",
-      });
+      // Lazy: the TurboModule must never be resolved at import time (the root
+      // layout statically imports this file) — a runtime without the native
+      // module would otherwise crash the app at startup.
+      const uri = await captureViewToTmpFile(
+        frameRef,
+        { format: "png", quality: 1, result: "tmpfile" },
+        "Preview snapshots",
+      );
 
       // Loaded lazily so expo-media-library (a native-only module) is never
       // evaluated in the node/server-manifest bundle during `export:embed`.
@@ -655,7 +792,7 @@ export function CodePreviewContent({
         <View
           className={
             mode === "preview" && isVideoScene
-              ? "min-h-0 flex-1 items-center justify-center"
+              ? "min-h-0 flex-1 items-center justify-start"
               : "min-h-0 flex-1 overflow-hidden rounded-xl border border-border bg-card dark:border-border-dark dark:bg-card-dark"
           }
           onLayout={handleLayout}
@@ -682,32 +819,38 @@ export function CodePreviewContent({
                   width: fittedFrame.width,
                 }}
               >
-                <View style={{ flex: 1 }}>
-                  <WebView
-                    key={viewport}
-                    ref={webViewRef}
-                    allowFileAccess
-                    allowsInlineMediaPlayback
-                    originWhitelist={["file://*", "http://*", "https://*"]}
-                    scrollEnabled
-                    setSupportMultipleWindows={false}
-                    injectedJavaScript={PREVIEW_DOWNLOAD_HOOK}
-                    onLoadEnd={installPlayer}
-                    onMessage={handleMessage}
-                    source={{ uri: documentUri }}
-                    style={{
-                      backgroundColor: theme.backgroundElement,
-                      flex: 1,
-                    }}
-                  />
-                </View>
+                <SceneWebViewContainer
+                  handleLoadEnd={installPlayer}
+                  handleMessage={handleMessage}
+                  innerRef={webViewRef}
+                  keyName={viewport}
+                  source={documentUri}
+                  style={{ flex: 1 }}
+                />
                 <ScenePlayerChrome
                   duration={sceneDuration}
-                  onSeek={seekPlayer}
+                  fullscreen={false}
+                  onSeek={handleScrubValue}
+                  onScrubComplete={handleScrubComplete}
+                  onScrubStart={handleScrubStart}
+                  onToggleFullscreen={() => {
+                    // The fullscreen layer owns playback from here on.
+                    pausePlayer();
+                    setFullscreen(true);
+                  }}
                   onTogglePlay={togglePlay}
                   playing={playing}
                   time={playerTime}
                 />
+                {videoExport ? (
+                  <SceneExportOverlay
+                    finishing={videoExport.status === "finishing"}
+                    height={fittedFrame.height}
+                    progress={videoExport.progress}
+                    strokeColor={theme.accent}
+                    width={fittedFrame.width}
+                  />
+                ) : null}
               </View>
             ) : (
               <View style={{ flex: 1 }}>
@@ -716,6 +859,7 @@ export function CodePreviewContent({
                   ref={webViewRef}
                   allowFileAccess
                   allowsInlineMediaPlayback
+                  mediaPlaybackRequiresUserAction={false}
                   originWhitelist={["file://*", "http://*", "https://*"]}
                   scrollEnabled
                   setSupportMultipleWindows={false}
@@ -729,41 +873,158 @@ export function CodePreviewContent({
             )
           ) : null}
         </View>
+        {/*
+          Fullscreen preview: the same scene on the whole screen. It mounts
+          its own WebView, so on load it installs the player and jumps to the
+          shared timeline position; when it closes, the drawer card continues
+          from there. A separate Modal stacks above the preview drawer.
+        */}
+        <Modal
+          statusBarTranslucent
+          visible={fullscreen && isVideoScene && documentUri != null && sceneDuration != null}
+          onRequestClose={() => {
+            pausePlayer();
+            setFullscreen(false);
+          }}
+        >
+          <View className="flex-1 bg-black">
+            {documentUri && sceneDuration != null ? (
+              <>
+                <SceneWebViewContainer
+                  handleLoadEnd={installPlayerFullscreen}
+                  handleMessage={handleMessage}
+                  innerRef={modalWebViewRef}
+                  keyName={`fullscreen-${viewport}`}
+                  source={documentUri}
+                  style={{ flex: 1, backgroundColor: "#000000" }}
+                />
+                <ScenePlayerChrome
+                  duration={sceneDuration}
+                  fullscreen
+                  onSeek={handleScrubValue}
+                  onScrubComplete={handleScrubComplete}
+                  onScrubStart={handleScrubStart}
+                  onToggleFullscreen={() => {
+                    pausePlayer();
+                    setFullscreen(false);
+                  }}
+                  onTogglePlay={togglePlay}
+                  playing={playing}
+                  time={playerTime}
+                />
+              </>
+            ) : null}
+          </View>
+        </Modal>
         {mode === "preview" && isVideoScene && sceneDuration != null ? (
           <View className="gap-1">
             <Text className="font-sans text-xs text-muted-foreground dark:text-muted-foreground-dark">
-              Silent preview — sound only plays after render.
+              Preview plays the soundtrack too — the export bakes it into the MP4.
             </Text>
             {playerError ? (
               <Text className="font-sans text-xs text-red-500">
                 {playerError}
               </Text>
             ) : null}
+            {audioError ? (
+              <Text className="font-sans text-xs text-amber-500">
+                {audioError}
+              </Text>
+            ) : null}
           </View>
         ) : null}
         {/*
           Scene previews render in the footer like any player drawer: a
-          full-width Render action (release-drawer style) that swaps to the
-          live export progress while recording.
+          full-width Export action (release-drawer style). While importing, the
+          button itself reads "Exporting…" and tapping it (or the Cancel link
+          below it) cancels the render.
         */}
         {canExportVideo && mode === "preview" && isVideoScene ? (
-          videoExport ? (
-            <VideoExportProgress
-              progress={videoExport.progress}
-              status={videoExport.status}
-              onStop={stopExport}
-            />
-          ) : (
-            <Button
-              className="w-full"
-              disabled={sceneAssetsPending || !fittedFrame}
-              onPress={handleExportVideo}
-            >
-              Render video
-            </Button>
-          )
+          <>
+            <View className="w-full flex-row">
+              <Button
+                className="w-full"
+                disabled={
+                  videoExport ? false : anyRenderBusy || sceneAssetsPending || !fittedFrame
+                }
+                leftIcon={
+                  videoExport ? (
+                    <ActivityIndicator color={theme.background} size="small" />
+                  ) : undefined
+                }
+                onPress={videoExport ? stopExport : handleExportVideo}
+              >
+                {videoExport ? "Exporting…" : "Export"}
+              </Button>
+            </View>
+            {videoExport ? (
+              <Pressable
+                accessibilityLabel="Cancel video export"
+                accessibilityRole="button"
+                className="items-center"
+                hitSlop={8}
+                onPress={stopExport}
+                style={({ pressed }) => (pressed ? { opacity: 0.6 } : null)}
+              >
+                <Text className="font-sans text-sm text-muted-foreground underline dark:text-muted-foreground-dark">
+                  Cancel
+                </Text>
+              </Pressable>
+            ) : null}
+          </>
         ) : null}
+        {/*
+          When the unified pipeline finishes, the blurred fake player is
+          swapped for the real player drawer — the very same
+          VideoPlayerDialog the in-chat video cards open.
+        */}
+        <VideoPlayerDialog
+          onDismiss={() => {
+            setExportedPlayer(null);
+          }}
+          video={exportedPlayer}
+        />
     </>
+  );
+}
+
+/**
+ * Shared WebView mounting a scene document: the drawer card and the
+ * fullscreen layer both use exactly this (same flags, same hooks), keeping
+ * the preview page behavior identical on both sides.
+ */
+function SceneWebViewContainer({
+  handleLoadEnd,
+  handleMessage,
+  innerRef,
+  keyName,
+  source,
+  style,
+}: {
+  handleLoadEnd: () => void;
+  handleMessage: (event: WebViewMessageEvent) => void;
+  innerRef: MutableRefObject<WebView | null>;
+  keyName: string;
+  source: string;
+  style: ViewProps["style"];
+}) {
+  return (
+    <View style={style}>
+      <WebView
+        key={keyName}
+        ref={innerRef}
+        allowFileAccess
+        allowsInlineMediaPlayback
+        mediaPlaybackRequiresUserAction={false}
+        originWhitelist={["file://*", "http://*", "https://*"]}
+        scrollEnabled
+        setSupportMultipleWindows={false}
+        injectedJavaScript={PREVIEW_DOWNLOAD_HOOK}
+        onLoadEnd={handleLoadEnd}
+        onMessage={handleMessage}
+        source={{ uri: source }}
+      />
+    </View>
   );
 }
 
@@ -901,48 +1162,75 @@ function ViewportToggle({
 }
 
 /**
- * Starts exporting the preview as an MP4 from the page's
- * `window.MOBILE_AGENT_VIDEO` contract — Android-only via the native
- * `html-video-export` module — is the full-width footer action for scene
- * previews.
+ * Exporting state rendered over the scene card: blur + dim wash + big percent,
+ * with a CapCut-style progress stroke running around the card's rounded
+ * border. Hides the canvas hijack flicker the recorder causes on any page it
+ * records (the manual path renders in the hidden host, so this is mostly a
+ * visual affordance for the running pipeline).
  */
-/** Live export progress bar with a stop button while frames are recorded. */
-function VideoExportProgress({
+function SceneExportOverlay({
+  finishing,
+  height,
   progress,
-  status,
-  onStop,
+  strokeColor,
+  width,
 }: {
+  finishing: boolean;
+  height: number;
   progress: number;
-  status: "recording" | "finishing";
-  onStop: () => void;
+  strokeColor: string;
+  width: number;
 }) {
-  const theme = useTheme();
+  const inset = 3;
+  const borderRadius = 14;
+  const w = Math.max(0, width - inset * 2);
+  const h = Math.max(0, height - inset * 2);
+  // Perimeter of a rounded rect stroke path, minus the squared corners.
+  const perimeter = 2 * (w + h) - 8 * borderRadius + 2 * Math.PI * borderRadius;
   const percent = Math.round(progress * 100);
 
   return (
-    <View className="flex-row items-center gap-3 rounded-xl bg-card p-3 dark:bg-card-dark">
-      <View
-        className="h-2 flex-1 overflow-hidden rounded-full"
-        style={{ backgroundColor: theme.backgroundElement }}
+    <View
+      accessibilityLabel={`Exporting video, ${percent} percent`}
+      accessibilityLiveRegion="polite"
+      className="absolute inset-0 items-center justify-center"
+      pointerEvents="auto"
+    >
+      <BlurView className="absolute inset-0" intensity={45} tint="dark" />
+      <View className="absolute inset-0 bg-black/40" />
+      <Svg
+        className="absolute inset-0"
+        height={height}
+        pointerEvents="none"
+        width={width}
       >
-        <View
-          className="h-full rounded-full"
-          style={{ backgroundColor: theme.text, width: `${percent}%` }}
+        <Defs>
+          <LinearGradient id="sceneExportStroke" x1="0" y1="0" x2="1" y2="1">
+            <Stop offset="0" stopColor={strokeColor} stopOpacity={0.95} />
+            <Stop offset="1" stopColor={strokeColor} stopOpacity={0.45} />
+          </LinearGradient>
+        </Defs>
+        <Rect
+          fill="none"
+          height={h}
+          rx={borderRadius}
+          stroke="url(#sceneExportStroke)"
+          strokeDasharray={`${perimeter} ${perimeter}`}
+          strokeDashoffset={perimeter * (1 - progress)}
+          strokeWidth={4}
+          width={w}
+          x={inset}
+          y={inset}
         />
+      </Svg>
+      <View className="items-center gap-1">
+        <Text className="font-sans text-3xl font-semibold text-white">
+          {percent}%
+        </Text>
+        <Text className="font-sans text-xs text-white/70">
+          {finishing ? "Finalizing…" : "Exporting"}
+        </Text>
       </View>
-      <Text className="font-sans text-xs text-muted-foreground dark:text-muted-foreground-dark">
-        {status === "recording" ? `Recording ${percent}%` : "Finalizing…"}
-      </Text>
-      {status === "recording" ? (
-        <Pressable
-          accessibilityLabel="Stop video export"
-          accessibilityRole="button"
-          className="h-8 w-8 items-center justify-center rounded-full active:opacity-70"
-          onPress={onStop}
-        >
-          <Square color={theme.text} size={16} />
-        </Pressable>
-      ) : null}
     </View>
   );
 }

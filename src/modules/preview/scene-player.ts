@@ -38,8 +38,15 @@ export function formatPlayerTime(seconds: number): string {
 /**
  * Builds the idempotent player script injected into the scene WebView. It
  * defines `window.__mobileAgentPlayer = { play, pause, seek, state }` and
- * posts `{ type: 'mobileAgentPlayerTime', t, playing, error }` (throttled)
- * back over `ReactNativeWebView.postMessage`.
+ * posts `{ type: 'mobileAgentPlayerTime', t, playing, error, audioError }`
+ * (throttled) back over `ReactNativeWebView.postMessage`.
+ *
+ * When the document carries the export engine (every preview page does), the
+ * player also renders the contract's `audio` schedule live through a real
+ * AudioContext — same cue scheduler the export mixes with — anchored on every
+ * play/seek so sound stays glued to the scrubber. Visuals keep the stub
+ * audio/speech objects, so a scene reading `audio.level(t)` stays
+ * deterministic and identical to the render.
  *
  * Plain-JS string, free of backticks and `${`, in the house style of the
  * other injected engines.
@@ -80,6 +87,124 @@ export function buildScenePlayerScript(): string {
     nextStart: function () { return null; }
   };
   var state = { playing: false, t: 0, raf: 0, last: 0, lastDraw: 0, lastPost: 0, error: null };
+  // Live soundtrack: the export engine is embedded in every preview page, so
+  // reuse it — same cue scheduler the render mixes with. Anchored on every
+  // play/seek; visuals keep the stub audio above, determinism untouched.
+  var engine = null;
+  try { engine = window.__mobileAgentAudioEngine || null; } catch (_) { engine = null; }
+  var sp = engine && engine.readAudioSchedule ? engine.readAudioSchedule(v, duration) : null;
+  var live = { ctx: null, handle: null, entries: null, decoding: false, pendingT: null, busy: false };
+  var audioWarn = '';
+  function setAudioWarn(message) {
+    message = String(message || '');
+    if (message === audioWarn) return;
+    audioWarn = message;
+    post(true);
+  }
+  function stopLive() {
+    if (live.handle && live.handle.master) {
+      try { live.handle.master.disconnect(); } catch (_) {}
+    }
+    if (live.ctx) {
+      try { live.ctx.close(); } catch (_) {}
+    }
+    live.ctx = null;
+    live.handle = null;
+  }
+  function buildHandle() {
+    var Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) { setAudioWarn('Live audio is not available on this device.'); return null; }
+    var ctx = null;
+    try { ctx = new Ctx(); } catch (e) { setAudioWarn('Live audio failed to start: ' + String((e && e.message) || e)); return null; }
+    var master = ctx.createGain();
+    master.gain.value = sp.master;
+    master.connect(ctx.destination);
+    var buses = engine.buildFxBuses(ctx, master, sp.fx);
+    try { ctx.resume(); } catch (_) {}
+    return {
+      context: ctx, master: master, decoded: [], fxReverb: buses.fxReverb, fxDelay: buses.fxDelay,
+      voices: 0, voiceOverflow: false, offlineBuffer: null, features: null
+    };
+  }
+  function decodeEntries(ctx) {
+    if (live.entries) return Promise.resolve(true);
+    var entries = [];
+    var chain = Promise.resolve();
+    var hasFile = false;
+    for (var i = 0; i < sp.cues.length; i += 1) {
+      if (sp.cues[i].kind === 'file') hasFile = true;
+    }
+    if (!hasFile) {
+      live.entries = entries;
+      return Promise.resolve(true);
+    }
+    for (var k = 0; k < sp.cues.length; k += 1) {
+      (function (cue) {
+        if (cue.kind !== 'file') return;
+        chain = chain.then(function () {
+          return fetch(cue.src).then(function (response) {
+            if (!response.ok) throw new Error('HTTP ' + response.status);
+            return response.arrayBuffer();
+          }).then(function (buffer) {
+            return ctx.decodeAudioData(buffer);
+          }).then(function (decoded) {
+            entries.push({ cue: cue, buffer: decoded });
+          });
+        }).catch(function () {
+          setAudioWarn('An audio file in this scene could not be decoded for preview.');
+        });
+      })(sp.cues[k]);
+    }
+    return chain.then(function () {
+      live.entries = entries;
+      return true;
+    });
+  }
+  function scheduleFrom(at) {
+    stopLive();
+    if (!sp) return;
+    var handle = buildHandle();
+    if (!handle) return;
+    live.ctx = handle.context;
+    live.handle = handle;
+    for (var i = 0; i < sp.cues.length; i += 1) {
+      var cue = sp.cues[i];
+      var derived = engine.deriveSegmentCue(cue, at, duration);
+      if (!derived) continue;
+      var entry = null;
+      if (cue.kind === 'file') {
+        for (var j = 0; j < live.entries.length; j += 1) {
+          if (live.entries[j].cue === cue) { entry = live.entries[j]; break; }
+        }
+        if (!entry) continue;
+      }
+      try { engine.scheduleAudioCue(handle, derived, handle.context.currentTime + 0.03, entry); } catch (_) {}
+    }
+  }
+  function playLive(from) {
+    if (!sp) return;
+    if (!live.entries) {
+      if (live.decoding) { live.pendingT = from; return; }
+      live.decoding = true;
+      // Build the one live context first and decode on it: per-cue
+      // throwaway AudioContexts would collide with the WebView's context
+      // budget and leak closed handles.
+      var handle = buildHandle();
+      if (!handle) { live.decoding = false; return; }
+      live.ctx = handle.context;
+      live.handle = handle;
+      decodeEntries(handle.context).then(function () {
+        live.decoding = false;
+        var at = live.pendingT;
+        live.pendingT = null;
+        if (state.playing) scheduleFrom(num(at, state.t));
+      }).catch(function () {
+        live.decoding = false;
+      });
+      return;
+    }
+    scheduleFrom(from);
+  }
   function post(force) {
     var now = Date.now();
     if (!force && now - state.lastPost < 200) return;
@@ -88,7 +213,7 @@ export function buildScenePlayerScript(): string {
       if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
         window.ReactNativeWebView.postMessage(JSON.stringify({
           type: '${SCENE_PLAYER_MESSAGE_TYPE}', t: Math.round(state.t * 100) / 100,
-          playing: state.playing, error: state.error
+          playing: state.playing, error: state.error, audioError: audioWarn
         }));
       }
     } catch (_) {}
@@ -105,6 +230,7 @@ export function buildScenePlayerScript(): string {
         try { cancelAnimationFrame(state.raf); } catch (_) {}
         state.raf = 0;
       }
+      stopLive();
       post(true);
     }
   }
@@ -120,6 +246,7 @@ export function buildScenePlayerScript(): string {
       draw(state.t);
       state.playing = false;
       state.raf = 0;
+      stopLive();
       post(true);
       return;
     }
@@ -137,6 +264,7 @@ export function buildScenePlayerScript(): string {
       state.playing = true;
       state.last = 0;
       state.error = null;
+      playLive(state.t);
       if (!state.raf) state.raf = requestAnimationFrame(frame);
       post(true);
       return true;
@@ -147,6 +275,7 @@ export function buildScenePlayerScript(): string {
         try { cancelAnimationFrame(state.raf); } catch (_) {}
         state.raf = 0;
       }
+      stopLive();
       post(true);
     },
     seek: function (t) {
@@ -156,6 +285,8 @@ export function buildScenePlayerScript(): string {
       state.t = t;
       state.last = 0;
       draw(t);
+      if (state.playing) playLive(t);
+      else stopLive();
       post(true);
     },
     state: function () {

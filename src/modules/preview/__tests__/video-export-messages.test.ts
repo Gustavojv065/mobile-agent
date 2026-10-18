@@ -3,6 +3,7 @@ import type { WebViewMessageEvent } from "react-native-webview";
 
 import {
   isVideoExportMessage,
+  summarizeExportTimings,
   VideoExportController,
 } from "@/modules/preview/video-export-messages";
 import type { HtmlVideoExportNativeModule } from "html-video-export";
@@ -28,8 +29,46 @@ function fakeModule() {
   } as unknown as HtmlVideoExportNativeModule;
 }
 
-describe("isVideoExportMessage", () => {
-  it("accepts only mobileAgentVideo* payloads", () => {
+describe("summarizeExportTimings", () => {
+  const fast = {
+    frames: 300,
+    prepareAvgMs: 10,
+    prepareMaxMs: 20,
+    captureAvgMs: 8,
+    captureMaxMs: 15,
+    bridgeAvgMs: 8,
+    bridgeMaxMs: 14,
+  };
+
+  it("stays silent when the per-frame work fits the frame budget", () => {
+    expect(summarizeExportTimings(fast, 30)).toEqual([]);
+  });
+
+  it("ignores tiny probes and no-timing payloads", () => {
+    expect(summarizeExportTimings({ ...fast, frames: 5 }, 30)).toEqual([]);
+  });
+
+  it("names the slow stages when the page overruns the budget", () => {
+    const notes = summarizeExportTimings(
+      { ...fast, prepareAvgMs: 40, captureAvgMs: 30 },
+      30,
+    );
+    expect(notes).toHaveLength(2);
+    expect(notes[0]).toContain("scene seek/render averaged 40 ms/frame");
+    expect(notes[1]).toContain("canvas JPEG capture averaged 30 ms/frame");
+  });
+
+  it("falls back to a total-cost note when no single stage dominates", () => {
+    const notes = summarizeExportTimings(
+      { ...fast, prepareAvgMs: 15, captureAvgMs: 15, bridgeAvgMs: 15 },
+      30,
+    );
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).toContain("per-frame work averaged 45 ms");
+  });
+});
+
+describe("isVideoExportMessage", () => {  it("accepts only mobileAgentVideo* payloads", () => {
     expect(isVideoExportMessage({ type: "mobileAgentVideoConfig", width: 10 })).toBe(true);
     expect(isVideoExportMessage({ type: "mobileAgentVideoDone" })).toBe(true);
     expect(isVideoExportMessage({ type: "mobileAgentVideoAudioConfig" })).toBe(true);
@@ -80,7 +119,7 @@ describe("VideoExportController — H.264 (GPU) path", () => {
     expect(module.pushH264Chunk).toHaveBeenNthCalledWith(2, false, 166666, "AAAAAe8=");
     expect(module.finish).toHaveBeenCalledTimes(1);
     expect(onFinishing).toHaveBeenCalledTimes(1);
-    expect(onResult).toHaveBeenCalledWith({ uri: "file:///cache/video.mp4", sizeBytes: 1234, hasAudio: false, audioDurationUs: 0, audioWarnings: [] });
+    expect(onResult).toHaveBeenCalledWith({ uri: "file:///cache/video.mp4", sizeBytes: 1234, hasAudio: false, audioDurationUs: 0, audioWarnings: [], timings: undefined, perfWarnings: [] });
     expect(onError).not.toHaveBeenCalled();
     expect(onProgress).toHaveBeenCalled();
   });
@@ -213,6 +252,8 @@ describe("VideoExportController — audio track", () => {
       hasAudio: true,
       audioDurationUs: 9_500_000,
       audioWarnings: [],
+      timings: undefined,
+      perfWarnings: [],
     });
   });
 
@@ -241,6 +282,8 @@ describe("VideoExportController — audio track", () => {
       hasAudio: true,
       audioDurationUs: 6_000_000,
       audioWarnings: [expect.stringContaining("Only 6.0s of audio was captured")],
+      timings: undefined,
+      perfWarnings: [],
     });
   });
 
@@ -273,6 +316,8 @@ describe("VideoExportController — audio track", () => {
       hasAudio: false,
       audioDurationUs: 0,
       audioWarnings: ["no encoder", "cue skipped"],
+      timings: undefined,
+      perfWarnings: [],
     });
   });
 
@@ -387,6 +432,46 @@ describe("VideoExportController — failures", () => {
 
     expect(onError).toHaveBeenCalledWith("boom");
     expect(module.cancel).toHaveBeenCalled();
+  });
+
+  it("passes the page's timing summary through and flags slow stages", async () => {
+    const module = fakeModule();
+    const onResult = vi.fn();
+    const controller = new VideoExportController({
+      outputPath: "file:///cache/video.mp4",
+      module,
+      onProgress: vi.fn(),
+      onFinishing: vi.fn(),
+      onResult,
+      onError: vi.fn(),
+    });
+
+    post(controller, { type: "mobileAgentVideoConfig", width: 640, height: 360, fps: 30, frameCount: 300, duration: 10 });
+    post(controller, {
+      type: "mobileAgentVideoDone",
+      emitted: 2,
+      timings: {
+        frames: 300,
+        prepareAvgMs: 12,
+        prepareMaxMs: 20,
+        captureAvgMs: 45,
+        captureMaxMs: 60,
+        bridgeAvgMs: 8,
+        bridgeMaxMs: 10,
+      },
+    });
+
+    await controller.whenIdle();
+
+    expect(onResult).toHaveBeenCalledWith({
+      uri: "file:///cache/video.mp4",
+      sizeBytes: 1234,
+      hasAudio: false,
+      audioDurationUs: 0,
+      audioWarnings: [],
+      timings: expect.objectContaining({ captureAvgMs: 45 }),
+      perfWarnings: [expect.stringContaining("canvas JPEG capture averaged 45 ms/frame")],
+    });
   });
 
   it("aborts the pending export on cancel without finishing", async () => {
