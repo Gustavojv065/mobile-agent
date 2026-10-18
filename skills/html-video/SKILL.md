@@ -246,7 +246,7 @@ Images and video clips in scenes (user-provided visuals):
 - Reference workspace files directly in the scene DOM: images inline
   automatically (JPEG/PNG/WebP/GIF, max 15 MB each — same cap as audio),
   while clips (MP4/WebM/MOV) load from the device over loopback HTTP —
-  no size inflation, seeking works, any length plays: files up to 200 MB
+  no size inflation, seeking works, any length plays: files up to 1 GB
   serve at full quality with no warning. Absurd files compress on-device
   and MOV auto-converts to MP4 the same way (audio dropped
   since clips play muted) with a warning naming the new size — tell the
@@ -456,7 +456,10 @@ Rules:
 
 When the recording has **speech** and the user wants the visuals (or captions)
 to follow the **words**, transcribe it first with the **`transcribeAudio`
-tool** on the `workspace://` file id. By default it runs on device with the
+tool** on the `workspace://` file id. Long recordings are fine — audio decodes
+natively in bounded 30 s windows and the practical limit is spoken time
+(`maxSeconds`, up to 3600 s), not file size — so a long video's soundtrack
+transcribes normally. By default it runs on device with the
 Whisper model downloaded in Settings → Voice input and returns:
 
 ```json

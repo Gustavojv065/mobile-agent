@@ -503,8 +503,8 @@ describe("inlineVideoAssets served URLs", () => {
     expect(warnings).toEqual([]);
   });
 
-  it("serves large clips directly up to 200 MB with no transcode", async () => {
-    bigWorkspaceFile("big-clip.mp4", "video/mp4", FIFTY_MB);
+  it("serves large clips directly up to 1 GB with no transcode", async () => {
+    bigWorkspaceFile("big-clip.mp4", "video/mp4", 800 * 1024 * 1024);
     const { html: out, warnings } = await inlineVideoAssets(
       `<video src="workspace://vid-1">`,
       repository(),
@@ -516,7 +516,7 @@ describe("inlineVideoAssets served URLs", () => {
   });
 
   it("serves transcoded output for absurd clips with a warning", async () => {
-    bigWorkspaceFile("huge-clip.mp4", "video/mp4", 250 * 1024 * 1024);
+    bigWorkspaceFile("huge-clip.mp4", "video/mp4", 1100 * 1024 * 1024);
     const { html: out, warnings } = await inlineVideoAssets(
       `<video src="workspace://vid-1">`,
       repository(),

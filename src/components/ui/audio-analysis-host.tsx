@@ -12,19 +12,22 @@ import {
   type AudioAnalysisJobResult,
 } from "@/modules/preview/video-audio-analysis-job";
 
-const ANALYSIS_TIMEOUT_MS = 30000;
-
 /**
  * Owns the hidden WebView that decodes and analyzes a workspace audio file for
  * the `analyzeAudio` tool. Mounted once in the root layout. It publishes the
  * decoded feature summary (tempo, onsets, energy curves) back to the tool so
  * the agent can plan visuals that follow the actual soundtrack.
  *
- * It also serves the `transcribeAudio` tool: when a job asks for a
- * `pcmSampleRate`, the same decode is exported as mono 16-bit PCM for on-device
- * speech recognition.
+ * It also serves the `transcribeAudio` fallback lane (builds without the
+ * native decoder): when a job asks for a `pcmSampleRate`, the same decode is
+ * exported as mono 16-bit PCM for on-device speech recognition.
  *
- * It shares the same engine as the recorder (video-audio-analysis.ts), so the
+ * No wall-clock timers: decode duration legitimately scales with the source —
+ * a timer guessed how long and killed valid jobs (e.g. a 12 MB video whose
+ * soundtrack decodes past 30 s, producing a false "timed out"). Failures are
+ * event-driven — in-page script errors and WebView onError reject; the
+ * run-level inactivity abort remains the last-resort backstop. The decode
+ * shares the same engine as the recorder (video-audio-analysis.ts), so the
  * numbers the agent plans with match what the page sees at render time.
  */
 export function AudioAnalysisHost() {
@@ -35,7 +38,6 @@ export function AudioAnalysisHost() {
   const webViewRef = useRef<WebView>(null);
   const jobRef = useRef<AudioAnalysisJob | null>(null);
   const settledRef = useRef<WeakSet<AudioAnalysisJob>>(new WeakSet());
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const abortCleanupRef = useRef<(() => void) | null>(null);
 
   const settle = useCallback(
@@ -56,19 +58,13 @@ export function AudioAnalysisHost() {
     [],
   );
 
-  const clearTimer = useCallback(() => {
-    if (timerRef.current) clearTimeout(timerRef.current);
-    timerRef.current = null;
-  }, []);
-
   const finishJob = useCallback(() => {
-    clearTimer();
     abortCleanupRef.current?.();
     abortCleanupRef.current = null;
     jobRef.current = null;
     setDocumentHtml(null);
     setActive(false);
-  }, [clearTimer]);
+  }, []);
 
   const beginAnalysis = useCallback(
     (job: AudioAnalysisJob) => {
@@ -96,14 +92,6 @@ export function AudioAnalysisHost() {
         abortCleanupRef.current = () =>
           job.signal?.removeEventListener("abort", onAbort);
       }
-
-      timerRef.current = setTimeout(() => {
-        settle(job, {
-          type: "reject",
-          error: new Error("Audio analysis timed out."),
-        });
-        finishJob();
-      }, ANALYSIS_TIMEOUT_MS);
 
       setActive(true);
     },
@@ -137,7 +125,6 @@ export function AudioAnalysisHost() {
   // Reject anything in flight when the host unmounts.
   useEffect(() => {
     return () => {
-      clearTimer();
       abortCleanupRef.current?.();
       abortCleanupRef.current = null;
       const inFlight = jobRef.current;
@@ -148,7 +135,7 @@ export function AudioAnalysisHost() {
         });
       }
     };
-  }, [clearTimer, settle]);
+  }, [settle]);
 
   const handleMessage = useCallback(
     (event: WebViewMessageEvent) => {

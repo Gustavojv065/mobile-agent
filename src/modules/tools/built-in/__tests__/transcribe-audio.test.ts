@@ -9,6 +9,9 @@ const mocks = vi.hoisted(() => ({
   getById: vi.fn(),
   transcribePcm16: vi.fn(),
   transcribePcm16WithSystem: vi.fn(),
+  hasNative: false,
+  transcribeLongAudio: vi.fn(),
+  deletedUris: [] as string[],
 }));
 
 vi.mock("@/core/services/workspace-file-service", () => ({
@@ -16,12 +19,34 @@ vi.mock("@/core/services/workspace-file-service", () => ({
     get exists() {
       return mocks.exists;
     },
+    uri: "file:///documents/audio/speech.mp3",
     bytes: async () => mocks.bytes,
   }),
 }));
 
+// The native lane builds its PCM cache through expo-file-system's File API,
+// which needs a native runtime; the test double records deletions so the
+// cache-ownership contract is observable.
+vi.mock("expo-file-system", () => ({
+  Paths: { cache: "/cache" },
+  File: class {
+    uri: string;
+    constructor(directory: string, name: string) {
+      this.uri = `file://${directory}/${name}`;
+    }
+    async delete() {
+      mocks.deletedUris.push(this.uri);
+    }
+  },
+}));
+
 vi.mock("@/modules/voice/transcribe", () => ({
   transcribePcm16: mocks.transcribePcm16,
+}));
+
+vi.mock("@/modules/voice/windowed-transcribe", () => ({
+  hasNativeAudioDecoder: () => mocks.hasNative,
+  transcribeLongAudio: mocks.transcribeLongAudio,
 }));
 
 // The real system engine reaches for `react-native` (platform detection) and
@@ -95,9 +120,12 @@ describe("transcribeAudio tool", () => {
     unsubscribe?.();
     unsubscribe = null;
     mocks.exists = true;
+    mocks.hasNative = false;
     mocks.getById.mockReset();
     mocks.transcribePcm16.mockReset();
     mocks.transcribePcm16WithSystem.mockReset();
+    mocks.transcribeLongAudio.mockReset();
+    mocks.deletedUris.length = 0;
   });
 
   it("rejects an unknown file id", async () => {
@@ -329,5 +357,82 @@ describe("transcribeAudio tool", () => {
     await expect(tool.execute!({ fileId: "file-1" }, {} as never)).rejects.toThrow(
       /only available on builds/,
     );
+  });
+
+  it("runs the native lane when the decoder is available and cleans up the PCM cache", async () => {
+    mocks.hasNative = true;
+    mocks.transcribeLongAudio.mockResolvedValue(TRANSCRIPT);
+
+    const tool = createTranscribeAudioTool({
+      repository: repository(mp3Record),
+      onRecord: () => {},
+    });
+    const out = (await tool.execute!(
+      { fileId: "file-1", maxSeconds: 300, language: "es" },
+      {} as never,
+    )) as Record<string, unknown>;
+
+    expect(mocks.transcribeLongAudio).toHaveBeenCalledTimes(1);
+    const call = mocks.transcribeLongAudio.mock.calls[0][0] as Record<
+      string,
+      unknown
+    >;
+    // Plain paths (no file:// scheme) as the native module expects, a cache
+    // file owned by the tool, and the caller's bounds passed through.
+    expect(call.filePath).toBe("/documents/audio/speech.mp3");
+    expect(call.pcmPath).toBe("/cache/transcribe-pcm-file-1");
+    expect(call.maxSeconds).toBe(300);
+    expect(call.language).toBe("es");
+    // The legacy inline lane is not touched at all.
+    expect(mocks.transcribePcm16).not.toHaveBeenCalled();
+    expect(mocks.transcribePcm16WithSystem).not.toHaveBeenCalled();
+    expect(out).toMatchObject({
+      engine: "whisper",
+      language: "en",
+      text: "hello world",
+      segmentCount: 1,
+    });
+    // The PCM cache file is deleted however the run ends.
+    expect(mocks.deletedUris).toEqual(["file:///cache/transcribe-pcm-file-1"]);
+  });
+
+  it("still deletes the PCM cache when the native lane fails", async () => {
+    mocks.hasNative = true;
+    mocks.transcribeLongAudio.mockRejectedValue(
+      new Error("Decoder produce failed"),
+    );
+
+    const tool = createTranscribeAudioTool({
+      repository: repository(mp3Record),
+      onRecord: () => {},
+    });
+    await expect(
+      tool.execute!({ fileId: "file-1" }, {} as never),
+    ).rejects.toThrow(/Decoder produce failed/);
+    expect(mocks.deletedUris).toEqual(["file:///cache/transcribe-pcm-file-1"]);
+  });
+
+  it("keeps the system engine on the inline lane even when native decoding exists", async () => {
+    // The system recognizer consumes what the WebAudio decode host returns;
+    // the native decoder's PCM is only wired to Whisper.
+    mocks.hasNative = true;
+    unsubscribe = subscribeAudioAnalysis((job) => {
+      job.resolve({ summary: SUMMARY, pcm: { base64: "AAAA", sampleRate: 16000 } });
+    });
+    mocks.transcribePcm16WithSystem.mockResolvedValue(SYSTEM_TRANSCRIPT);
+
+    const tool = createTranscribeAudioTool({
+      repository: repository(mp3Record),
+      onRecord: () => {},
+    });
+    const out = (await tool.execute!(
+      { fileId: "file-1", engine: "system" },
+      {} as never,
+    )) as Record<string, unknown>;
+
+    expect(mocks.transcribeLongAudio).not.toHaveBeenCalled();
+    expect(mocks.transcribePcm16WithSystem).toHaveBeenCalled();
+    expect(out).toMatchObject({ engine: "system" });
+    expect(mocks.deletedUris).toEqual([]);
   });
 });

@@ -1,3 +1,4 @@
+import { File, Paths } from "expo-file-system";
 import { tool } from "ai";
 import { z } from "zod";
 
@@ -15,13 +16,25 @@ import type { WorkspaceToolFactoryParams } from "@/modules/tools/built-in/types"
 import { transcribePcm16 } from "@/modules/voice/transcribe";
 import { transcribePcm16WithSystem } from "@/modules/voice/system-transcribe";
 import type { WhisperLanguage } from "@/modules/voice/models";
+import {
+  hasNativeAudioDecoder,
+  transcribeLongAudio,
+} from "@/modules/voice/windowed-transcribe";
 
 /**
  * Transcribes an audio file already in the workspace and returns timed text, so
  * the agent can author visuals that react to (or caption) actual spoken words.
  *
- * Decoding happens in the hidden WebView host (WebAudio), which hands back mono
- * 16 kHz PCM. The engine that turns that PCM into words is selectable:
+ * Two decode lanes, picked per build:
+ *
+ *  - Native (Android with the video-export module): the file's audio track is
+ *    decoded by MediaCodec into a bounded PCM cache, transcribed in 30 s
+ *    Whisper windows. Time-bounded (`maxSeconds`), not size-bounded — long
+ *    recordings never touch the JS heap or the in-page decode.
+ *  - Legacy (iOS / older builds): the hidden WebView host decodes ≤15 MB
+ *    via WebAudio; everything bigger fails with the inline budget error.
+ *
+ * The engine that turns PCM into words is selectable:
  *
  *  - `whisper` (default): the bundled on-device Whisper models, available
  *    everywhere a model is downloaded and reliable about timings.
@@ -32,12 +45,13 @@ import type { WhisperLanguage } from "@/modules/voice/models";
  * render time (see the speech track exposed to the recorder).
  */
 export function createTranscribeAudioTool({
+  onProgress,
   onRecord,
   repository,
 }: WorkspaceToolFactoryParams) {
   return tool({
     description:
-      'Transcribe speech in an audio file already saved in the workspace and get the words with start/end times in seconds. Use this when the user wants a video, animation, or captions that follow what is said in a recording (e.g. \'make the words pop up as they are spoken\'). Returns the full `text`, a detected `language`, the audio `duration`, and `segments` (sentence/phrase-level spans with `start`, `end`, and `text`). Runs entirely on device with the Whisper model downloaded in Settings → Voice input; MP3, WAV, M4A, AAC, OGG, and WebM files up to 15 MB are supported, as are MP4/MOV/WebM video files (only the soundtrack is transcribed). Pass engine: "system" to use the device\'s own speech recognizer instead of Whisper (Android 13+; it reports word timings and therefore `segments` only on Android 14+ with the on-device speech model, otherwise it returns text with no timings). This only transcribes speech - it does not analyze music, so use analyzeAudio for tempo, melody, notes, and key.',
+      'Transcribe speech in an audio file already saved in the workspace and get the words with start/end times in seconds. Use this when the user wants a video, animation, or captions that follow what is said in a recording (e.g. \'make the words pop up as they are spoken\'). Returns the full `text`, a detected `language`, the audio `duration`, and `segments` (sentence/phrase-level spans with `start`, `end`, and `text`). Runs entirely on device with the Whisper model downloaded in Settings → Voice input; MP3, WAV, M4A, AAC, OGG, WebM, and long MP4/MOV/WebM video soundtracks are all supported — audio decodes natively in bounded windows and transcribes in 30 s slices, so the practical limit is spoken time (`maxSeconds`, up to 3600 s), not file size. Builds without the native decoder fall back to inline decoding capped at 15 MB, as does engine: "system" (the device\'s own recognizer; Android 13+; it reports word timings and therefore `segments` only on Android 14+ with the on-device speech model, otherwise it returns text with no timings). This only transcribes speech - it does not analyze music, so use analyzeAudio for tempo, melody, notes, and key.',
     inputSchema: z.object({
       fileId: z
         .string()
@@ -56,10 +70,10 @@ export function createTranscribeAudioTool({
       maxSeconds: z
         .number()
         .min(1)
-        .max(180)
+        .max(3600)
         .optional()
         .describe(
-          "Only transcribe the first N seconds (default 90). Use a larger value for long recordings.",
+          "Only transcribe the first N seconds (default 90). Long recordings decode natively in bounded windows, so raising this keeps memory flat — it only bounds how much is decoded and transcribed.",
         ),
       engine: z
         .enum(["whisper", "system"])
@@ -89,34 +103,18 @@ export function createTranscribeAudioTool({
           );
         }
 
-        const bytes = await file.bytes();
-        const mimeType = assertAudioFileUsable(
-          record.displayName,
-          record.mimeType,
-          bytes.length,
-        );
-
-        const { pcm } = await requestAudioAnalysis({
-          src: buildAudioDataUri(mimeType, bytes),
-          maxSeconds: maxSeconds ?? 90,
-          sampleRate: 16000,
-          pcmSampleRate: 16000,
-          signal: abortSignal,
-        });
-        if (!pcm) {
-          throw new Error(
-            "This build cannot decode audio for transcription.",
-          );
-        }
-
         const useSystem = engine === "system";
-        const transcript = useSystem
-          ? await transcribePcm16WithSystem(pcm.base64, pcm.sampleRate, {
+        const useNative = !useSystem && hasNativeAudioDecoder();
+
+        const transcript = useNative
+          ? await transcribeNatively(record, file, {
+              maxSeconds: maxSeconds ?? 90,
               language,
               signal: abortSignal,
+              onProgress,
             })
-          : await transcribePcm16(pcm.base64, pcm.sampleRate, {
-              language: (language as WhisperLanguage | undefined) ?? "auto",
+          : await transcribeInline(record, file, { useSystem, language }, {
+              maxSeconds: maxSeconds ?? 90,
               signal: abortSignal,
             });
 
@@ -158,4 +156,84 @@ export function createTranscribeAudioTool({
       }
     },
   });
+}
+
+/**
+ * Native lane: decode the soundtrack with MediaCodec into a bounded PCM
+ * cache, then window-transcribe it. The cache file is owned here — deleted
+ * however the run ends. Paths lose their file:// scheme: the native module
+ * expects plain paths.
+ */
+async function transcribeNatively(
+  record: { id: string },
+  file: { uri: string },
+  options: {
+    maxSeconds: number;
+    language?: string;
+    signal?: AbortSignal;
+    onProgress?: (progress: {
+      bytesWritten: number;
+      totalBytes: number;
+    }) => void;
+  },
+) {
+  const pcmFile = new File(Paths.cache, `transcribe-pcm-${record.id}`);
+  try {
+    return await transcribeLongAudio({
+      filePath: stripScheme(file.uri),
+      pcmPath: stripScheme(pcmFile.uri),
+      maxSeconds: options.maxSeconds,
+      language: options.language as WhisperLanguage | undefined,
+      signal: options.signal,
+      onProgress: options.onProgress,
+    });
+  } finally {
+    try {
+      await pcmFile.delete();
+    } catch {
+      // The cache directory sweeps stale files; never block the tool here.
+    }
+  }
+}
+
+/** Legacy lane: inline ≤15 MB through the WebAudio decode host. */
+async function transcribeInline(
+  record: { displayName: string; mimeType: string | null | undefined },
+  file: { bytes: () => Promise<Uint8Array> },
+  options: { useSystem: boolean; language?: string },
+  limits: { maxSeconds: number; signal?: AbortSignal },
+) {
+  const bytes = await file.bytes();
+  const mimeType = assertAudioFileUsable(
+    record.displayName,
+    record.mimeType,
+    bytes.length,
+  );
+
+  const { pcm } = await requestAudioAnalysis({
+    src: buildAudioDataUri(mimeType, bytes),
+    maxSeconds: limits.maxSeconds,
+    sampleRate: 16000,
+    pcmSampleRate: 16000,
+    signal: limits.signal,
+  });
+  if (!pcm) {
+    throw new Error(
+      "This build cannot decode audio for transcription.",
+    );
+  }
+
+  return options.useSystem
+    ? await transcribePcm16WithSystem(pcm.base64, pcm.sampleRate, {
+        language: options.language,
+        signal: limits.signal,
+      })
+    : await transcribePcm16(pcm.base64, pcm.sampleRate, {
+        language: (options.language as WhisperLanguage | undefined) ?? "auto",
+        signal: limits.signal,
+      });
+}
+
+function stripScheme(uri: string) {
+  return uri.startsWith("file://") ? uri.slice("file://".length) : uri;
 }

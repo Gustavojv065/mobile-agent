@@ -78,6 +78,34 @@ export type HtmlVideoExportNativeModule = {
    * or empty output — never writes a partial file silently.
    */
   concatSegments(inputs: string[], outputPath: string): Promise<{ ok: boolean }>;
+  /**
+   * Decodes at most `maxSeconds` seconds of a file's audio track into raw
+   * interleaved PCM on a cache file (native rate/channels, 16-bit LE).
+   * Plain filesystem paths. Sample handling stays in JS — this only feeds
+   * the decoder. Throws on missing audio tracks, unsupported decoder output,
+   * and decode failures; partial output is deleted, never returned.
+   */
+  decodeAudioPcm(
+    inputPath: string,
+    outputPath: string,
+    maxSeconds: number,
+  ): Promise<{
+    pcmPath: string;
+    bytes: number;
+    sampleRate: number;
+    channels: number;
+    durationSeconds: number;
+  }>;
+  /**
+   * Reads up to `byteCount` bytes at `byteOffset` from a decoder-produced PCM
+   * file, base64-encoded. Empty on EOF; short reads are normal for the last
+   * window.
+   */
+  readPcmSegment(
+    pcmPath: string,
+    byteOffset: number,
+    byteCount: number,
+  ): Promise<{ base64: string; bytes: number }>;
   finish(): Promise<{
     uri: string;
     sizeBytes: number;

@@ -162,6 +162,22 @@ class HtmlVideoExportModule : Module() {
       SegmentConcat.concat(inputs, outputPath)
       mapOf("ok" to true)
     }
+
+    AsyncFunction("decodeAudioPcm") { inputPath: String, outputPath: String, maxSeconds: Double ->
+      val result = AudioPcmDecoder.decode(inputPath, outputPath, maxSeconds)
+      mapOf(
+        "pcmPath" to result.path,
+        "bytes" to result.bytes,
+        "sampleRate" to result.sampleRate,
+        "channels" to result.channels,
+        "durationSeconds" to result.durationSeconds,
+      )
+    }
+
+    AsyncFunction("readPcmSegment") { pcmPath: String, byteOffset: Long, byteCount: Int ->
+      val segment = AudioPcmDecoder.readSegment(pcmPath, byteOffset, byteCount)
+      mapOf("base64" to segment.base64, "bytes" to segment.bytes)
+    }
   }
 
   private fun rejectLegacyRemux() {

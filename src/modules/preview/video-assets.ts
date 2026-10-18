@@ -31,7 +31,14 @@ export const MAX_VIDEO_FILE_BYTES = 15 * 1024 * 1024;
  * transcode down; the 15 MB figure stays as the data-URI fallback cap
  * (heap protection on builds without the server).
  */
-export const MAX_DIRECT_SERVE_BYTES = 200 * 1024 * 1024;
+/**
+ * Direct-serving cap for scene clips: at or under this, clips stream from the
+ * loopback server untouched (zero heap cost — the <video> element reads via
+ * range requests). Beyond it — or MOV — the native transcoder normalizes to
+ * cache. The number is disk policy, not a memory wall; serving more is
+ * pointless once a 1 GB source is on device, and transcode handles "absurd".
+ */
+export const MAX_DIRECT_SERVE_BYTES = 1024 * 1024 * 1024;
 /**
  * Transcode target: comfortably under the inline cap so the base64
  * inflation (~33%) still leaves headroom in the render document.
@@ -226,7 +233,7 @@ async function inlineAssetUris(
         `File "${record.displayName}" is no longer available locally.`,
       );
     }
-    // Stat before reading: a 200 MB source must never enter the JS heap
+    // Stat before reading: a 1 GB source must never enter the JS heap
     // just to be rejected. Over-cap clips get a transcode attempt, and MOV
     // always converts (unreliable WebView playback); other kinds fail fast
     // on the stat alone.
@@ -429,7 +436,7 @@ async function inlineClipRefs(
     }
     files.push(record.displayName);
     const statSize = typeof file.size === "number" ? file.size : null;
-    // Served clips bypass the heap: only absurd files (>200 MB) or MOV
+    // Served clips bypass the heap: only absurd files (>1 GB) or MOV
     // transcode. Anything smaller serves at full quality, no warning.
     const convert =
       isTranscodeOnlyVideoMimeType(resolved) ||
