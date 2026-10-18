@@ -1,4 +1,4 @@
-import { Download, Film, Monitor, Smartphone, X, Code, Eye, Square, Play, Pause } from "lucide-react-native";
+import { Download, Monitor, Smartphone, X, Code, Eye, Square } from "lucide-react-native";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -20,6 +20,8 @@ import {
   DrawerContent,
   DrawerTitle,
 } from "@/components/ui/drawer";
+import { Button } from "@/components/ui/button";
+import { ScenePlayerChrome } from "@/components/ui/scene-player-chrome";
 import { createDrizzleDb } from "@/core/db/repositories/shared";
 import { createWorkspaceRepository } from "@/core/db/repositories/workspace-repository";
 import {
@@ -35,11 +37,10 @@ import { withDesktopPreviewViewport } from "@/modules/preview/html-document";
 import { createSceneDocument } from "@/modules/preview/scene-document";
 import {
   buildScenePlayerScript,
-  formatPlayerTime,
+  getSceneAspect,
   getSceneDuration,
   SCENE_PLAYER_MESSAGE_TYPE,
 } from "@/modules/preview/scene-player";
-import { Slider } from "@/components/ui/slider";
 import { handlePreviewDownloadMessage, PREVIEW_DOWNLOAD_HOOK } from "@/modules/preview/preview-downloads";
 import { buildVideoExportDocument } from "@/modules/preview/video-recorder";
 import { VideoExportController, type VideoExportResult } from "@/modules/preview/video-export-messages";
@@ -205,6 +206,13 @@ export function CodePreviewContent({
   const exportHtml = inlinedSceneHtml ?? html;
   const sceneAssetsPending =
     sceneNeedsAssets && inlinedSceneHtml === null && sceneAssetsError === null;
+  // The preview frame hugs the scene's declared canvas ratio (width/height
+  // from the contract) with a 16/9 fallback, so portrait scenes show as
+  // portrait cards instead of filling the drawer.
+  const sceneAspect = useMemo(
+    () => getSceneAspect(exportHtml) ?? 16 / 9,
+    [exportHtml],
+  );
   const previewHtml = useMemo(
     () =>
       desktop
@@ -577,6 +585,25 @@ export function CodePreviewContent({
     );
   }, []);
 
+  /**
+   * Size the scene card to fit the drawer body while keeping the scene's
+   * canvas ratio: width-led, height-constrained for tall/portrait scenes.
+   * The leftover drawer space stays background — empty space around a
+   * correctly-shaped card, never inside one.
+   */
+  const fittedFrame = useMemo(() => {
+    if (!frame || frame.width <= 0 || frame.height <= 0) {
+      return null;
+    }
+    let width = frame.width;
+    let height = width / sceneAspect;
+    if (height > frame.height) {
+      height = frame.height;
+      width = height * sceneAspect;
+    }
+    return { height, width };
+  }, [frame, sceneAspect]);
+
   return (
     <>
         <View className="flex-row items-center justify-between gap-3">
@@ -598,12 +625,6 @@ export function CodePreviewContent({
               disabled={saving || videoExport !== null}
             />
           ) : null}
-          {canExportVideo && mode === "preview" && isVideoScene ? (
-            <ExportVideoButton
-              disabled={videoExport !== null || !frame}
-              onPress={handleExportVideo}
-            />
-          ) : null}
           {isVideoScene && mode === "preview" ? null : (
             <SavePreviewButton
               mode={mode}
@@ -621,24 +642,22 @@ export function CodePreviewContent({
             </Pressable>
           </DrawerClose>
         </View>
-        {mode === "preview" ? (
-          videoExport ? (
-            <VideoExportProgress
-              progress={videoExport.progress}
-              status={videoExport.status}
-              onStop={stopExport}
-            />
-          ) : isVideoScene ? null : (
-            <ViewportToggle value={viewport} onChange={setViewport} />
-          )
+        {mode === "preview" && !isVideoScene ? (
+          <ViewportToggle value={viewport} onChange={setViewport} />
         ) : null}
         {/*
           `flex-1` with a zero basis, so this frame's size comes from the drawer
           and never from the page inside it. That keeps the measured width — and
           therefore the desktop scale — independent of what is being rendered.
+          For video scenes it only measures: the card itself hugs the scene's
+          canvas ratio, centered, so empty drawer space stays outside the card.
         */}
         <View
-          className="min-h-0 flex-1 overflow-hidden rounded-xl border border-border bg-card dark:border-border-dark dark:bg-card-dark"
+          className={
+            mode === "preview" && isVideoScene
+              ? "min-h-0 flex-1 items-center justify-center"
+              : "min-h-0 flex-1 overflow-hidden rounded-xl border border-border bg-card dark:border-border-dark dark:bg-card-dark"
+          }
           onLayout={handleLayout}
           ref={frameRef}
         >
@@ -655,6 +674,41 @@ export function CodePreviewContent({
                 source={{ html: codeHtml }}
                 style={{ backgroundColor: theme.backgroundElement, flex: 1 }}
               />
+            ) : isVideoScene && fittedFrame && documentUri ? (
+              <View
+                className="overflow-hidden rounded-card border border-border bg-black dark:border-border-dark"
+                style={{
+                  height: fittedFrame.height,
+                  width: fittedFrame.width,
+                }}
+              >
+                <View style={{ flex: 1 }}>
+                  <WebView
+                    key={viewport}
+                    ref={webViewRef}
+                    allowFileAccess
+                    allowsInlineMediaPlayback
+                    originWhitelist={["file://*", "http://*", "https://*"]}
+                    scrollEnabled
+                    setSupportMultipleWindows={false}
+                    injectedJavaScript={PREVIEW_DOWNLOAD_HOOK}
+                    onLoadEnd={installPlayer}
+                    onMessage={handleMessage}
+                    source={{ uri: documentUri }}
+                    style={{
+                      backgroundColor: theme.backgroundElement,
+                      flex: 1,
+                    }}
+                  />
+                </View>
+                <ScenePlayerChrome
+                  duration={sceneDuration}
+                  onSeek={seekPlayer}
+                  onTogglePlay={togglePlay}
+                  playing={playing}
+                  time={playerTime}
+                />
+              </View>
             ) : (
               <View style={{ flex: 1 }}>
                 <WebView
@@ -675,39 +729,8 @@ export function CodePreviewContent({
             )
           ) : null}
         </View>
-        {mode === "preview" &&
-        isVideoScene &&
-        sceneDuration != null &&
-        !videoExport ? (
-          <View className="gap-1 pt-2">
-            <View className="flex-row items-center gap-3">
-              <Pressable
-                accessibilityLabel={playing ? "Pause scene" : "Play scene"}
-                accessibilityRole="button"
-                className="h-11 w-11 items-center justify-center rounded-full bg-card dark:bg-card-dark"
-                onPress={togglePlay}
-              >
-                {playing ? (
-                  <Pause color={theme.text} size={20} />
-                ) : (
-                  <Play color={theme.text} size={20} />
-                )}
-              </Pressable>
-              <View className="min-w-0 flex-1">
-                <Slider
-                  accessibilityLabel="Scene time"
-                  maximumValue={sceneDuration}
-                  minimumValue={0}
-                  onValueChange={seekPlayer}
-                  step={0.05}
-                  value={Math.min(playerTime, sceneDuration)}
-                />
-              </View>
-              <Text className="font-sans text-xs text-muted-foreground dark:text-muted-foreground-dark">
-                {formatPlayerTime(playerTime)} /{" "}
-                {formatPlayerTime(sceneDuration)}
-              </Text>
-            </View>
+        {mode === "preview" && isVideoScene && sceneDuration != null ? (
+          <View className="gap-1">
             <Text className="font-sans text-xs text-muted-foreground dark:text-muted-foreground-dark">
               Silent preview — sound only plays after render.
             </Text>
@@ -717,6 +740,28 @@ export function CodePreviewContent({
               </Text>
             ) : null}
           </View>
+        ) : null}
+        {/*
+          Scene previews render in the footer like any player drawer: a
+          full-width Render action (release-drawer style) that swaps to the
+          live export progress while recording.
+        */}
+        {canExportVideo && mode === "preview" && isVideoScene ? (
+          videoExport ? (
+            <VideoExportProgress
+              progress={videoExport.progress}
+              status={videoExport.status}
+              onStop={stopExport}
+            />
+          ) : (
+            <Button
+              className="w-full"
+              disabled={sceneAssetsPending || !fittedFrame}
+              onPress={handleExportVideo}
+            >
+              Render video
+            </Button>
+          )
         ) : null}
     </>
   );
@@ -857,32 +902,10 @@ function ViewportToggle({
 
 /**
  * Starts exporting the preview as an MP4 from the page's
- * `window.MOBILE_AGENT_VIDEO` contract. Android-only: the native
- * `html-video-export` module does the muxing/encoding.
+ * `window.MOBILE_AGENT_VIDEO` contract — Android-only via the native
+ * `html-video-export` module — is the full-width footer action for scene
+ * previews.
  */
-function ExportVideoButton({
-  disabled,
-  onPress,
-}: {
-  disabled: boolean;
-  onPress: () => void;
-}) {
-  const theme = useTheme();
-
-  return (
-    <Pressable
-      accessibilityLabel="Export preview as MP4 video"
-      accessibilityRole="button"
-      className="h-11 w-11 items-center justify-center rounded-full bg-card dark:bg-card-dark active:opacity-70"
-      disabled={disabled}
-      onPress={onPress}
-      style={{ opacity: disabled ? 0.4 : 1 }}
-    >
-      <Film color={theme.text} size={20} />
-    </Pressable>
-  );
-}
-
 /** Live export progress bar with a stop button while frames are recorded. */
 function VideoExportProgress({
   progress,

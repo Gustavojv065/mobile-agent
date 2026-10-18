@@ -14,7 +14,7 @@ import {
   DrawerTitle,
 } from "@/components/ui/drawer";
 import { useTheme } from "@/hooks/use-theme";
-import { toPlayableFileUri } from "@/modules/preview/video-poster";
+import { getVideoPoster, toPlayableFileUri } from "@/modules/preview/video-poster";
 
 export type VideoPlayerTarget = {
   displayName: string;
@@ -35,6 +35,9 @@ export function VideoPlayerDialog({
 }) {
   const theme = useTheme();
   const [action, setAction] = useState<"save" | "share" | null>(null);
+  // Portrait/landscape/square — the frame follows the actual video, never a
+  // hardcoded 16/9 box that letterboxes reels.
+  const [aspectRatio, setAspectRatio] = useState<number | null>(null);
 
   const playableUri = video ? toPlayableFileUri(video.localUri) : null;
   const player = useVideoPlayer(playableUri, (instance) => {
@@ -43,12 +46,26 @@ export function VideoPlayerDialog({
 
   useEffect(() => {
     if (!playableUri) {
+      setAspectRatio(null);
       return;
     }
 
     player.play();
 
+    // The poster cache is shared with the chat card, so this is usually a
+    // cache hit — dimensions are ready the moment the drawer opens.
+    let cancelled = false;
+    getVideoPoster(playableUri).then((thumbnail) => {
+      if (cancelled || !thumbnail) {
+        return;
+      }
+      if (thumbnail.width > 0 && thumbnail.height > 0) {
+        setAspectRatio(thumbnail.width / thumbnail.height);
+      }
+    });
+
     return () => {
+      cancelled = true;
       // The player instance is released when its source changes; pausing an
       // already-released instance throws, so guard the cleanup.
       try {
@@ -154,7 +171,7 @@ export function VideoPlayerDialog({
                 fullscreenOptions={{ enable: true }}
                 nativeControls
                 player={player}
-                style={{ aspectRatio: 16 / 9, width: "100%" }}
+                style={{ aspectRatio: aspectRatio ?? 16 / 9, width: "100%" }}
                 surfaceType="textureView"
               />
             </View>

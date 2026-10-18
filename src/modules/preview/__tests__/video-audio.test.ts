@@ -5,6 +5,7 @@ import {
   assertAudioFileUsable,
   buildAudioDataUri,
   extractWorkspaceAudioIds,
+  readContractAspect,
   readContractDuration,
   resolveAudioMimeType,
 } from "@/modules/preview/video-audio";
@@ -160,5 +161,52 @@ describe("readContractDuration", () => {
         '<script>window.MOBILE_AGENT_VIDEO = { fps: 30 };</script>',
       ),
     ).toBeNull();
+  });
+});
+
+describe("readContractAspect", () => {
+  it("reads the declared canvas ratio (portrait and landscape)", () => {
+    expect(
+      readContractAspect(
+        "window.MOBILE_AGENT_VIDEO = { duration: 18, width: 1080, height: 1920, render: function () {} };",
+      ),
+    ).toBeCloseTo(1080 / 1920);
+    expect(
+      readContractAspect(
+        "window.MOBILE_AGENT_VIDEO = { duration: 18, width: 1920, height: 1080, render: function () {} };",
+      ),
+    ).toBeCloseTo(1920 / 1080);
+  });
+
+  it("uses the last top-level keys and ignores nested or quoted ones", () => {
+    expect(
+      readContractAspect(
+        'window.MOBILE_AGENT_VIDEO = { width: 640, height: 480, label: "width: 16, height: 9", audio: { width: 9, height: 9 } };',
+      ),
+    ).toBeCloseTo(640 / 480);
+    expect(
+      readContractAspect(
+        "window.MOBILE_AGENT_VIDEO = { width: 640, height: 480, height: 360 };",
+      ),
+    ).toBeCloseTo(640 / 360);
+  });
+
+  it("returns null when either dimension is missing or invalid", () => {
+    expect(
+      readContractAspect(
+        "window.MOBILE_AGENT_VIDEO = { width: 1080, render: function () {} };",
+      ),
+    ).toBeNull();
+    expect(
+      readContractAspect(
+        "window.MOBILE_AGENT_VIDEO = { height: 1920, render: function () {} };",
+      ),
+    ).toBeNull();
+    expect(
+      readContractAspect(
+        "window.MOBILE_AGENT_VIDEO = { width: 0, height: -1920, render: function () {} };",
+      ),
+    ).toBeNull();
+    expect(readContractAspect("<html></html>")).toBeNull();
   });
 });

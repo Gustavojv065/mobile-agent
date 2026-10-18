@@ -520,7 +520,13 @@ function VideoAttachmentView({
           accessible
           contentFit="cover"
           source={poster}
-          style={{ aspectRatio: 16 / 9, width: "100%" }}
+          style={{
+            aspectRatio:
+              poster.width > 0 && poster.height > 0
+                ? poster.width / poster.height
+                : 16 / 9,
+            width: "100%",
+          }}
         />
       ) : (
         <View

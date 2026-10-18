@@ -1,4 +1,4 @@
-import { readContractDuration } from "@/modules/preview/video-audio";
+import { readContractAspect, readContractDuration } from "@/modules/preview/video-audio";
 
 /**
  * In-app scene player (no render involved).
@@ -16,6 +16,15 @@ import { readContractDuration } from "@/modules/preview/video-audio";
 export function getSceneDuration(html: string): number | null {
   const duration = readContractDuration(html);
   return duration != null && duration > 0 ? duration : null;
+}
+
+/**
+ * Scene canvas aspect (width / height) from the HTML contract, or null when
+ * undeclared — callers fall back to 16/9, never invent a ratio.
+ */
+export function getSceneAspect(html: string): number | null {
+  const aspect = readContractAspect(html);
+  return aspect != null && aspect > 0 ? aspect : null;
 }
 
 /** `7` -> `"0:07"`, `65.2` -> `"1:05"`. Floors; never negative. */

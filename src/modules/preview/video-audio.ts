@@ -155,6 +155,7 @@ export function readContractDuration(html: string): number | null {
   if (marker === -1) return null;
   const tail = html.slice(marker);
 
+  // An explicit post-creation override wins outright.
   let override: number | null = null;
   const assignRe = /MOBILE_AGENT_VIDEO\s*\.\s*duration\s*=\s*(\d+(?:\.\d+)?)/g;
   let assignMatch: RegExpExecArray | null;
@@ -164,18 +165,57 @@ export function readContractDuration(html: string): number | null {
   }
   if (override != null) return override;
 
+  return readLastContractNumber(html, "duration");
+}
+
+/**
+ * Aspect ratio (width / height) of the video canvas as declared in the
+ * contract literal, or null when either dimension is absent/non-positive —
+ * callers must treat that as "unknown", never as "16:9".
+ */
+export function readContractAspect(html: string): number | null {
+  const width = readLastContractNumber(html, "width");
+  const height = readLastContractNumber(html, "height");
+  if (
+    width == null ||
+    height == null ||
+    width <= 0 ||
+    height <= 0 ||
+    !Number.isFinite(width / height)
+  ) {
+    return null;
+  }
+  return width / height;
+}
+
+/**
+ * The LAST top-level numeric `key:` of the contract object literal.
+ *
+ * Mirrors JS semantics instead of grabbing the first match in sight: the
+ * last top-level key of the literal wins (duplicate keys). Nested cue
+ * timings (audio tracks live deeper) and quoted text are ignored.
+ */
+function readLastContractNumber(
+  html: string,
+  key: string,
+): number | null {
+  const marker = html.indexOf("MOBILE_AGENT_VIDEO");
+  if (marker === -1) return null;
+
   // Strip strings/comments so quoted text can't fake a key, then walk the
   // contract literal tracking brace depth. Sticky regexes keep this linear
   // even for large documents.
-  const code = tail.replace(
-    /'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"|`(?:[^`\\]|\\.)*`|\/\/[^\n]*|\/\*[\s\S]*?\*\//g,
-    " ",
-  );
+  const code = html
+    .slice(marker)
+    .replace(
+      /'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"|`(?:[^`\\]|\\.)*`|\/\/[^\n]*|\/\*[\s\S]*?\*\//g,
+      " ",
+    );
   const literalOpen = code.search(/MOBILE_AGENT_VIDEO\s*=\s*\{/);
   if (literalOpen === -1) return null;
 
-  const keyRe = /duration\s*:/gy;
-  const numRe = /duration\s*:\s*(\d+(?:\.\d+)?)/gy;
+  const keyRe = new RegExp(`${key}\\s*:`, "gy");
+  const numRe = new RegExp(`${key}\\s*:\\s*(\\d+(?:\\.\\d+)?)`, "gy");
   let depth = 0;
   let last: number | null = null;
   const start = code.indexOf("{", literalOpen);
@@ -190,7 +230,7 @@ export function readContractDuration(html: string): number | null {
       if (depth <= 0) break;
       continue;
     }
-    if (depth !== 1 || ch !== "d") continue;
+    if (depth !== 1 || ch !== key[0]) continue;
     keyRe.lastIndex = i;
     if (!keyRe.exec(code)) continue;
     // Object-literal keys follow `{` or `,` — skips ternaries and labels.
