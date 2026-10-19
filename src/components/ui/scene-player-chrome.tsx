@@ -1,6 +1,7 @@
 import { Maximize, Minimize, Pause, Play, RotateCcw, RotateCw } from "lucide-react-native";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ActivityIndicator, Pressable, Text, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Svg, { Defs, LinearGradient, Rect, Stop } from "react-native-svg";
 
 import { Slider } from "@/components/ui/slider";
@@ -51,6 +52,12 @@ export function ScenePlayerChrome({
 }: ScenePlayerChromeProps) {
   const [controlsVisible, setControlsVisible] = useState(true);
   const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Fullscreen is edge-to-edge, so the bottom controls would otherwise tuck
+  // behind the system navigation bar (whose buttons swallow taps meant for the
+  // minimize button). Lift them by the bottom inset — the drawer card already
+  // clears the nav bar, so it needs no offset.
+  const insets = useSafeAreaInsets();
+  const bottomInset = fullscreen ? insets.bottom : 0;
 
   const clearHideTimer = useCallback(() => {
     if (hideTimerRef.current) {
@@ -83,6 +90,15 @@ export function ScenePlayerChrome({
     <View className="absolute inset-0" pointerEvents="box-none">
       {controlsVisible ? (
         <>
+          {/* Tap-anywhere to dismiss the controls while they're up. Rendered
+              first (behind every control) so the transport/scrubber buttons on
+              top still win their own taps; only bare-frame taps reach it. */}
+          <Pressable
+            accessibilityLabel="Hide player controls"
+            accessibilityRole="button"
+            className="absolute inset-0"
+            onPress={() => setControlsVisible(false)}
+          />
           {/* Soft bottom scrim: darkest at the bottom, fading to transparent. */}
           <Svg
             className="absolute inset-x-0 bottom-0"
@@ -156,61 +172,62 @@ export function ScenePlayerChrome({
             </View>
           ) : null}
 
+          {/* Bottom scrim: scrubber line + time row, like the native chrome. */}
+          <View
+            className="absolute inset-x-0 bottom-0 gap-1.5 px-4 pt-8"
+            pointerEvents="box-none"
+            style={{ paddingBottom: 12 + bottomInset }}
+          >
+            <View className="min-w-0 flex-1">
+              <Slider
+                accessibilityLabel="Scene time"
+                maximumValue={duration}
+                minimumValue={0}
+                onSlidingComplete={onScrubComplete}
+                onSlidingStart={onScrubStart}
+                onValueChange={(seconds) => {
+                  touch();
+                  onSeek(seconds);
+                }}
+                step={0.05}
+                value={Math.min(time, duration)}
+              />
+            </View>
+            <View
+              className="flex-row items-center gap-1.5"
+              pointerEvents="box-none"
+            >
+              <Text className="font-sans text-xs font-semibold text-white">
+                {formatPlayerTime(time)}
+              </Text>
+              <Text className="font-sans text-xs text-white/50">·</Text>
+              <Text className="font-sans text-xs text-white/80">
+                {formatPlayerTime(duration)}
+              </Text>
+            </View>
+          </View>
+
+          {/* Fullscreen sits in the bottom-right corner, off the time row so
+              the scrubber stays low and the row stays compact — like the native
+              player's corner icon. */}
           {onToggleFullscreen ? (
             <Pressable
               accessibilityLabel={fullscreen ? "Exit fullscreen" : "Enter fullscreen"}
               accessibilityRole="button"
-              className="absolute right-3 top-3 h-10 w-10 items-center justify-center active:opacity-70"
+              className="absolute right-2 h-9 w-9 items-center justify-center active:opacity-70"
+              style={{ bottom: 8 + bottomInset }}
               onPress={() => {
                 touch();
                 onToggleFullscreen();
               }}
             >
               {fullscreen ? (
-                <Minimize color="#FFFFFF" size={22} strokeWidth={2.2} />
+                <Minimize color="#FFFFFF" size={20} strokeWidth={2.2} />
               ) : (
-                <Maximize color="#FFFFFF" size={22} strokeWidth={2.2} />
+                <Maximize color="#FFFFFF" size={20} strokeWidth={2.2} />
               )}
             </Pressable>
           ) : null}
-
-          {/* Bottom scrim: scrubber line + time row, like the native chrome. */}
-          <View
-            className="absolute inset-x-0 bottom-0 gap-2 px-4 pb-3 pt-8"
-            pointerEvents="box-none"
-          >
-            <View
-              className="flex-row items-center gap-3"
-              pointerEvents="box-none"
-            >
-              <View className="min-w-0 flex-1">
-                <Slider
-                  accessibilityLabel="Scene time"
-                  maximumValue={duration}
-                  minimumValue={0}
-                  onSlidingComplete={onScrubComplete}
-                  onSlidingStart={onScrubStart}
-                  onValueChange={(seconds) => {
-                    touch();
-                    onSeek(seconds);
-                  }}
-                  step={0.05}
-                  value={Math.min(time, duration)}
-                />
-              </View>
-            </View>
-            <View
-              className="flex-row items-center justify-between"
-              pointerEvents="box-none"
-            >
-              <Text className="font-sans text-xs font-semibold text-white">
-                {formatPlayerTime(time)}
-              </Text>
-              <Text className="font-sans text-xs text-white/80">
-                {formatPlayerTime(duration)}
-              </Text>
-            </View>
-          </View>
         </>
       ) : (
         /* Hidden: a full-card transparent catch that restores the controls;

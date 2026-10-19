@@ -213,6 +213,10 @@ export type DrawerContentProps = ComponentPropsWithoutRef<typeof View> & {
   children: ReactNode;
   closeOnOverlayPress?: boolean;
   contentClassName?: string;
+  /** Applied to the inner body wrapper (padding/gap), to override per-drawer. */
+  bodyClassName?: string;
+  /** Let the panel fill the whole screen height (for fullscreen-style drawers). */
+  fillsScreen?: boolean;
   overlayClassName?: string;
   showCloseButton?: boolean;
   showHandle?: boolean;
@@ -229,6 +233,8 @@ export const DrawerContent = forwardRef<
       className,
       closeOnOverlayPress = true,
       contentClassName,
+      bodyClassName,
+      fillsScreen = false,
       overlayClassName,
       showCloseButton = false,
       showHandle = true,
@@ -247,7 +253,9 @@ export const DrawerContent = forwardRef<
     const [blurReady, setBlurReady] = useState(false);
     const progress = useRef(new Animated.Value(open ? 1 : 0)).current;
     const isVertical = direction === "top" || direction === "bottom";
-    const maxHeight = Math.max(Math.floor(height * 0.9), 220);
+    const maxHeight = fillsScreen
+      ? height
+      : Math.max(Math.floor(height * 0.9), 220);
     const maxWidth = Math.max(width - 24, 280);
     const resolvedVerticalSize =
       size !== undefined ? Math.min(size, maxHeight) : maxHeight;
@@ -401,7 +409,10 @@ export const DrawerContent = forwardRef<
           )}
           style={[
             direction === "bottom"
-              ? { paddingTop: insets.top, paddingBottom: 0 }
+              ? {
+                  paddingTop: fillsScreen ? 0 : insets.top,
+                  paddingBottom: 0,
+                }
               : direction === "top"
                 ? { paddingTop: 0, paddingBottom: insets.bottom }
                 : {
@@ -451,7 +462,7 @@ export const DrawerContent = forwardRef<
               style={[
                 panelStyle,
                 direction === "bottom"
-                  ? { paddingBottom: insets.bottom + 16 }
+                  ? { paddingBottom: fillsScreen ? 0 : insets.bottom + 16 }
                   : null,
                 direction === "top" ? { paddingTop: insets.top + 8 } : null,
               ]}
@@ -480,6 +491,7 @@ export const DrawerContent = forwardRef<
                     // panel; keep the wrapper's bottom padding out of it.
                     direction === "bottom" && "pb-0",
                     fillAvailableSpace && "flex-1",
+                    bodyClassName,
                   )}
                 >
                   {children}
@@ -554,7 +566,7 @@ export const DrawerFooter = forwardRef<
   <View
     ref={ref}
     className={cn(
-      "shrink-0 gap-sp-2 border-t border-border pt-sp-4 dark:border-border-dark",
+      "shrink-0 gap-sp-2 border-t border-border pt-sp-3 dark:border-border-dark",
       className,
     )}
     {...props}
