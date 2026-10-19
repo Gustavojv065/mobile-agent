@@ -79,6 +79,7 @@ export function createReadTool({
               toolName: "read",
               status: "completed",
               inputSummary,
+              preview: { title: file.displayName, text: output.content.slice(0, 20000), truncated: output.content.length > 20000 },
               outputSummary: summarizeValue({
                 fileId: output.fileId,
                 displayName: output.displayName,
@@ -135,6 +136,7 @@ export function createReadTool({
             toolName: "read",
             status: "completed",
             inputSummary,
+            preview: { title: file.displayName, text: content, truncated: output.truncated },
             outputSummary: summarizeValue({
               fileId: output.fileId,
               displayName: output.displayName,

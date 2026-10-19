@@ -58,6 +58,7 @@ function jpegFile(displayName: string, mimeType: string) {
 }
 
 function makeTool(supportsImageInput = true) {
+  mocks.resolveWorkspaceFile.mockReturnValue({ uri: "file:///workspace/frame.jpg" });
   mocks.requestScenePreview.mockImplementation(
     async (_html: string, options: { times: number[] }) => ({
       frames: options.times.map((time) => ({
@@ -70,7 +71,7 @@ function makeTool(supportsImageInput = true) {
     }),
   );
   mocks.createDocumentFile.mockImplementation(
-    async ({ name }: { name: string }) => ({ id: `still-${name}`, displayName: name }),
+    async ({ name }: { name: string }) => ({ id: `still-${name}`, displayName: name, relativePath: name }),
   );
   return createPreviewSceneTool({
     repository: repository(),

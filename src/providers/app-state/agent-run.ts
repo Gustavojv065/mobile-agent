@@ -1,4 +1,5 @@
 import type { ToolSet } from "ai";
+import { updateReasoningPhase } from "@/modules/runtime/reasoning-stream";
 import type { RefObject } from "react";
 
 import {
@@ -725,6 +726,8 @@ export async function executeClaimedAgentRun(
   const reasoning = [
     ...(assistantMessage.metadata?.reasoning ?? []),
   ] as ReasoningBlock[];
+  let traceOrder = Math.max(-1, ...toolExecutions.map((record) => record.traceOrder ?? -1), ...reasoning.map((block) => block.traceOrder ?? -1)) + 1;
+  const activeReasoning = new Map<string, ReasoningBlock>();
   const executionTimeline = [
     ...(assistantMessage.metadata?.executionTimeline ?? []),
   ] as import("@/core/types/app-state").ExecutionTimelineEvent[];
@@ -1095,6 +1098,9 @@ export async function executeClaimedAgentRun(
 
   const handleToolExecutionRecord = (record: ToolExecutionRecord) => {
     if (runRegistry.isDisposed()) return;
+    // Built-in tools also emit records without IDs. Give them an identity
+    // before anchoring, rather than sending them to an end-of-message fallback.
+    record = { ...record, id: record.id ?? `${run.id}:tool:${traceOrder}` };
     // Anchor every tool execution at the current text position, so its row
     // can render inline in the reply where the model wrote around it.
     if (record.id && !toolRunAnchors.has(record.id)) {
@@ -1103,6 +1109,10 @@ export async function executeClaimedAgentRun(
     const existingIndex = record.id
       ? toolExecutions.findIndex((existing) => existing.id === record.id)
       : -1;
+    record = {
+      ...record,
+      traceOrder: (existingIndex >= 0 ? toolExecutions[existingIndex].traceOrder : undefined) ?? traceOrder++,
+    };
     if (existingIndex >= 0) {
       toolExecutions[existingIndex] = record;
     } else {
@@ -1961,28 +1971,9 @@ export async function executeClaimedAgentRun(
           return;
         }
 
-        let block = reasoning.find((item) => item.id === id);
-
-        if (!block) {
-          block = {
-            id,
-            text: "",
-            startedAt: new Date().toISOString(),
-            completedAt: null,
-          };
-          reasoning.push(block);
-        }
-
-        if (
-          eventName === "reasoning-delta" &&
-          typeof event?.text === "string"
-        ) {
-          block.text += event.text;
-        }
-
-        if (eventName === "reasoning-end") {
-          block.completedAt = new Date().toISOString();
-        }
+        updateReasoningPhase(reasoning, activeReasoning, {
+          id, kind: eventName, text: event?.text, textOffset: assistantText.length,
+        }, () => traceOrder++);
 
         refreshAssistantState?.();
       },

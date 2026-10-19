@@ -101,6 +101,7 @@ export function createSkillTools(input: {
               toolName: "skill",
               status: "completed",
               inputSummary: summarizeValue({ name: skill.title }),
+              preview: { title: skill.title, text: skill.instructions.slice(0, 20000), truncated: skill.instructions.length > 20000 },
               outputSummary: summarizeValue({
                 chars: skill.instructions.length,
                 title: skill.title,
@@ -169,6 +170,7 @@ export function createSkillTools(input: {
               toolName: "skillReadFile",
               status: "completed",
               inputSummary: summarizeValue({ name: skill.title, path }),
+              preview: { title: `${skill.title}/${path}`, text: file.content.slice(0, 20000), truncated: file.content.length > 20000 },
               outputSummary: summarizeValue({
                 chars: file.content.length,
                 mimeType: file.mimeType,

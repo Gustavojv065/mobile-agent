@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@/core/services/workspace-file-service", () => ({
   resolveWorkspaceFile: () => ({
+    uri: "file:///workspace/photo.jpg",
     get exists() {
       return mocks.exists;
     },
@@ -63,6 +64,9 @@ describe("viewFile (workspace)", () => {
       inlineFile: true,
     });
     expect(output.file).toEqual(new Uint8Array([1, 2, 3]));
+    expect(mocks.onRecord).toHaveBeenCalledWith(expect.objectContaining({
+      preview: { title: "photo.jpg", uri: "file:///workspace/photo.jpg", mimeType: "image/jpeg", text: undefined },
+    }));
 
     const tool = makeTool(true) as unknown as {
       toModelOutput: (args: {

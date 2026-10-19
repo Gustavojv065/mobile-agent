@@ -80,6 +80,7 @@ export function createOcrTool({
             toolName: "ocr",
             status: "completed",
             inputSummary,
+            preview: { title: file.displayName, uri: localFile.uri, mimeType: file.mimeType ?? "image/jpeg", text: recognition.text.slice(0, 20000), truncated: recognition.text.length > 20000 },
             outputSummary: summarizeValue({
               fileId: output.fileId,
               available: output.available,

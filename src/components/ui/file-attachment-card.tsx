@@ -67,7 +67,7 @@ export function FileAttachmentCard({
         <Pressable
           accessibilityLabel={`Preview ${file.displayName}`}
           accessibilityRole="button"
-          className="h-16 w-16 overflow-hidden rounded-card border border-border bg-secondary dark:border-border-dark dark:bg-secondary-dark"
+          className="h-16 w-16 overflow-hidden rounded-ui border border-border bg-secondary dark:border-border-dark dark:bg-secondary-dark"
           disabled={!interactive}
           onPress={onPress}
           style={({ pressed }) => (pressed ? { opacity: 0.85 } : null)}
@@ -79,7 +79,7 @@ export function FileAttachmentCard({
           />
         </Pressable>
         {opening ? (
-          <View className="absolute inset-0 items-center justify-center rounded-card bg-black/40">
+          <View className="absolute inset-0 items-center justify-center rounded-ui bg-black/40">
             <ActivityIndicator color="#ffffff" size="small" />
           </View>
         ) : onRemove ? (
@@ -100,7 +100,7 @@ export function FileAttachmentCard({
 
   return (
     <View
-      className="h-16 shrink-0 flex-row items-center gap-sp-2 rounded-card border border-border bg-card px-3 py-2 dark:border-border-dark dark:bg-card-dark"
+      className="h-16 shrink-0 flex-row items-center gap-sp-2 rounded-ui border border-border bg-card px-3 py-2 dark:border-border-dark dark:bg-card-dark"
       style={{ width: FILE_ATTACHMENT_CARD_WIDTH }}
     >
       <Pressable

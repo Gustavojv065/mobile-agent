@@ -44,6 +44,7 @@ export function createExternalReadTool({
             toolName: "read",
             status: "completed",
             inputSummary,
+            preview: { title: path, text: content, truncated: output.truncated },
             outputSummary: summarizeValue(output),
           }),
         );

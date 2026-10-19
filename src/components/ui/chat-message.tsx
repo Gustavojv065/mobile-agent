@@ -1,6 +1,6 @@
 import { useRecyclingState } from "@shopify/flash-list";
 import * as Clipboard from "expo-clipboard";
-import { Directory, File, Paths } from "expo-file-system";
+import { File, Paths } from "expo-file-system";
 import * as LegacyFileSystem from "expo-file-system/legacy";
 import { Image } from "expo-image";
 import * as IntentLauncher from "expo-intent-launcher";
@@ -27,7 +27,6 @@ import {
   Share2,
   Square,
   Trash2,
-  Wrench,
 } from "lucide-react-native";
 import {
   createContext,
@@ -125,6 +124,9 @@ import {
   type VideoPlayerTarget,
 } from "@/components/ui/video-player-dialog";
 import { CHAT_TEXT_STYLE } from "@/constants/chat-typography";
+import { TraceResourceContent } from "@/components/ui/trace-resource-content";
+import { hasLegacyToolResource } from "@/modules/chat/tool-resource";
+import { buildAssistantParts } from "@/modules/chat/assistant-parts";
 import {
   isTextWorkspaceFile,
   resolveWorkspaceFile,
@@ -1442,11 +1444,6 @@ export const ChatMessage = memo(function ChatMessage({
     null,
     [message.id],
   );
-  // undefined = the reader hasn't touched it; the fallback is then "open
-  // while thinking runs" (shadcn's open ?? running pattern for trace rows).
-  const [reasoningExpanded, setReasoningExpanded] = useRecyclingState<
-    boolean | undefined
-  >(() => (message.status === "streaming" ? true : undefined), [message.id]);
   const [tasksExpanded, setTasksExpanded] = useRecyclingState<
     boolean | undefined
   >(() => (message.status === "streaming" ? true : undefined), [message.id]);
@@ -1465,9 +1462,9 @@ export const ChatMessage = memo(function ChatMessage({
   // Width of the assistant content column once laid out; tables consume it to
   // skip the window-sized estimate right after their first frame.
   const [markdownContainerWidth, setMarkdownContainerWidth] = useState(0);
-  // Open-by-tap tool trace rows; running rows ignore it and stay open.
+  // Explicit reader choices override the default of opening running rows.
   const [expandedToolRunIds, setExpandedToolRunIds] = useRecyclingState(
-    () => new Set<string>(),
+    () => new Map<string, boolean>(),
     [message.id],
   );
   const isAssistant = message.role === "assistant";
@@ -1497,24 +1494,6 @@ export const ChatMessage = memo(function ChatMessage({
       theme.backgroundElement,
       theme.backgroundSelected,
       theme.text,
-      theme.textSecondary,
-    ],
-  );
-  const reasoningMarkdownStyles = useMemo(
-    () =>
-      createMarkdownStyles({
-        borderColor: theme.border,
-        codeBackground: theme.backgroundElement,
-        inlineCodeBackground: theme.backgroundSelected,
-        linkColor: theme.textSecondary,
-        mutedText: theme.textSecondary,
-        tableHeaderBackground: theme.backgroundSelected,
-        text: theme.textSecondary,
-      }),
-    [
-      theme.border,
-      theme.backgroundElement,
-      theme.backgroundSelected,
       theme.textSecondary,
     ],
   );
@@ -1953,101 +1932,8 @@ export const ChatMessage = memo(function ChatMessage({
       stepGapLabels.set(record.id ?? record.createdAt, gap);
     }
   });
-  const toolRunsById = new Map(
-    toolExecutions.flatMap((run) =>
-      run.id ? ([[run.id, run]] as const) : [],
-    ),
-  );
-  // New runs anchor every execution; old messages only carried the termux
-  // anchors — merge both (toolRunAnchors win), then drop anchors whose record
-  // is missing or whose offset left the (possibly changed) text.
-  const toolRunOffsets = new Map(
-    [
-      ...(message.metadata?.termuxRunAnchors ?? []),
-      ...(message.metadata?.toolRunAnchors ?? []),
-    ].map((anchor) => [anchor.executionId, anchor.textOffset]),
-  );
-  const anchoredToolRuns = [...toolRunOffsets]
-    .map(([executionId, textOffset]) => ({
-      record: toolRunsById.get(executionId),
-      textOffset,
-    }))
-    .filter((entry): entry is { record: ToolExecutionRecord; textOffset: number } =>
-      Boolean(entry.record) &&
-      Number.isInteger(entry.textOffset) &&
-      entry.textOffset >= 0 &&
-      entry.textOffset <= message.content.length,
-    )
-    .sort((a, b) => a.textOffset - b.textOffset);
-  const anchoredToolRunIds = new Set(
-    anchoredToolRuns.map(({ record }) => record.id ?? ""),
-  );
-  const unanchoredTermuxRuns = termuxRuns.filter(
-    (run) => !run.id || !anchoredToolRunIds.has(run.id),
-  );
-  const unanchoredToolRuns = toolExecutions.filter(
-    (run) => !run.termux && (!run.id || !anchoredToolRunIds.has(run.id)),
-  );
-  const inlineToolContent: ReactNode[] = [];
-  let contentOffset = 0;
-  for (const { record, textOffset } of anchoredToolRuns) {
-    const text = message.content.slice(contentOffset, textOffset);
-    if (text.trim()) {
-      inlineToolContent.push(
-        <MarkdownContent
-          content={text}
-          key={`text-${toolRunOffsets.get(record.id ?? "") ?? textOffset}`}
-          onLinkPress={handleLinkPress}
-          selectable={selectEnabled}
-          styles={markdownStyles}
-        />,
-      );
-    }
-    inlineToolContent.push(
-      record.termux ? (
-        <TermuxRunCard
-          command={record.termux.command}
-          key={`termux-${record.id ?? record.createdAt}`}
-          output={record.termux.output}
-          running={record.status === "running" && message.status === "streaming"}
-          taskId={record.termux.taskId}
-        />
-      ) : (
-        <ToolTraceRow
-          expanded={expandedToolRunIds.has(record.id ?? record.createdAt)}
-          gapLabel={stepGapLabels.get(record.id ?? record.createdAt)}
-          key={`tool-${record.id ?? record.createdAt}`}
-          onExpandedChange={(open) => {
-            setExpandedToolRunIds((current) => {
-              const key = record.id ?? record.createdAt;
-              const next = new Set(current);
-              if (open) {
-                next.add(key);
-              } else {
-                next.delete(key);
-              }
-              return next;
-            });
-          }}
-          record={record}
-          streaming={message.status === "streaming"}
-        />
-      ),
-    );
-    contentOffset = textOffset;
-  }
-  const trailingContent = message.content.slice(contentOffset);
-  if (anchoredToolRuns.length > 0 && trailingContent.trim()) {
-    inlineToolContent.push(
-      <MarkdownContent
-        content={trailingContent}
-        key="text-trailing"
-        onLinkPress={handleLinkPress}
-        selectable={selectEnabled}
-        styles={markdownStyles}
-      />,
-    );
-  }
+  const hasActivity = Boolean(message.metadata?.toolExecutions?.length || message.metadata?.reasoning?.length);
+  const assistantParts = buildAssistantParts(hasActivity ? message.content : bodyContent, message.metadata);
   const generatedImages = message.metadata?.generatedImages ?? [];
   const generatedVideos = message.metadata?.generatedVideos ?? [];
   // Videos the model already embedded inline with `![name](workspace://id)`
@@ -2063,21 +1949,6 @@ export const ChatMessage = memo(function ChatMessage({
     .map((fileId) => workspaceFiles.find((file) => file.id === fileId))
     .filter((file): file is WorkspaceFile => file !== undefined);
   const hasUserAttachments = isUser && attachedFiles.length > 0;
-  const reasoningBlocks = message.metadata?.reasoning ?? [];
-  const reasoningText = reasoningBlocks
-    .map((block) => block.text.trim())
-    .filter(Boolean)
-    .join("\n\n");
-  const reasoningInProgress = reasoningBlocks.some(
-    (block) => block.completedAt === null,
-  );
-  const reasoningLabel = reasoningText
-    ? message.status === "streaming" && reasoningInProgress
-      ? hasRunningTermuxRun
-        ? null
-        : "Thinking…"
-      : `Thought for ${formatReasoningDuration(reasoningBlocks)}`
-    : null;
   const memoryEventLabel =
     memoryEvents.length === 0
       ? null
@@ -2093,7 +1964,7 @@ export const ChatMessage = memo(function ChatMessage({
       >
         {hasUserAttachments ? (
           <FlatList
-            contentContainerStyle={{ gap: 8 }}
+            contentContainerStyle={{ flexGrow: 1, gap: 8, justifyContent: "flex-end" }}
             data={attachedFiles}
             horizontal
             initialNumToRender={6}
@@ -2139,35 +2010,6 @@ export const ChatMessage = memo(function ChatMessage({
                     );
                   }}
                 >
-                  {reasoningLabel ? (
-                    <Trace>
-                      <TraceCollapsible
-                        onOpenChange={setReasoningExpanded}
-                        open={reasoningExpanded ?? reasoningInProgress}
-                      >
-                        <TraceCollapsibleTrigger>
-                          <TraceLine
-                            status={reasoningInProgress ? "running" : undefined}
-                          >
-                            <TraceIcon>
-                              <Brain color={theme.textSecondary} size={16} />
-                            </TraceIcon>
-                            <TraceTitle>{reasoningLabel}</TraceTitle>
-                          </TraceLine>
-                        </TraceCollapsibleTrigger>
-                        <TraceCollapsibleContent>
-                          <View className="border-l border-border pl-sp-3 dark:border-border-dark">
-                            <Text
-                              selectable
-                              style={reasoningMarkdownStyles.body}
-                            >
-                              {reasoningText}
-                            </Text>
-                          </View>
-                        </TraceCollapsibleContent>
-                      </TraceCollapsible>
-                    </Trace>
-                  ) : null}
 
                   {memoryEventLabel ? (
                     <Trace>
@@ -2306,41 +2148,54 @@ export const ChatMessage = memo(function ChatMessage({
                     </Trace>
                   ) : null}
 
-                  {anchoredToolRuns.length > 0 ? (
-                    <View className="gap-sp-3">{inlineToolContent}</View>
-                  ) : message.content.trim() ? (
-                    <MarkdownContent
-                      content={bodyContent}
-                      onLinkPress={handleLinkPress}
-                      selectable={selectEnabled}
-                      styles={markdownStyles}
-                    />
-                  ) : null}
-                  {unanchoredTermuxRuns.length > 0 ? (
-                    <View className="gap-sp-2">
-                      {unanchoredTermuxRuns.map((run) => (
-                        <TermuxRunCard
-                          command={run.termux!.command}
-                          running={
-                            run.status === "running" &&
-                            message.status === "streaming"
-                          }
-                          key={run.createdAt + (run.termux!.taskId ?? "sync")}
-                          output={run.termux!.output}
-                          taskId={run.termux!.taskId}
+                  {assistantParts.map((part) => {
+                    if (part.kind === "text") {
+                      return part.text.trim() ? (
+                        <MarkdownContent
+                          key={part.key}
+                          content={part.text}
+                          onLinkPress={handleLinkPress}
+                          selectable={selectEnabled}
+                          styles={markdownStyles}
                         />
-                      ))}
-                    </View>
-                  ) : null}
-                  {unanchoredToolRuns.length > 0 ? (
-                    <ToolTraceGroup
-                      expandedIds={expandedToolRunIds}
-                      gapLabels={stepGapLabels}
-                      onExpandedChange={setExpandedToolRunIds}
-                      records={unanchoredToolRuns}
-                      streaming={message.status === "streaming"}
-                    />
-                  ) : null}
+                      ) : null;
+                    }
+                    if (part.kind === "reasoning") {
+                      return (
+                        <ReasoningTraceRow
+                          key={`${message.id}-${part.key}`}
+                          block={part.block}
+                          streaming={message.status === "streaming"}
+                        />
+                      );
+                    }
+                    const record = part.record;
+                    const key = record.id ?? part.key;
+                    return record.termux ? (
+                      <TermuxRunCard
+                        key={part.key}
+                        command={record.termux.command}
+                        output={record.termux.output}
+                        taskId={record.termux.taskId}
+                        running={record.status === "running" && message.status === "streaming"}
+                      />
+                    ) : (
+                      <ToolTraceRow
+                        key={part.key}
+                        record={record}
+                        streaming={message.status === "streaming"}
+                        expanded={expandedToolRunIds.get(key)}
+                        gapLabel={stepGapLabels.get(record.id ?? record.createdAt)}
+                        onExpandedChange={(open) => {
+                          setExpandedToolRunIds((current) => {
+                            const next = new Map(current);
+                            next.set(key, open);
+                            return next;
+                          });
+                        }}
+                      />
+                    );
+                  })}
                   {pluginOutputs.length > 0 ? (
                     <View className="gap-sp-2">
                       {pluginOutputs.map((entry, index) => (
@@ -2722,31 +2577,6 @@ export const ChatMessage = memo(function ChatMessage({
   );
 });
 
-function buildGeneratedImageFileName(image: GeneratedImageAttachment) {
-  return `mobile-agent-${image.id}.${getImageExtension(image.mimeType)}`;
-}
-
-function buildAvailableGeneratedImageFile(
-  directory: Directory,
-  image: GeneratedImageAttachment,
-) {
-  const extension = getImageExtension(image.mimeType);
-  const baseName = `mobile-agent-${image.id}`;
-  const existingNames = new Set(directory.list().map((entry) => entry.name));
-
-  if (!existingNames.has(`${baseName}.${extension}`)) {
-    return new File(directory, `${baseName}.${extension}`);
-  }
-
-  let suffix = 2;
-
-  while (existingNames.has(`${baseName}-${suffix}.${extension}`)) {
-    suffix += 1;
-  }
-
-  return new File(directory, `${baseName}-${suffix}.${extension}`);
-}
-
 function getImageExtension(mimeType: string) {
   if (mimeType === "image/jpeg") {
     return "jpg";
@@ -2757,10 +2587,6 @@ function getImageExtension(mimeType: string) {
   }
 
   return "png";
-}
-
-function isUserCanceledFileAction(error: unknown) {
-  return error instanceof Error && /cancel/i.test(error.message);
 }
 
 function isUserCanceledShare(error: unknown) {
@@ -3237,6 +3063,71 @@ function TermuxRunCard({
 
 // —─── Tool trace rows (shadcn `Trace` pattern) ─────────────────────────────
 
+function ReasoningTraceRow({ block, streaming }: { block: ReasoningBlock; streaming: boolean }) {
+  const theme = useTheme();
+  const [open, setOpen] = useState<boolean>();
+  const running = streaming && block.completedAt === null;
+  return (
+    <Trace>
+      <TraceCollapsible open={open ?? running} onOpenChange={setOpen}>
+        <TraceCollapsibleTrigger>
+          <TraceLine status={running ? "running" : undefined}>
+            <TraceIcon><Brain color={theme.textSecondary} size={16} /></TraceIcon>
+            <TraceTitle>{running ? "Thinking…" : `Thought for ${formatReasoningDuration([block])}`}</TraceTitle>
+          </TraceLine>
+        </TraceCollapsibleTrigger>
+        <TraceCollapsibleContent>
+          <Text selectable className="border-l border-border pl-sp-3 font-sans text-sm text-muted-foreground dark:border-border-dark dark:text-muted-foreground-dark">{block.text || (running ? "Thinking…" : "No reasoning text was recorded for this step.")}</Text>
+        </TraceCollapsibleContent>
+      </TraceCollapsible>
+    </Trace>
+  );
+}
+
+/** Historic summaries are bounded JSON; only use fields we can actually recover. */
+function parseToolSummary(summary: string | null): Record<string, unknown> {
+  if (!summary) return {};
+  try {
+    const value = JSON.parse(summary);
+    return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  } catch { return {}; }
+}
+
+function ToolTraceDetail({ record }: { record: ToolExecutionRecord }) {
+  const { workspaceFiles } = useContext(ChatMediaContext);
+  const input = parseToolSummary(record.inputSummary);
+  const output = parseToolSummary(record.outputSummary);
+  const file = workspaceFiles.find((item) => item.id === (output.fileId ?? input.fileId));
+  const preview = record.preview;
+  const title = preview?.title ?? file?.displayName ?? toolObjectLabel(record.inputSummary);
+  const uri = preview?.uri ?? (file ? resolveWorkspaceFile(file.relativePath).uri : undefined);
+  const isImage = preview?.mimeType?.startsWith("image/") || (file && getFilePreviewKind(file) === "image");
+  const text = preview?.text ?? (typeof output.content === "string" ? output.content : typeof output.contentPreview === "string" ? output.contentPreview : null);
+  // Unknown/custom tools retain a readable result rather than losing diagnostics.
+  const summary = Object.entries(output).filter(([key, value]) =>
+    !["fileId", "displayName", "content", "contentPreview", "link", "inlineImage", "inlineFile", "mimeType", "width", "height"].includes(key) &&
+    (typeof value === "string" || typeof value === "number" || typeof value === "boolean"),
+  ).map(([key, value]) => `${key.replace(/([A-Z])/g, " $1")}: ${String(value)}`).join("\n");
+  const plainOutput = record.outputSummary && !/^[\s]*[\[{]/.test(record.outputSummary) ? record.outputSummary : null;
+  const images = preview?.images ?? [];
+  return (
+    <View className="gap-sp-2">
+      {uri && isImage ? <MarkdownImage key={uri} alt={title || "Viewed image"} uri={uri} /> : null}
+      {images.map((image) => <MarkdownImage key={image.uri} alt={image.title} uri={image.uri} />)}
+      {record.diff ? <TraceDiffBlock diff={record.diff} /> : hasLegacyToolResource(record) && !isImage ? (
+        <TraceResourceContent key={record.id ?? record.createdAt} record={record} />
+      ) : text ? (
+        <ScrollView nestedScrollEnabled style={{ maxHeight: 320 }}>
+          <CodeBlock size="sm"><CodeBlockContent>{text}</CodeBlockContent></CodeBlock>
+        </ScrollView>
+      ) : summary || plainOutput ? <Text selectable className="font-sans text-xs text-muted-foreground dark:text-muted-foreground-dark">{summary || plainOutput}</Text> : !record.error && !(uri && isImage) && images.length === 0 ? (
+        <Text className="font-sans text-xs text-muted-foreground dark:text-muted-foreground-dark">{record.status === "running" ? "Waiting for output…" : "No content preview was captured for this tool call."}</Text>
+      ) : null}
+      {preview?.truncated || (!preview && text) ? <Text className="font-sans text-xs text-muted-foreground dark:text-muted-foreground-dark">Partial content captured for this step.</Text> : null}
+    </View>
+  );
+}
+
 function toolTraceTitle(record: ToolExecutionRecord, streaming: boolean) {
   if (record.status === "failed") {
     return `Failed to run ${formatToolName(record.toolName)}`;
@@ -3248,18 +3139,19 @@ function toolTraceTitle(record: ToolExecutionRecord, streaming: boolean) {
       : formatToolName(record.toolName);
   }
 
-  const object = toolObjectLabel(record.inputSummary);
+  const object = record.preview?.title ?? toolObjectLabel(record.inputSummary) ?? toolObjectLabel(record.outputSummary);
   const verb = toolTraceVerb(record.toolName);
 
   if (verb === "Used") {
     return object ? `Used ${formatToolName(record.toolName)} on ${object}` : `Ran ${formatToolName(record.toolName)}`;
   }
 
-  return object ? `${verb} ${object}` : `${verb} — ${formatToolName(record.toolName)}`;
+  // No object to point at: the verb just repeats the tool name ("Read — Read").
+  return object ? `${verb} ${object}` : formatToolName(record.toolName);
 }
 
 type ToolTraceRowProps = {
-  expanded: boolean;
+  expanded?: boolean;
   /** Elapsed time from the previous step, when known. */
   gapLabel?: string;
   onExpandedChange: (open: boolean) => void;
@@ -3273,45 +3165,63 @@ type ToolTraceRowProps = {
  * code and prose alike.
  */
 function TraceDiffBlock({ diff }: { diff: string }) {
+  // Track the real starting line per `@@ line N @@` hunk so the gutter shows
+  // true file line numbers; drop the `@@` header rows themselves.
+  let lineNumber = 0;
+  const rows = diff
+    .split("\n")
+    .map((line, index): { key: string; number: number | null; text: string; variant: "added" | "default" | "removed" } | null => {
+      const header = /^@@ line (\d+) @@$/.exec(line);
+      if (header) {
+        lineNumber = Number(header[1]);
+        return null;
+      }
+
+      const key = `diff-${index}`;
+      if (line.startsWith("+")) {
+        return { key, number: lineNumber++, text: line.slice(1), variant: "added" };
+      }
+
+      if (line.startsWith("-")) {
+        return { key, number: lineNumber++, text: line.slice(1), variant: "removed" };
+      }
+
+      return {
+        key,
+        number: lineNumber++,
+        text: line.startsWith(" ") ? line.slice(1) : line,
+        variant: "default",
+      };
+    })
+    .filter((row): row is NonNullable<typeof row> => row !== null);
+
   return (
     <CodeBlock size="sm">
-      <CodeBlockContent>
-        {diff.split("\n").map((line, index) => {
-          if (line.startsWith("+")) {
-            return (
-              <CodeBlockLine key={`diff-${index}`} variant="added">
-                <Text className="font-mono text-sm text-foreground dark:text-foreground-dark">
-                  {line.slice(1)}
-                </Text>
-              </CodeBlockLine>
-            );
-          }
-
-          if (line.startsWith("-")) {
-            return (
-              <CodeBlockLine key={`diff-${index}`} variant="removed">
-                <Text className="font-mono text-sm text-foreground dark:text-foreground-dark">
-                  {line.slice(1)}
-                </Text>
-              </CodeBlockLine>
-            );
-          }
-
-          return (
-            <CodeBlockLine key={`diff-${index}`}>
+      <CodeBlockContent wrap>
+        {rows.map((row) => (
+          <CodeBlockLine key={row.key} variant={row.variant}>
+            <View className="flex-row">
+              <Text
+                accessible={false}
+                className="font-mono text-xs text-muted-foreground dark:text-muted-foreground-dark"
+              >
+                {`${row.number}`.padStart(3, " ")}
+              </Text>
               <Text
                 className={cn(
-                  "font-mono text-sm",
-                  line.startsWith("@@") || line.startsWith("…")
-                    ? "text-muted-foreground dark:text-muted-foreground-dark"
-                    : "text-foreground dark:text-foreground-dark",
+                  "flex-1 font-mono text-sm",
+                  row.variant === "removed"
+                    ? "text-destructive dark:text-destructive-dark"
+                    : row.variant === "added"
+                      ? "text-foreground dark:text-foreground-dark"
+                      : "text-foreground dark:text-foreground-dark",
                 )}
               >
-                {line}
+                {row.text}
               </Text>
-            </CodeBlockLine>
-          );
-        })}
+            </View>
+          </CodeBlockLine>
+        ))}
       </CodeBlockContent>
     </CodeBlock>
   );
@@ -3339,7 +3249,7 @@ function ToolTraceRow({
 
   return (
     <Trace>
-      <TraceCollapsible onOpenChange={onExpandedChange} open={expanded || running}>
+      <TraceCollapsible onOpenChange={onExpandedChange} open={expanded ?? running}>
         <TraceCollapsibleTrigger>
           <TraceLine status={status}>
             <TraceIcon>
@@ -3352,32 +3262,11 @@ function ToolTraceRow({
                 {record.diffStat}
               </TraceDescription>
             ) : null}
-            {gapLabel ? (
-              <TraceDescription className="font-mono">
-                {gapLabel}
-              </TraceDescription>
-            ) : null}
           </TraceLine>
         </TraceCollapsibleTrigger>
         <TraceCollapsibleContent>
           <View className="gap-sp-1.5 border-l border-border pl-sp-3 dark:border-border-dark">
-            {record.inputSummary ? (
-              <Text
-                selectable
-                className="font-mono text-xs text-muted-foreground dark:text-muted-foreground-dark"
-              >
-                {record.inputSummary}
-              </Text>
-            ) : null}
-            {record.outputSummary ? (
-              <Text
-                selectable
-                className="font-mono text-xs text-muted-foreground dark:text-muted-foreground-dark"
-              >
-                {record.outputSummary}
-              </Text>
-            ) : null}
-            {record.diff ? <TraceDiffBlock diff={record.diff} /> : null}
+            <ToolTraceDetail record={record} />
             {record.error ? (
               <Text
                 numberOfLines={8}
@@ -3387,77 +3276,12 @@ function ToolTraceRow({
                 {record.error}
               </Text>
             ) : null}
+            {gapLabel && record.status !== "running" ? (
+              <Text className="mt-sp-1 font-mono text-xs text-muted-foreground dark:text-muted-foreground-dark">
+                {`Completed in ${gapLabel}`}
+              </Text>
+            ) : null}
           </View>
-        </TraceCollapsibleContent>
-      </TraceCollapsible>
-    </Trace>
-  );
-}
-
-type ToolTraceGroupProps = {
-  expandedIds: Set<string>;
-  /** Per-record elapsed-time labels, keyed like `expandedIds`. */
-  gapLabels: Map<string, string>;
-  onExpandedChange: (
-    update: (current: Set<string>) => Set<string>,
-  ) => void;
-  records: ToolExecutionRecord[];
-  streaming: boolean;
-};
-
-/** Unanchored tool executions, collapsed behind a single summary row. */
-function ToolTraceGroup({
-  expandedIds,
-  gapLabels,
-  onExpandedChange,
-  records,
-  streaming,
-}: ToolTraceGroupProps) {
-  const theme = useTheme();
-  const [groupExpanded, setGroupExpanded] = useState(false);
-  const running = records.some(
-    (record) => record.status === "running" && streaming,
-  );
-
-  return (
-    <Trace>
-      <TraceCollapsible onOpenChange={setGroupExpanded} open={groupExpanded}>
-        <TraceCollapsibleTrigger>
-          <TraceLine status={running ? "running" : undefined}>
-            <TraceIcon>
-              <Wrench color={theme.textSecondary} size={16} />
-            </TraceIcon>
-            <TraceTitle>
-              {running ? `Running ${records.length} tools` : `Ran ${records.length} tools`}
-            </TraceTitle>
-          </TraceLine>
-        </TraceCollapsibleTrigger>
-        <TraceCollapsibleContent>
-          <Trace className="border-l border-border pl-sp-3 dark:border-border-dark">
-            {records.map((record) => {
-              const key = record.id ?? record.createdAt;
-              return (
-                <ToolTraceRow
-                  expanded={expandedIds.has(key) || (record.status === "running" && streaming)}
-                  gapLabel={gapLabels.get(key)}
-                  key={key}
-                  onExpandedChange={(open) => {
-                    onExpandedChange((current) => {
-                      const next = new Set(current);
-                      if (open) {
-                        next.add(key);
-                      } else {
-                        next.delete(key);
-                      }
-                      return next;
-                    });
-                  }}
-                  record={record}
-                  streaming={streaming}
-                />
-              );
-            })}
-          </Trace>
         </TraceCollapsibleContent>
       </TraceCollapsible>
     </Trace>

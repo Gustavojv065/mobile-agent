@@ -1,7 +1,7 @@
 import { tool } from "ai";
 import { z } from "zod";
 
-import { createWorkspaceFileService } from "@/core/services/workspace-file-service";
+import { createWorkspaceFileService, resolveWorkspaceFile } from "@/core/services/workspace-file-service";
 import { readContractDuration } from "@/modules/preview/video-audio";
 import {
   inlineImageAssets,
@@ -212,6 +212,7 @@ export function createPreviewSceneTool({
         }
 
         const baseName = (name ?? "scene").trim() || "scene";
+        const previewImages: { uri: string; title: string }[] = [];
         const frames: {
           fileId: string;
           link: string;
@@ -227,6 +228,7 @@ export function createPreviewSceneTool({
             mimeType: "image/jpeg",
             name: `${baseName}-preview-${frame.time}s.jpg`,
           });
+          previewImages.push({ uri: resolveWorkspaceFile(saved.relativePath).uri, title: `${frame.time}s` });
           frames.push({
             fileId: saved.id,
             link: `workspace://${saved.id}`,
@@ -268,6 +270,7 @@ export function createPreviewSceneTool({
             toolName: "previewScene",
             status: "completed",
             inputSummary,
+            preview: { title: baseName, images: previewImages, text: warnings.length ? warnings.join("\n") : undefined },
             outputSummary: summarizeValue({
               frameCount: frames.length,
               frames: frames.map((f) => ({

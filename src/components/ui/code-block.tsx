@@ -55,7 +55,7 @@ import {
  */
 
 const blockVariants = cva(
-  "w-full overflow-hidden rounded-ui text-sm dark:bg-input-dark/30",
+  "w-full overflow-hidden rounded-2xl bg-secondary text-sm dark:bg-secondary-dark",
   {
     variants: {
       variant: {
@@ -440,7 +440,7 @@ const lineRowVariants = cva("min-w-full flex-row items-start", {
   variants: {
     variant: {
       default: "",
-      added: "bg-muted dark:bg-muted-dark",
+      added: "bg-green-600/15 dark:bg-green-500/15",
       removed: "bg-destructive/10 dark:bg-destructive-dark/10",
       highlighted: "bg-muted dark:bg-muted-dark",
     },
@@ -502,6 +502,7 @@ export const CodeBlockContent = forwardRef<
 
   return (
     <CodeBlockScrollWrap className={className} ref={ref} wrap={wrap} {...props}>
+      <View>
       {lines.map((line, index) =>
         isValidElement(line) &&
         (line.type as { displayName?: string }).displayName ===
@@ -521,6 +522,7 @@ export const CodeBlockContent = forwardRef<
           line
         ),
       )}
+      </View>
     </CodeBlockScrollWrap>
   );
 });
@@ -745,7 +747,7 @@ const CodeBlockRow = forwardRef<ComponentRef<typeof View>, CodeBlockRowProps>(
                 left: 4,
                 top: 0,
                 color:
-                  variant === "added" ? theme.textSecondary : theme.destructive,
+                  variant === "added" ? "#16a34a" : theme.destructive,
                 fontFamily: "monospace",
               },
             ]}

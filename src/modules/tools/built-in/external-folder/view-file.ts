@@ -88,6 +88,7 @@ export function createExternalViewFileTool({
             toolName: "viewFile",
             status: "completed",
             inputSummary,
+            preview: { title: path, uri: loaded?.uri, mimeType: resolvedMimeType, text: guidance ?? undefined },
             outputSummary: summarizeValue({
               path: output.path,
               inlineFile: output.inlineFile,

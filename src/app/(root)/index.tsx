@@ -66,6 +66,7 @@ import {
 } from "quote-selection";
 
 import { ComposerTip } from "@/components/chat/composer-tip";
+import { CodeBlock, CodeBlockContent } from "@/components/ui/code-block";
 import { Container } from "@/components/shared/container";
 import { SearchBox } from "@/components/shared/search-box";
 import { SkillImportDrawer } from "@/components/skills/skill-import-drawer";
@@ -597,9 +598,11 @@ export default function Screen() {
               </MessageScroller>
 
               {error ? (
-                <Text className="font-sans text-sm text-destructive dark:text-destructive-dark">
-                  {error}
-                </Text>
+                <CodeBlock className="mb-10" size="sm" variant="destructive">
+                  <CodeBlockContent wrap accessibilityLabel="Send error">
+                    {error}
+                  </CodeBlockContent>
+                </CodeBlock>
               ) : null}
 
               {!currentModel && ready ? (

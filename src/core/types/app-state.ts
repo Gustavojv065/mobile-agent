@@ -261,6 +261,16 @@ export type GeneratedVideoAttachment = {
 };
 
 export type ToolExecutionRecord = {
+  /** Stable event order within this assistant turn (including reasoning). */
+  traceOrder?: number;
+  preview?: {
+    title: string;
+    text?: string;
+    uri?: string;
+    mimeType?: string;
+    truncated?: boolean;
+    images?: { uri: string; title: string }[];
+  };
   id?: string;
   toolName: string;
   status: "running" | "completed" | "failed";
@@ -302,6 +312,8 @@ export type ExecutionTimelineEvent = {
 };
 
 export type ReasoningBlock = {
+  textOffset?: number;
+  traceOrder?: number;
   id: string;
   text: string;
   startedAt: string;

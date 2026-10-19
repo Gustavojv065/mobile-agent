@@ -8,6 +8,7 @@ export function summarizeValue(value: unknown) {
 }
 
 export function createRecord(input: {
+  preview?: ToolExecutionRecord["preview"];
   id?: string;
   /** Optional captured line-diff (added/removed hunks), e.g. for the edit tool. */
   diff?: string | null;
@@ -31,5 +32,6 @@ export function createRecord(input: {
     ...(input.termux ? { termux: input.termux } : {}),
     ...(input.diff ? { diff: input.diff } : {}),
     ...(input.diffStat ? { diffStat: input.diffStat } : {}),
+    ...(input.preview ? { preview: input.preview } : {}),
   } satisfies ToolExecutionRecord;
 }

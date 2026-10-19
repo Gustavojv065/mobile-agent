@@ -1,4 +1,5 @@
 import { tool } from "ai";
+import { buildLineDiff } from "@/modules/files/line-diff";
 import { z } from "zod";
 
 import { createExternalFolderService } from "@/core/services/external-folder/external-folder-service";
@@ -40,6 +41,7 @@ export function createExternalEditTool({
       try {
         const current = await service.readTextFile(session, path);
         const result = applyTextEdits(current, edits);
+        const diff = buildLineDiff(current, result.content);
         await service.writeTextFile(session, path, result.content);
 
         const output = {
@@ -52,6 +54,9 @@ export function createExternalEditTool({
             toolName: "edit",
             status: "completed",
             inputSummary,
+            preview: { title: path, text: result.content.slice(0, 20000), truncated: result.content.length > 20000 },
+            diff: diff?.hunkText,
+            diffStat: diff ? `+${diff.added} −${diff.removed}` : null,
             outputSummary: summarizeValue(output),
           }),
         );

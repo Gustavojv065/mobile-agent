@@ -46,6 +46,7 @@ export function createWriteTool({
             toolName: "write",
             status: "completed",
             inputSummary,
+            preview: { title: file.displayName, text: content.slice(0, 20000), truncated: content.length > 20000 },
             outputSummary: summarizeValue(output),
           }),
         );

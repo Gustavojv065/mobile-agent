@@ -104,6 +104,7 @@ export function createViewFileTool({
             toolName: "viewFile",
             status: "completed",
             inputSummary,
+            preview: { title: file.displayName, uri: localFile.uri, mimeType, text: guidance ?? undefined },
             outputSummary: summarizeValue({
               fileId: output.fileId,
               displayName: output.displayName,

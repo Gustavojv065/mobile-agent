@@ -80,7 +80,7 @@ export const Trace = forwardRef<ComponentRef<typeof View>, TraceProps>(
 
 Trace.displayName = "Trace";
 
-const traceTitleVariants = cva("font-sans text-sm", {
+const traceTitleVariants = cva("font-sans text-base", {
   variants: {
     status: {
       none: "text-foreground dark:text-foreground-dark",

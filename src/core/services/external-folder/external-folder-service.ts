@@ -308,6 +308,7 @@ export function createExternalFolderService() {
       return {
         bytes: await file.bytes(),
         mimeType: file.type || null,
+        uri: file.uri,
       };
     },
     async createTextFile(

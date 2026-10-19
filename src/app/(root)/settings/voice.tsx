@@ -305,7 +305,6 @@ export default function VoiceSettingsScreen() {
                     <View className="w-full">
                       <Button
                         disabled={busy !== null || !supported}
-                        loading={busy === selectedModel.id}
                         onPress={() => {
                           download(selectedModel.id).catch(console.error);
                         }}

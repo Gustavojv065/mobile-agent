@@ -138,6 +138,7 @@ export function createTranscribeAudioTool({
             toolName: "transcribeAudio",
             status: "completed",
             inputSummary,
+            preview: { title: record.displayName, text: transcript.text.slice(0, 20000), truncated: transcript.text.length > 20000 },
             outputSummary: summarizeValue(output),
           }),
         );
