@@ -17,6 +17,8 @@ export type SegmentRenderResult = {
   timings?: VideoExportTimings;
   /** Non-fatal performance notes derived from the timings. */
   perfWarnings: string[];
+  /** Device codec that encoded the video, when the native module reported one. */
+  encoder?: string;
 };
 
 /**
@@ -39,32 +41,34 @@ export async function renderSegments(options: {
   documentHtml: string;
   onProgress?: (progress: { bytesWritten: number; totalBytes: number }) => void;
   /**
-   * Cache key for segment resume files. The tool passes the workspace source
-   * file id; the preview dialog passes a content hash (`hashDocumentKey`) so
-   * retrying the *same* scene resumes and an *edited* scene starts fresh.
+   * Cache key for segment resume files. Both callers pass a content hash of
+   * the inlined document (`hashDocumentKey`), so retrying the *same* scene
+   * resumes and an *edited* scene starts fresh — a workspace file id would be
+   * stable across edits (`updateDocumentFile` rewrites in place) and would
+   * serve the previous version's segments.
    */
   sourceFileId: string;
 }): Promise<SegmentRenderResult> {
   const { abortSignal, contractDuration, documentHtml, onProgress, sourceFileId } = options;
-  const reportProgress = (done: number, total: number, segProgress: number) => {
-    const overall = total <= 0 ? 0 : Math.max(0, Math.min(1, (done + segProgress) / total));
+  const reportProgress = (base: number, span: number, segProgress: number) => {
+    const overall = span <= 0 ? 0 : Math.max(0, Math.min(1, base + segProgress * span));
     onProgress?.({ bytesWritten: Math.round(overall * 100), totalBytes: 100 });
   };
   const runOne = (
     segment: { offset: number; length: number } | undefined,
-    segIndex: number,
-    segTotal: number,
+    weight: { base: number; span: number },
   ) => {
-    const done = segIndex;
     return requestVideoRender(documentHtml, {
       signal: abortSignal,
-      onProgress: (progress) => reportProgress(done, segTotal, progress),
+      onProgress: (progress) => reportProgress(weight.base, weight.span, progress),
       segment: segment,
+      progressBase: weight.base,
+      progressSpan: weight.span,
     });
   };
 
   if (contractDuration == null || contractDuration <= SEGMENT_SECONDS) {
-    const result = await runOne(undefined, 0, 1);
+    const result = await runOne(undefined, { base: 0, span: 1 });
     return {
       uri: result.uri,
       hasAudio: result.hasAudio,
@@ -72,6 +76,7 @@ export async function renderSegments(options: {
       warnings: [],
       timings: result.timings,
       perfWarnings: result.perfWarnings ?? [],
+      encoder: result.encoder,
     };
   }
 
@@ -81,6 +86,7 @@ export async function renderSegments(options: {
   const audioWarnings: string[] = [];
   const perfWarnings: string[] = [];
   let hasAudio = false;
+  let encoder: string | undefined;
   let slowest: { timings?: VideoExportTimings; cost: number } | null = null;
   const sidecar = (index: number) =>
     new File(Paths.cache, `render-${sourceFileId}-seg-${index}.json`);
@@ -106,13 +112,17 @@ export async function renderSegments(options: {
     }
     let result;
     try {
-      result = await runOne({ offset, length }, i, count);
+      // Each segment's weight matches its share of the video length, so the
+      // reported fraction is monotonic across segment boundaries: the bar
+      // never resets to 0 mid-movie.
+      result = await runOne({ offset, length }, { base: offset / total, span: length / total });
     } catch (error) {
       throw new Error(
         `Segment ${i + 1}/${count} (t=${offset}-${Math.round((offset + length) * 100) / 100}s) failed: ${error instanceof Error ? error.message : String(error)}. Re-run to resume — finished segments are kept.`,
       );
     }
     hasAudio = hasAudio || result.hasAudio;
+    if (result.encoder) encoder = result.encoder;
     audioWarnings.push(...result.audioWarnings);
     perfWarnings.push(...(result.perfWarnings ?? []));
     const timings = result.timings;
@@ -156,6 +166,7 @@ export async function renderSegments(options: {
     audioWarnings,
     timings: slowest?.timings,
     perfWarnings,
+    encoder,
     warnings: [
       `Rendered in ${count} segments and concatenated; per-segment audio fades up to 50 ms at seams.`,
     ],

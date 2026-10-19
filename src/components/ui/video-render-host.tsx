@@ -210,10 +210,17 @@ export function VideoRenderHost() {
           job.onProgress?.(progress);
           // Native-side progress is forward motion even without page posts.
           armPageSilenceWatch(job);
-          const percent = Math.round(progress * 100);
+          // The raw fraction is per-render; for segmented runs map it into the
+          // whole video so the in-chat indicator never resets to 0 between
+          // segments (`progressBase` + share * `progressSpan`).
+          const visible =
+            job.progressBase != null
+              ? job.progressBase + progress * (job.progressSpan ?? 1)
+              : progress;
+          const percent = Math.round(visible * 100);
           if (percent !== lastPercentRef.current) {
             lastPercentRef.current = percent;
-            setVideoRenderStatus({ finishing: false, progress });
+            setVideoRenderStatus({ finishing: false, progress: visible });
           }
         },
         onFinishing: () =>
@@ -282,7 +289,10 @@ export function VideoRenderHost() {
           stopActive(error instanceof Error ? error : new Error(String(error)));
         }
       })();
-      setVideoRenderStatus({ finishing: false, progress: 0 });
+      setVideoRenderStatus({
+        finishing: false,
+        progress: job.progressBase ?? 0,
+      });
       setActive(true);
       if (!keepAwakeRef.current) {
         keepAwakeRef.current = true;

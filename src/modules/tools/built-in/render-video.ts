@@ -11,6 +11,7 @@ import {
   inlineVideoAssets,
 } from "@/modules/preview/video-assets";
 import {
+  hashDocumentKey,
   renderSegments,
   type SegmentRenderResult,
 } from "@/modules/preview/render-segments";
@@ -140,7 +141,12 @@ export function createRenderVideoTool({
           contractDuration,
           documentHtml,
           onProgress,
-          sourceFileId: sourceFile.id,
+          // Content hash, NOT `sourceFile.id`: `updateDocumentFile` rewrites a
+          // document in place and keeps its id stable, so a scene the agent
+          // just edited would otherwise reuse the PREVIOUS version's cached
+          // segments and mix old and new footage into the mux. Hashing the
+          // inlined document keys resume on the actual content.
+          sourceFileId: hashDocumentKey(documentHtml),
         });
 
         const cacheFile = new File(result.uri);
@@ -169,6 +175,7 @@ export function createRenderVideoTool({
           hasAudio: result.hasAudio,
           audioWarnings: result.audioWarnings,
           timings: result.timings,
+          encoder: result.encoder,
         };
 
         onRecord?.(

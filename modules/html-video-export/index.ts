@@ -112,6 +112,8 @@ export type HtmlVideoExportNativeModule = {
     hasAudio: boolean;
     /** Last muxed audio timestamp in microseconds (0 when silent). */
     audioDurationUs: number;
+    /** Codec that encoded this segment (empty for older native builds). */
+    encoder?: string;
   }>;
   cancel(): Promise<void>;
 };

@@ -24,6 +24,8 @@ export type VideoRenderResult = {
   hasAudio: boolean;
   /** Non-fatal audio notes (skipped cues, blocked playback, ...). */
   audioWarnings: string[];
+  /** Device codec that encoded the video (empty for very old native builds). */
+  encoder?: string;
   /** Per-stage timing summary, when the page reported one. */
   timings?: VideoExportTimings;
   /** Non-fatal performance notes derived from the timings. */
@@ -37,6 +39,13 @@ export type VideoRenderJob = {
   onProgress?: (progress: number) => void;
   /** Segmented export: render [offset, offset + length) instead of the whole contract. */
   segment?: { offset: number; length: number };
+  /**
+   * Cumulative 0–1 progress mapping for the in-chat indicator: where this
+   * render's work sits inside the whole video (`progressBase +
+   * fraction * progressSpan`). Omitted for single-pass renders (0–1 as-is).
+   */
+  progressBase?: number;
+  progressSpan?: number;
   resolve: (result: VideoRenderResult) => void;
   reject: (error: Error) => void;
 };
@@ -104,6 +113,10 @@ export function requestVideoRender(
     signal?: AbortSignal;
     onProgress?: (progress: number) => void;
     segment?: { offset: number; length: number };
+    /** See {@link VideoRenderJob.progressBase}. */
+    progressBase?: number;
+    /** See {@link VideoRenderJob.progressSpan}. */
+    progressSpan?: number;
   } = {},
 ): Promise<VideoRenderResult> {
   return new Promise<VideoRenderResult>((resolve, reject) => {
@@ -136,6 +149,8 @@ export function requestVideoRender(
       onProgress: options.onProgress,
       signal: options.signal,
       segment: options.segment,
+      progressBase: options.progressBase,
+      progressSpan: options.progressSpan,
       resolve,
       reject,
     };

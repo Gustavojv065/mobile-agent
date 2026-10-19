@@ -11,6 +11,13 @@ import expo.modules.kotlin.modules.ModuleDefinition
  */
 class HtmlVideoExportModule : Module() {
   private var session: ExportSession? = null
+
+  /**
+   * Codec name chosen by the run's first segment (see `beginFrames`). Kept
+   * across segments so resume-with-keep keeps one encoder; cleared at `concat`
+   * and `cancel` — the boundaries of one output video.
+   */
+  private var runEncoderName: String? = null
   private val audioLock = Any()
   private var pcmEncoder: PcmAudioEncoder? = null
   private var assetServer: AssetServer? = null
@@ -83,11 +90,22 @@ class HtmlVideoExportModule : Module() {
 
     AsyncFunction("beginFrames") { outputPath: String, width: Int, height: Int, fps: Int, frameCount: Int ->
       synchronized(audioLock) {
-        session?.cancel()
-        session = null
+        if (session != null) {
+          // An interrupted earlier run: its encoder pin is void.
+          session?.cancel()
+          session = null
+          runEncoderName = null
+        }
         val (audioSpec, buffered) = takePendingAudio()
-        val next = JpegFrameRecorder(outputPath, width, height, fps, audioSpec, buffered)
+        // Every segment of one output video must encode with the SAME codec:
+        // SegmentConcat muxes all segments into one track described by the
+        // first segment's SPS/PPS, so a codec switch mid-run corrupts the
+        // output. Pin the first segment's choice for the whole run; a resumed
+        // run after a crash re-pins only if the cache happens to be empty, and
+        // concat verifies parameters regardless (fail loud, never corrupt).
+        val next = JpegFrameRecorder(outputPath, width, height, fps, audioSpec, buffered, runEncoderName)
         next.begin()
+        runEncoderName = next.encoderName
         session = next
       }
       mapOf("ok" to true)
@@ -111,6 +129,7 @@ class HtmlVideoExportModule : Module() {
         "sizeBytes" to result.sizeBytes,
         "hasAudio" to result.hasAudio,
         "audioDurationUs" to result.audioDurationUs,
+        "encoder" to result.encoder,
       )
     }
 
@@ -118,6 +137,7 @@ class HtmlVideoExportModule : Module() {
       synchronized(audioLock) {
         session?.cancel()
         session = null
+        runEncoderName = null
         try { pcmEncoder?.close() } catch (_: Exception) {} finally { pcmEncoder = null }
         pendingAudioFormat = null
         pendingAudio.clear()
@@ -160,6 +180,8 @@ class HtmlVideoExportModule : Module() {
 
     AsyncFunction("concatSegments") { inputs: List<String>, outputPath: String ->
       SegmentConcat.concat(inputs, outputPath)
+      // Run boundary: the next video render picks its encoder fresh.
+      runEncoderName = null
       mapOf("ok" to true)
     }
 
@@ -223,6 +245,8 @@ internal data class ExportResult(
   val hasAudio: Boolean,
   /** Last muxed audio timestamp in microseconds (0 when silent). */
   val audioDurationUs: Long,
+  /** Codec that encoded this segment, e.g. `c2.samsung.avc.encoder` or `c2.android.avc.encoder`. */
+  val encoder: String = "",
 )
 
 /** Sessions that mux an AAC track implement audio delivery. */

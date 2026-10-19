@@ -95,6 +95,21 @@ export function buildScenePlayerScript(): string {
   var sp = engine && engine.readAudioSchedule ? engine.readAudioSchedule(v, duration) : null;
   var live = { ctx: null, handle: null, entries: null, decoding: false, pendingT: null, busy: false };
   var audioWarn = '';
+  // Soundtrack readiness, posted to the app so it can show a loading pill:
+  // file cues must be fetched and decoded (decodeAudioData) before any sound
+  // can play, which takes seconds on a big soundtrack. 'none' = no file cues.
+  var hasFileCues = false;
+  if (sp) {
+    for (var fc = 0; fc < sp.cues.length; fc += 1) {
+      if (sp.cues[fc].kind === 'file') { hasFileCues = true; break; }
+    }
+  }
+  var audioState = hasFileCues ? 'loading' : 'none';
+  function setAudioState(next) {
+    if (audioState === next) return;
+    audioState = next;
+    post(true);
+  }
   function setAudioWarn(message) {
     message = String(message || '');
     if (message === audioWarn) return;
@@ -181,26 +196,34 @@ export function buildScenePlayerScript(): string {
       try { engine.scheduleAudioCue(handle, derived, handle.context.currentTime + 0.03, entry); } catch (_) {}
     }
   }
+  // Decode the soundtrack once, shared by prewarm (page load) and the first
+  // play press. Build the one live context first and decode on it: per-cue
+  // throwaway AudioContexts would collide with the WebView's context budget
+  // and leak closed handles.
+  function prepareAudio() {
+    if (!sp || live.entries || live.decoding) return;
+    live.decoding = true;
+    setAudioState('loading');
+    var handle = buildHandle();
+    if (!handle) { live.decoding = false; setAudioState('failed'); return; }
+    live.ctx = handle.context;
+    live.handle = handle;
+    decodeEntries(handle.context).then(function () {
+      live.decoding = false;
+      setAudioState('ready');
+      var at = live.pendingT;
+      live.pendingT = null;
+      if (state.playing) scheduleFrom(num(at, state.t));
+    }).catch(function () {
+      live.decoding = false;
+      setAudioState('failed');
+    });
+  }
   function playLive(from) {
     if (!sp) return;
     if (!live.entries) {
       if (live.decoding) { live.pendingT = from; return; }
-      live.decoding = true;
-      // Build the one live context first and decode on it: per-cue
-      // throwaway AudioContexts would collide with the WebView's context
-      // budget and leak closed handles.
-      var handle = buildHandle();
-      if (!handle) { live.decoding = false; return; }
-      live.ctx = handle.context;
-      live.handle = handle;
-      decodeEntries(handle.context).then(function () {
-        live.decoding = false;
-        var at = live.pendingT;
-        live.pendingT = null;
-        if (state.playing) scheduleFrom(num(at, state.t));
-      }).catch(function () {
-        live.decoding = false;
-      });
+      prepareAudio();
       return;
     }
     scheduleFrom(from);
@@ -213,7 +236,8 @@ export function buildScenePlayerScript(): string {
       if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
         window.ReactNativeWebView.postMessage(JSON.stringify({
           type: '${SCENE_PLAYER_MESSAGE_TYPE}', t: Math.round(state.t * 100) / 100,
-          playing: state.playing, error: state.error, audioError: audioWarn
+          playing: state.playing, error: state.error, audioError: audioWarn,
+          audioState: audioState
         }));
       }
     } catch (_) {}
@@ -293,5 +317,9 @@ export function buildScenePlayerScript(): string {
       return { t: state.t, playing: state.playing, duration: duration, hasCanvas: !!ctx };
     }
   };
+  // Prewarm: fetch and decode the soundtrack now instead of on the first play
+  // press, so audio is ready when it is wanted (decodeAudioData works on a
+  // suspended context; the context itself is closed/rebuilt by scheduleFrom).
+  try { prepareAudio(); } catch (_) {}
 })();`;
 }

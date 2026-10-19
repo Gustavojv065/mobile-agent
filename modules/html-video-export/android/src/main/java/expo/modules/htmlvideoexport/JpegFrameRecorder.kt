@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
+import android.media.MediaCodecList
 import android.media.MediaFormat
 import android.media.MediaMuxer
 import android.os.SystemClock
@@ -23,7 +24,18 @@ internal class JpegFrameRecorder(
   private val fps: Int,
   private val audioSpec: AudioSpec? = null,
   private val bufferedAudio: List<Pair<Long, ByteArray>> = emptyList(),
+  /**
+   * Codec name pinned for the whole run (see the module). When set, only this
+   * codec may encode this segment: SegmentConcat sample-copies access units
+   * of all segments into ONE output track described by the first segment's
+   * SPS/PPS, so segments encoded by different codecs corrupt the output
+   * (decoder desync). Not nullable after the run's first begin.
+   */
+  private val pinnedEncoder: String? = null,
 ) : ExportSession, AudioCapable {
+  /** Codec actually opened by `begin()`; surfaced in the export result. */
+  var encoderName: String = ""
+    private set
   /** `MediaMuxer`/`File` need a raw path; the page hands us a `file://` URI. */
   private val filePath = fileUriToPath(outputPath)
   private var codec: MediaCodec? = null
@@ -60,19 +72,110 @@ internal class JpegFrameRecorder(
     // No frame reordering: one submitted image maps to one output access unit.
     format.setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline)
 
-    val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
-    codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-    codec.start()
+    val codec = startEncoder(format)
 
     this.codec = codec
-    if (audioSpec != null) {
-      val writer = AudioTrackWriter(audioSpec)
-      for ((pts, bytes) in bufferedAudio) {
-        writer.enqueue(pts, bytes)
+    try {
+      if (audioSpec != null) {
+        val writer = AudioTrackWriter(audioSpec)
+        for ((pts, bytes) in bufferedAudio) {
+          writer.enqueue(pts, bytes)
+        }
+        audio = writer
       }
-      audio = writer
+      muxer = MediaMuxer(filePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+    } catch (error: Exception) {
+      // The codec is running; do not leak it because the muxer failed.
+      try { codec.release() } catch (_: Exception) {}
+      this.codec = null
+      throw error
     }
-    muxer = MediaMuxer(filePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+  }
+
+  /**
+   * Opens and starts an AVC encoder, hardware first with the software encoder
+   * as a guaranteed-last fallback. Devices cap concurrent codec instances per
+   * process; a WebView holding several clip decoders plus this encoder can
+   * exhaust them, and MediaCodec then fails configure/start with
+   * CodecException (often error 0xfffffff4 = -12, ENOMEM). A failed configure
+   * or start also leaves a half-opened codec, which is released here before
+   * the next attempt — without that, every retry starts one instance poorer
+   * and the resource error repeats forever.
+   *
+   * When `pinnedEncoder` is set (every segment after the first of a run), it
+   * is the ONLY codec tried, retried with backoff: SegmentConcat muxes all
+   * segments' access units under the first segment's SPS/PPS, so switching
+   * codecs mid-run would desync the decoder (green macroblock corruption)
+   * instead of failing. Consistency is therefore enforced here, loudly.
+   *
+   * Each attempt releases its codec on failure and backs off briefly before
+   * the next candidate. If everything fails, the last codec exception is
+   * rethrown with an actionable message.
+   */
+  private fun startEncoder(format: MediaFormat): MediaCodec {
+    var candidates = mutableListOf<String>()
+    if (pinnedEncoder != null) {
+      // Same codec only: up to three spaced attempts for transient resource
+      // exhaustion, then fail the segment with the cause. The run never
+      // silently mixes encoders.
+      for (attempt in 0 until 3) candidates.add(pinnedEncoder)
+    } else {
+      val hardware = mutableListOf<String>()
+      val software = mutableListOf<String>()
+      for (info in MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos) {
+        if (!info.isEncoder) continue
+        if (info.supportedTypes.none { it.equals(MediaFormat.MIMETYPE_VIDEO_AVC, ignoreCase = true) }) continue
+        val softwareOnly = try {
+          info.isSoftwareOnly
+        } catch (_: Exception) {
+          info.name.startsWith("OMX.google") || info.name.startsWith("c2.android")
+        }
+        if (softwareOnly) software.add(info.name) else hardware.add(info.name)
+      }
+      // Try the primary hardware encoder once more after a backoff before
+      // falling back to software: transient resource exhaustion usually clears
+      // once the failed attempt's codec is released.
+      hardware.firstOrNull()?.let { candidates.add(it); candidates.add(it) }
+      hardware.drop(1).forEach { candidates.add(it) }
+      software.forEach { candidates.add(it) }
+    }
+    require(candidates.isNotEmpty()) { "This device has no AVC encoder." }
+    val attemptLabel = if (pinnedEncoder != null) "pinned" else "plan"
+
+    var lastError: Exception? = null
+    for ((attempt, name) in candidates.withIndex()) {
+      val codec: MediaCodec
+      try {
+        codec = MediaCodec.createByCodecName(name)
+      } catch (error: Exception) {
+        lastError = error
+        continue
+      }
+      try {
+        codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+        codec.start()
+        android.util.Log.d("HtmlVideoExport", "encoder started: $name ($attemptLabel attempt $attempt) ${width}x${height}@${fps}")
+        encoderName = name
+        return codec
+      } catch (error: Exception) {
+        lastError = error
+        try { codec.release() } catch (_: Exception) {}
+        // Give the system a beat to reclaim the freed codec slot; long
+        // enough to matter, short enough to keep the segment's watchdog calm.
+        try { Thread.sleep(300) } catch (_: InterruptedException) { Thread.currentThread().interrupt() }
+      }
+    }
+    throw IllegalStateException(
+      "The device's video encoder could not start " +
+        "(codec resources are exhausted; MediaCodec error ${errorCodeOf(lastError)}). " +
+        "Close other apps or reload the scene, then run the export again.",
+      lastError,
+    )
+  }
+
+  private fun errorCodeOf(error: Exception?): String {
+    val codecError = error as? MediaCodec.CodecException ?: return "unknown"
+    return "0x%08x".format(codecError.errorCode)
   }
 
   @Synchronized
@@ -142,7 +245,7 @@ internal class JpegFrameRecorder(
     } finally {
       release(finalizing = true)
     }
-    return ExportResult(outputPath, File(filePath).length(), (audio?.samplesWritten ?: 0) > 0, audio?.audioDurationUs ?: 0L)
+    return ExportResult(outputPath, File(filePath).length(), (audio?.samplesWritten ?: 0) > 0, audio?.audioDurationUs ?: 0L, encoderName)
   }
 
   @Synchronized

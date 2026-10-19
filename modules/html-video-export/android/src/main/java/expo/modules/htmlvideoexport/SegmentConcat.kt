@@ -36,8 +36,48 @@ object SegmentConcat {
       data class TrackSlot(var muxIndex: Int, var offsetUs: Long, var mime: String)
       var slots: MutableList<TrackSlot>? = null
       var muxerStarted = false
+      // The output video track carries ONE set of H.264 parameter sets
+      // (SPS/PPS in the `avcC` record) and one frame size, taken from the
+      // FIRST segment. Every later segment must therefore match them: a
+      // segment encoded with different parameters (an encoder switch, or a
+      // stale cache file at another resolution) would sample-copy into that
+      // track and desync the decoder (blocky/green garbage) instead of
+      // failing. Compare and fail loud.
+      var refVideo: MediaFormat? = null
 
-      for (path in inputPaths) {
+      fun compareVideo(index: Int, format: MediaFormat) {
+        val ref = refVideo ?: run { refVideo = format; return }
+        fun csdOf(source: MediaFormat): Triple<Int, Int, ByteArray> {
+          val w = source.getInteger(MediaFormat.KEY_WIDTH)
+          val h = source.getInteger(MediaFormat.KEY_HEIGHT)
+          val csd0 = source.getByteBuffer("csd-0")
+          val csd1 = source.getByteBuffer("csd-1")
+          val csd0Len = csd0?.remaining() ?: 0
+          val csd1Len = csd1?.remaining() ?: 0
+          val bytes = ByteArray(csd0Len + csd1Len)
+          var at = 0
+          if (csd0 != null) { csd0.get(bytes, at, csd0Len); at += csd0Len }
+          if (csd1 != null) { csd1.get(bytes, at, csd1Len) }
+          return Triple(w, h, bytes)
+        }
+        val refV = csdOf(ref)
+        val seg = csdOf(format)
+        if (refV.first != seg.first || refV.second != seg.second) {
+          throw IllegalStateException(
+            "Segment ${index + 1} resolution ${seg.first}x${seg.second} differs from segment 1 " +
+              "${refV.first}x${refV.second} (a stale render-cache file from a different scene size). " +
+              "Delete the render cache and re-run the export.",
+          )
+        }
+        if (!refV.third.contentEquals(seg.third)) {
+          throw IllegalStateException(
+            "Segment ${index + 1} was encoded with different H.264 parameters (SPS/PPS) than " +
+              "segment 1 (an encoder switch mid-run). Delete the render cache and re-run the export.",
+          )
+        }
+      }
+
+      for ((segmentIndex, path) in inputPaths.withIndex()) {
         val extractor = MediaExtractor()
         try {
           extractor.setDataSource(path)
@@ -47,6 +87,7 @@ object SegmentConcat {
             val mime = format.getString(MediaFormat.KEY_MIME) ?: continue
             if (mime.startsWith("video/") || mime.startsWith("audio/")) {
               selected.add(Pair(i, format))
+              if (mime.startsWith("video/")) compareVideo(segmentIndex, format)
             }
           }
           if (selected.isEmpty()) {

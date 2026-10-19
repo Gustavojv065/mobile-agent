@@ -1,6 +1,6 @@
 import { Maximize, Minimize, Pause, Play, RotateCcw, RotateCw } from "lucide-react-native";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Pressable, Text, View } from "react-native";
+import { ActivityIndicator, Pressable, Text, View } from "react-native";
 import Svg, { Defs, LinearGradient, Rect, Stop } from "react-native-svg";
 
 import { Slider } from "@/components/ui/slider";
@@ -15,9 +15,11 @@ export type ScenePlayerChromeProps = {
   /** Called when a scrub starts/ends, so the page's `t` ticks don't fight the drag. */
   onScrubComplete?: (seconds: number) => void;
   onScrubStart?: () => void;
-  /** Expand/collapse fullscreen; omitted hides the button entirely. */
+  /** Omitted hides the button entirely. */
   fullscreen?: boolean;
   onToggleFullscreen?: () => void;
+  /** True while the page is fetching/decoding the soundtrack (show pill). */
+  audioLoading?: boolean;
 };
 
 /** How long controls stay on screen after the last interaction while playing. */
@@ -45,6 +47,7 @@ export function ScenePlayerChrome({
   onScrubStart,
   fullscreen = false,
   onToggleFullscreen,
+  audioLoading = false,
 }: ScenePlayerChromeProps) {
   const [controlsVisible, setControlsVisible] = useState(true);
   const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -137,6 +140,21 @@ export function ScenePlayerChrome({
               }}
             />
           </View>
+
+          {audioLoading ? (
+            // Soundtrack is still fetching/decoding; keep it visible even when
+            // the controls are hidden, mirroring the fullscreen corner icon.
+            <View
+              className="absolute left-3 top-3 flex-row items-center gap-1 rounded-full"
+              pointerEvents="none"
+              style={{ backgroundColor: "rgba(0,0,0,0.55)", paddingVertical: 5, paddingHorizontal: 9 }}
+            >
+              <ActivityIndicator color="#FFFFFF" size="small" />
+              <Text className="text-[13px] font-medium text-white">
+                Loading audio
+              </Text>
+            </View>
+          ) : null}
 
           {onToggleFullscreen ? (
             <Pressable

@@ -341,6 +341,8 @@ export function CodePreviewContent({
   const [playing, setPlaying] = useState(false);
   const [playerError, setPlayerError] = useState<string | null>(null);
   const [audioError, setAudioError] = useState<string | null>(null);
+  // True while the preview page is still fetching/decoding the soundtrack.
+  const [audioLoading, setAudioLoading] = useState(false);
   // Fullscreen preview layer: a dedicated WebView (separate from the drawer
   // card) that snaps to the whole screen; the same message stream keeps the
   // timeline continuous across both.
@@ -361,6 +363,13 @@ export function CodePreviewContent({
   // hidden render/preview hosts do.
   const documentRef = useRef<ReturnType<typeof createSceneDocument> | null>(null);
   const [documentUri, setDocumentUri] = useState<string | null>(null);
+  // While the hidden host renders, the visible preview page is blanked: its
+  // clip <video> elements each hold a hardware decoder instance, and devices
+  // cap concurrent codec instances per process — the encoder the render needs
+  // can fail to start while the preview page holds them open (MediaCodec
+  // CodecException, often error -12/ENOMEM on Samsung). Blanking the page
+  // releases them; restoring the source reloads and reinstallPlayer re-anchors.
+  const [previewSuspended, setPreviewSuspended] = useState(false);
   useEffect(() => {
     if (mode !== "preview" || !canPreview || sceneAssetsPending) {
       return;
@@ -517,6 +526,8 @@ export function CodePreviewContent({
     // The hidden host owns the canvas while rendering; stop the visible
     // player loop first so the two never fight over the page.
     pausePlayer();
+    // And free the preview page's hardware clip decoders for the encoder.
+    setPreviewSuspended(true);
     // Drop a previously exported copy so its cache file goes with its drawer.
     if (exportedUriRef.current) {
       try {
@@ -581,6 +592,9 @@ export function CodePreviewContent({
         // Back the button to idle once the work is over (or was cancelled —
         // cancelSceneExport already dropped the singleton in that case).
         if (activeExport === entry) releaseSceneExport(false);
+        // Reload the preview page now that the encoder no longer needs the
+        // codec slots (installPlayer re-runs on load end and re-anchors).
+        setPreviewSuspended(false);
         notifyExport();
       }
     })();
@@ -594,6 +608,7 @@ export function CodePreviewContent({
         playing?: unknown;
         error?: unknown;
         audioError?: unknown;
+        audioState?: unknown;
       } | null;
       if (payload && typeof payload === "object" && payload.type === SCENE_PLAYER_MESSAGE_TYPE) {
         if (scrubbingRef.current) {
@@ -612,6 +627,9 @@ export function CodePreviewContent({
         }
         if (typeof payload.audioError === "string") {
           setAudioError(payload.audioError || null);
+        }
+        if (typeof payload.audioState === "string") {
+          setAudioLoading(payload.audioState === "loading");
         }
         return;
       }
@@ -824,10 +842,11 @@ export function CodePreviewContent({
                   handleMessage={handleMessage}
                   innerRef={webViewRef}
                   keyName={viewport}
-                  source={documentUri}
+                  source={previewSuspended ? "about:blank" : documentUri}
                   style={{ flex: 1 }}
                 />
                 <ScenePlayerChrome
+                  audioLoading={audioLoading}
                   duration={sceneDuration}
                   fullscreen={false}
                   onSeek={handleScrubValue}
@@ -899,6 +918,7 @@ export function CodePreviewContent({
                   style={{ flex: 1, backgroundColor: "#000000" }}
                 />
                 <ScenePlayerChrome
+                  audioLoading={audioLoading}
                   duration={sceneDuration}
                   fullscreen
                   onSeek={handleScrubValue}
@@ -1016,7 +1036,7 @@ function SceneWebViewContainer({
         allowFileAccess
         allowsInlineMediaPlayback
         mediaPlaybackRequiresUserAction={false}
-        originWhitelist={["file://*", "http://*", "https://*"]}
+        originWhitelist={["file://*", "http://*", "https://*", "about:*"]}
         scrollEnabled
         setSupportMultipleWindows={false}
         injectedJavaScript={PREVIEW_DOWNLOAD_HOOK}

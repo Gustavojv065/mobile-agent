@@ -71,6 +71,8 @@ export type VideoExportResult = {
   audioDurationUs: number;
   /** Non-fatal audio notes (skipped cues, blocked playback, ...). */
   audioWarnings: string[];
+  /** Device codec that encoded the video, e.g. `c2.samsung.avc.encoder`. */
+  encoder?: string;
   /** Per-stage timing summary, when the page reported it. */
   timings?: VideoExportTimings;
   /** Non-fatal performance notes derived from the timings. */
@@ -317,6 +319,7 @@ export class VideoExportController {
         await this.onResult({
           ...result,
           audioDurationUs,
+          encoder: typeof result.encoder === "string" && result.encoder ? result.encoder : undefined,
           audioWarnings: this.audioWarnings,
           timings,
           perfWarnings: timings && this.config ? summarizeExportTimings(timings, this.config.fps) : [],
