@@ -1,3 +1,4 @@
+import { VIDEO_CLIP_TIMELINE_SCRIPT } from "@/modules/preview/video-clip-timeline";
 import { VIDEO_CHROMA_KEY_SCRIPT } from "@/modules/preview/video-chroma-key";
 
 /**
@@ -120,6 +121,37 @@ export const VIDEO_PREVIEW_SCRIPT = `(function () {
   }
 
   function captureFrame(contract, canvas, ctx, audioApi, speechApi, t, settleMs) {
+    // Clip frames must be AT t before the canvas is captured, or the still
+    // verifies nothing: route the capture through the declared clip timeline
+    // (or a legacy scene prepareFrame) exactly like export does. Waiting for
+    // readiness alone captured whatever frame the clip happened to decode,
+    // so a stale/wrong clip frame exported fine and looked verified.
+    return prepareClipFrames(contract, t).then(function () {
+      return renderAndCapture(contract, canvas, ctx, audioApi, speechApi, t, settleMs);
+    });
+  }
+
+  // Export-time semantics for stills: declared clips are seeked and awaited;
+  // a legacy scene prepareFrame runs too. Best-effort for legacy scenes
+  // (previously stills never touched clip frames at all), but a declared
+  // timeline failure surfaces and fails the capture — it would render blank.
+  function prepareClipFrames(contract, t) {
+    var clips = null;
+    try {
+      if (window.__mobileAgentClips && typeof window.__mobileAgentClips.attach === 'function') {
+        clips = window.__mobileAgentClips.attach(contract);
+      }
+    } catch (error) {
+      return Promise.reject(new Error('Scene clips are misconfigured: ' + String((error && error.message) || error)));
+    }
+    if (clips) return clips.prepareFrame(t);
+    if (typeof contract.prepareFrame === 'function') {
+      return Promise.resolve().then(function () { return contract.prepareFrame(t); }).catch(function () {});
+    }
+    return Promise.resolve();
+  }
+
+  function renderAndCapture(contract, canvas, ctx, audioApi, speechApi, t, settleMs) {
     return new Promise(function (resolve) {
       try {
         contract.render(t, canvas, ctx, audioApi, speechApi);
@@ -233,7 +265,7 @@ export const VIDEO_PREVIEW_SCRIPT = `(function () {
  * `buildVideoExportDocument` (preview script only — no recorder).
  */
 export function buildScenePreviewDocument(html: string): string {
-  const script = `\n<script>${VIDEO_CHROMA_KEY_SCRIPT}</script>\n<script>${VIDEO_PREVIEW_SCRIPT}</script>\n`;
+  const script = `\n<script>${VIDEO_CLIP_TIMELINE_SCRIPT}</script>\n<script>${VIDEO_CHROMA_KEY_SCRIPT}</script>\n<script>${VIDEO_PREVIEW_SCRIPT}</script>\n`;
   const lower = html.toLowerCase();
   const index = lower.lastIndexOf("</body>");
   if (index === -1) return `${html}${script}`;

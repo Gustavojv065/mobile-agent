@@ -5,6 +5,7 @@ import {
   VIDEO_EXPORT_SCRIPT,
 } from "@/modules/preview/video-recorder";
 import { VIDEO_AUDIO_ANALYSIS_SCRIPT } from "@/modules/preview/video-audio-analysis";
+import { VIDEO_CLIP_TIMELINE_SCRIPT } from "@/modules/preview/video-clip-timeline";
 import { VIDEO_CHROMA_KEY_SCRIPT } from "@/modules/preview/video-chroma-key";
 import {
   bytesToBase64,
@@ -27,14 +28,19 @@ function concat(parts: Uint8Array[]): Uint8Array {
 }
 
 describe("buildVideoExportDocument", () => {
-  it("injects the analysis, chroma-key, and recorder scripts before a lowercase closing body tag", () => {
+  it("injects the analysis, clip-timeline, chroma-key, and recorder scripts before a lowercase closing body tag", () => {
     const document = buildVideoExportDocument("<html><body><p>x</p></body></html>");
 
-    expect(document.match(/<script>/g)).toHaveLength(3);
-    expect(document.match(/<\/script>/g)).toHaveLength(3);
+    expect(document.match(/<script>/g)).toHaveLength(4);
+    expect(document.match(/<\/script>/g)).toHaveLength(4);
     expect(document.indexOf(VIDEO_AUDIO_ANALYSIS_SCRIPT)).toBeGreaterThan(0);
-    expect(document.indexOf(VIDEO_CHROMA_KEY_SCRIPT)).toBeGreaterThan(
+    // The clip timeline ships on every export page so declarative
+    // `MOBILE_AGENT_VIDEO.clips` scenes can be driven and diagnosed.
+    expect(document.indexOf(VIDEO_CLIP_TIMELINE_SCRIPT)).toBeGreaterThan(
       document.indexOf(VIDEO_AUDIO_ANALYSIS_SCRIPT),
+    );
+    expect(document.indexOf(VIDEO_CHROMA_KEY_SCRIPT)).toBeGreaterThan(
+      document.indexOf(VIDEO_CLIP_TIMELINE_SCRIPT),
     );
     expect(document.indexOf(VIDEO_EXPORT_SCRIPT)).toBeGreaterThan(
       document.indexOf(VIDEO_CHROMA_KEY_SCRIPT),

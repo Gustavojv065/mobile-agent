@@ -24,6 +24,8 @@ export type VideoRenderResult = {
   hasAudio: boolean;
   /** Non-fatal audio notes (skipped cues, blocked playback, ...). */
   audioWarnings: string[];
+  /** One-time clip-mapping diagnostics gathered during the run. */
+  visualWarnings?: string[];
   /** Device codec that encoded the video (empty for very old native builds). */
   encoder?: string;
   /** Per-stage timing summary, when the page reported one. */

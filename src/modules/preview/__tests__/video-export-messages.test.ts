@@ -119,7 +119,7 @@ describe("VideoExportController — H.264 (GPU) path", () => {
     expect(module.pushH264Chunk).toHaveBeenNthCalledWith(2, false, 166666, "AAAAAe8=");
     expect(module.finish).toHaveBeenCalledTimes(1);
     expect(onFinishing).toHaveBeenCalledTimes(1);
-    expect(onResult).toHaveBeenCalledWith({ uri: "file:///cache/video.mp4", sizeBytes: 1234, hasAudio: false, audioDurationUs: 0, audioWarnings: [], timings: undefined, perfWarnings: [] });
+    expect(onResult).toHaveBeenCalledWith({ uri: "file:///cache/video.mp4", sizeBytes: 1234, hasAudio: false, audioDurationUs: 0, audioWarnings: [], timings: undefined, perfWarnings: [], visualWarnings: [] });
     expect(onError).not.toHaveBeenCalled();
     expect(onProgress).toHaveBeenCalled();
   });
@@ -254,6 +254,7 @@ describe("VideoExportController — audio track", () => {
       audioWarnings: [],
       timings: undefined,
       perfWarnings: [],
+      visualWarnings: [],
     });
   });
 
@@ -284,6 +285,7 @@ describe("VideoExportController — audio track", () => {
       audioWarnings: [expect.stringContaining("Only 6.0s of audio was captured")],
       timings: undefined,
       perfWarnings: [],
+      visualWarnings: [],
     });
   });
 
@@ -318,7 +320,46 @@ describe("VideoExportController — audio track", () => {
       audioWarnings: ["no encoder", "cue skipped"],
       timings: undefined,
       perfWarnings: [],
+      visualWarnings: [],
     });
+  });
+
+  it("surfaces the page's clip diagnostics as visual warnings", async () => {
+    const module = fakeModule();
+    const onResult = vi.fn();
+    const onError = vi.fn();
+    const controller = new VideoExportController({
+      outputPath: "file:///cache/video.mp4",
+      module,
+      onProgress: vi.fn(),
+      onFinishing: vi.fn(),
+      onResult,
+      onError,
+    });
+
+    post(controller, { type: "mobileAgentVideoConfig", width: 640, height: 360, fps: 24, frameCount: 240, duration: 10 });
+    post(controller, {
+      type: "mobileAgentVideoDone",
+      emitted: 1,
+      visualWarnings: [
+        'Clip "clip-a.mp4" ran past its source length (3s) at t=8s: holding its last decoded frame.',
+        42,
+        { not: "a string" },
+      ],
+    });
+
+    await controller.whenIdle();
+
+    expect(onError).not.toHaveBeenCalled();
+    // Non-string entries are dropped: the warnings travel into tool output
+    // and the AI-readable render result, so they must stay plain text.
+    expect(onResult).toHaveBeenCalledWith(
+      expect.objectContaining({
+        visualWarnings: [
+          'Clip "clip-a.mp4" ran past its source length (3s) at t=8s: holding its last decoded frame.',
+        ],
+      }),
+    );
   });
 
   it("fails clearly when audio arrives before its configuration", async () => {
@@ -471,6 +512,7 @@ describe("VideoExportController — failures", () => {
       audioWarnings: [],
       timings: expect.objectContaining({ captureAvgMs: 45 }),
       perfWarnings: [expect.stringContaining("canvas JPEG capture averaged 45 ms/frame")],
+      visualWarnings: [],
     });
   });
 

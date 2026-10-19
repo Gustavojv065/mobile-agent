@@ -284,11 +284,15 @@ Images and video clips in scenes (user-provided visuals):
   crops `<video>` frames. Crops apply at draw time; the source file is
   never modified.
 - Clips: `<video muted playsinline preload="auto"
-  src="workspace://<id>">`, driven entirely by scene JS (`currentTime`,
-  `loop`, `playbackRate`) and painted with `drawImage(video, ...)` once
+  src="workspace://<id>">`, painted with `drawImage(video, ...)` once
   `video.readyState >= 2`. `muted` is mandatory: the recorder captures its
   own audio graph, never page audio, so an unmuted clip would play sound
-  you hear in preview but lose in the render.
+  you hear in preview but lose in the render (and the autoplay policy
+  would block advancing it at all). Frame timing is owned by the mapping
+  below: a clip that fills the whole video needs nothing extra; any
+  shorter or offset clip must be declared in
+  `window.MOBILE_AGENT_VIDEO.clips` (step 4 of the recipe) so the same
+  mapping drives preview, stills, and export.
 - Timing tradeoff: `video.play()` is smoothest but drifts against the
   timeline; seek-chasing (`video.currentTime` retargeted toward the scene
   time each frame) stays glued at the cost of occasional stepped motion.
@@ -304,10 +308,11 @@ Images and video clips in scenes (user-provided visuals):
      `display: none`**, which can stop frame decode on some WebViews.
   2. Do **not** call `video.play()` anywhere and do **not** gate the draw on
      the scene's own time bookkeeping (`if (video.currentTime === t - start)`),
-     `ontimeupdate`, or a self-driven rAF loop. While exporting, the
-     recorder itself pauses every `<video>` and seeks it to the exact video
-     time each frame before calling `render`, then waits for the decode
-     (`readyState >= 2`, not seeking). Your job in `render` is only to paint
+     `ontimeupdate`, or a self-driven rAF loop. While exporting, the recorder
+     pauses every `<video>` before capturing; which decoded frame each clip
+     has at time t is owned by the mapping in steps 3–4 — the default global
+     seek (full-timeline clips), the declarative clip timeline (anything
+     else), or a scene `prepareFrame`. Your job in `render` is only to paint
      what is already there: `if (video.readyState >= 2 && video.videoWidth)
      drawImage(video, ...)`, else paint the poster/background — so the frame
      after a slow seek is a background frame, not knowledge the clip never
@@ -316,17 +321,39 @@ Images and video clips in scenes (user-provided visuals):
      timing: draw unconditionally on the ready guard above and let `video.loop`
      handle footage shorter than the scene. Do not subtract your own offsets —
      that is the #1 reason a clip renders blank.
-  4. Multiple clips, a clip that starts mid-timeline, time-remap, or any custom
-     mapping of scene time onto clip time: implement
-     `prepareFrame: function (t) { /* seek the right clip to the right offset
-     and return a Promise that resolves on 'seeked' */ }` on the contract.
-     The recorder awaits it with the same 15 s watchdog instead of its default
-     seek, so your offsets and the exporter's decode-wait stay in sync.
-     Inside `prepareFrame` you may set `currentTime` freely — it runs outside
-     `render`, so determinism still holds.
-  5. Verify with stills: `previewScene` at the clip's start, middle, and end
-     times before rendering (stills show settled frames, so a clip that draws
-     in the preview is confirmed — anything blank there is blank in the MP4).
+  4. Multiple clips, a clip that starts mid-timeline, a time-remap, or any
+     custom mapping of scene time onto clip time: **declare the clips in the
+     contract as data** — the runtime maps, seeks, and decodes their frames
+     identically in the preview, in stills, and in the export:
+     `window.MOBILE_AGENT_VIDEO.clips = [{ el: '#presenter', start: 4,
+     end: 165, from: 0, loop: false, hold: true }, { el: 'video.overlay-a',
+     start: 30, end: 45, from: 0, x: 700, y: 40, w: 480, h: 270 }]`.
+     - Windows are half-open `[start, end)`, so a segment seam at a clip's
+       `end` paints it on exactly one side — never both, never neither.
+     - `from` is the source position mapped to `start`; `hold: true`
+       (default) parks the clip on its last decoded frame when the source
+       runs out inside its window, `loop: true` repeats it instead — both
+       surface one-time notes in the render warnings.
+     - The runtime seeks only clips active at t (fast with many overlays),
+       mutes them, and pauses them; optional `x, y, w, h, alpha` let
+       `window.__mobileAgentClips.timeline().draw(ctx, t)` paint the clip —
+       chroma-key scenes keep `drawKeyed` and let the timeline own frames.
+     - Anything not declared still gets the recorder's default global seek,
+       correct only for clips that fill the whole video time; the render
+       result warns when that fires on undeclared clips. Declare every clip.
+     Escape hatch kept, with its catch stated plainly: `prepareFrame:
+     function (t) { /* seek clips and return a Promise resolved on
+     'seeked' */ }` takes over clip frames ENTIRELY — every clip it does
+     not seek shows a stale frame in the render and in stills, and the
+     render result says so. Use it only when data cannot express the
+     mapping; prefer declaring clips.
+  5. Verify with stills: `previewScene` at each clip's start, middle, and
+     end times — and at segment seams of long scenes (29 s and 31 s
+     multiples of 30 s). Stills prepare clip frames exactly like the export
+     (declared clips are seeked to t before capture), so a frozen or
+     mistimed clip shows up in the still itself. Anything blank there is
+     blank in the MP4; conversely a still cannot prove real-time
+     smoothness, only frame-at-t correctness.
 - Chroma key (green/blue screen): a clip shot against a flat screen is
   keyed at draw time through the in-page helper (present in every render
   and preview page — no tool call). Never hand-roll a `getImageData`

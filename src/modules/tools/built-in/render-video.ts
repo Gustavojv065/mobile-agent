@@ -176,6 +176,7 @@ export function createRenderVideoTool({
           audioWarnings: result.audioWarnings,
           timings: result.timings,
           encoder: result.encoder,
+          visualWarnings: result.visualWarnings ?? [],
         };
 
         onRecord?.(

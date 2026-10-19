@@ -42,6 +42,8 @@ export type VideoExportMessage =
       type: "mobileAgentVideoDone";
       emitted?: number;
       timings?: VideoExportTimings;
+      /** One-time clip-mapping diagnostics gathered during the run. */
+      visualWarnings?: unknown;
     }
   | { type: "mobileAgentVideoUnsupported" }
   | { type: "mobileAgentVideoError"; message: string };
@@ -73,6 +75,8 @@ export type VideoExportResult = {
   audioWarnings: string[];
   /** Device codec that encoded the video, e.g. `c2.samsung.avc.encoder`. */
   encoder?: string;
+  /** One-time clip-mapping diagnostics gathered during the run. */
+  visualWarnings?: string[];
   /** Per-stage timing summary, when the page reported it. */
   timings?: VideoExportTimings;
   /** Non-fatal performance notes derived from the timings. */
@@ -320,6 +324,11 @@ export class VideoExportController {
           ...result,
           audioDurationUs,
           encoder: typeof result.encoder === "string" && result.encoder ? result.encoder : undefined,
+          visualWarnings: Array.isArray(message.visualWarnings)
+            ? message.visualWarnings.filter(
+                (item): item is string => typeof item === "string",
+              )
+            : [],
           audioWarnings: this.audioWarnings,
           timings,
           perfWarnings: timings && this.config ? summarizeExportTimings(timings, this.config.fps) : [],

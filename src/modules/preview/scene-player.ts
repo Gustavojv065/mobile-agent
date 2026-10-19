@@ -243,8 +243,43 @@ export function buildScenePlayerScript(): string {
     } catch (_) {}
     state.error = null;
   }
+  // Follow mode: keep declared clips in sync with the playhead so preview
+  // shows what the export will draw. Playing clips advance themselves in
+  // real time (muted, so the autoplay policy never blocks them); when drift
+  // past 2.4 frames accumulates — a stall, a heavy frame, or playbackRate
+  // quirks — currentTime snaps back to the timeline position the export
+  // would use. Non-declared scenes are untouched.
+  function followClips(t) {
+    var clips = null;
+    try {
+      if (window.__mobileAgentClips && typeof window.__mobileAgentClips.attach === 'function') {
+        clips = window.__mobileAgentClips.attach(v);
+      }
+    } catch (e) {
+      if (!state.error) { state.error = String((e && e.message) || e); post(true); }
+      return;
+    }
+    if (!clips || typeof clips.stateAt !== 'function') return;
+    var states = clips.stateAt(t);
+    for (var i = 0; i < states.length; i += 1) {
+      var s = states[i];
+      var el = s.el;
+      try {
+        if (!s.active) {
+          if (!el.paused) el.pause();
+          continue;
+        }
+        if (el.readyState >= 1 && Math.abs(el.currentTime - s.target) > 0.08) {
+          el.currentTime = s.target;
+        }
+        if (state.playing) { if (el.paused) el.play(); }
+        else if (!el.paused) el.pause();
+      } catch (_) {}
+    }
+  }
   function draw(t) {
     if (!ctx || !canvas) return;
+    followClips(t);
     try {
       v.render(t, canvas, ctx, stubAudio, stubSpeech);
     } catch (e) {

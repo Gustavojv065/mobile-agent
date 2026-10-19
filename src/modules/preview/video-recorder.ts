@@ -1,4 +1,5 @@
 import { VIDEO_AUDIO_ANALYSIS_SCRIPT } from "@/modules/preview/video-audio-analysis";
+import { VIDEO_CLIP_TIMELINE_SCRIPT } from "@/modules/preview/video-clip-timeline";
 import { VIDEO_CHROMA_KEY_SCRIPT } from "@/modules/preview/video-chroma-key";
 
 /**
@@ -1126,23 +1127,78 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
     });
   }
 
+  // One-time session warnings surfaced in the render result, e.g. "clip
+  // frames are moved by the default global seek but the scene never declared
+  // a timeline". Collected during the run, posted on done.
+  var runtimeWarnings = [];
+  var warned = {};
+  function warnOnce(key, message) {
+    if (warned[key]) return;
+    warned[key] = true;
+    if (runtimeWarnings.length < 4) runtimeWarnings.push(message);
+  }
+
+  // The declared clip timeline for this scene, or null. attach() validates
+  // contract.clips data loudly (a bad selector must fail the render, not
+  // silently freeze a clip); scenes that called __mobileAgentClips.declare
+  // themselves are picked up through the installed timeline.
+  function clipTimelineFor(contract) {
+    try {
+      if (window.__mobileAgentClips && typeof window.__mobileAgentClips.attach === 'function') {
+        var fromContract = window.__mobileAgentClips.attach(contract);
+        if (fromContract) return fromContract;
+      }
+    } catch (error) {
+      throw new Error('Scene clips are misconfigured: ' + String((error && error.message) || error));
+    }
+    try {
+      return (window.__mobileAgentClips && window.__mobileAgentClips.timeline()) || null;
+    } catch (_) {
+      return null;
+    }
+  }
+
   // Source video decoding is asynchronous. Never draw the previous decoded
-  // frame immediately after assigning currentTime. Scenes with custom media
-  // timelines can implement async prepareFrame(t) to map their own offsets.
+  // frame immediately after assigning currentTime. Frame prep is ADDITIVE:
+  // the declared clip timeline owns the frames of the clips it declares, a
+  // legacy scene prepareFrame() owns every <video> frame (unchanged
+  // semantics — overwriting a scene's own offsets would corrupt it — with a
+  // loud warning instead), and every video nobody owns gets the default
+  // global-t seek. Scene images are awaited no matter who owns clip frames:
+  // they were silently skipped whenever prepareFrame existed.
   function prepareSourceFrame(contract, t, fps) {
-    if (typeof contract.prepareFrame === 'function') {
-      return Promise.resolve().then(function () { return contract.prepareFrame(t); });
+    var waits = [];
+    var images = document.querySelectorAll('img[data-mobile-agent-asset]');
+    for (var j = 0; j < images.length; j += 1) {
+      waits.push(awaitSceneImage(images[j]));
     }
     var videos = document.querySelectorAll('video');
-    var waits = [];
+    var timeline = clipTimelineFor(contract);
+    if (timeline) {
+      waits.push(timeline.prepareFrame(t));
+      var owned = {};
+      var elements = timeline.ownedElements();
+      for (var o = 0; o < elements.length; o += 1) owned[elements[o]] = true;
+      var undeclared = 0;
+      for (var u = 0; u < videos.length; u += 1) {
+        if (owned[videos[u]]) continue;
+        if (typeof videos[u].pause !== 'function') continue;
+        undeclared += 1;
+        waits.push(seekSourceVideo(videos[u], t, fps));
+      }
+      if (undeclared > 0) {
+        warnOnce('undeclared', undeclared + ' of ' + videos.length + ' video elements are not declared in window.MOBILE_AGENT_VIDEO.clips; they are seeked to global video time, which is correct only for clips that fill the whole video. Declare every clip so its window and source offset are honored.');
+      }
+      return Promise.all(waits);
+    }
+    if (typeof contract.prepareFrame === 'function') {
+      waits.push(Promise.resolve().then(function () { return contract.prepareFrame(t); }));
+      warnOnce('prepareFrame', 'This scene defines prepareFrame, which takes over clip frames entirely: every clip it does not seek shows a stale frame in the render and stills. Declare window.MOBILE_AGENT_VIDEO.clips so every clip is mapped, seeked, and verified.');      return Promise.all(waits);
+    }
     for (var i = 0; i < videos.length; i += 1) {
       // Test doubles and non-media elements do not implement pause().
       if (typeof videos[i].pause !== 'function') continue;
       waits.push(seekSourceVideo(videos[i], t, fps));
-    }
-    var images = document.querySelectorAll('img[data-mobile-agent-asset]');
-    for (var j = 0; j < images.length; j += 1) {
-      waits.push(awaitSceneImage(images[j]));
     }
     return Promise.all(waits);
   }
@@ -1271,11 +1327,23 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
     function finish() {
       sendOfflineAudio().then(function () {
         if (cancelled) { teardown(); return; }
-        post({ type: 'mobileAgentVideoDone', emitted: emitted, timings: timingSummary() });
+        post({ type: 'mobileAgentVideoDone', emitted: emitted, timings: timingSummary(), visualWarnings: pullVisualWarnings() });
         teardown();
       }).catch(function (error) {
         fail('Soundtrack export failed: ' + String((error && error.message) || error));
       });
+    }
+
+    // Clip-timeline diagnostics gathered during the run, plus the helper's own
+    // issue notes (held/looped clips). Posted once, capped; empty most runs.
+    function pullVisualWarnings() {
+      var out = runtimeWarnings.slice(0);
+      try {
+        var clips = window.__mobileAgentClips;
+        var issues = clips && typeof clips.issues === 'function' ? clips.issues() : [];
+        for (var i = 0; i < issues.length && out.length < 6; i += 1) out.push(issues[i]);
+      } catch (_) {}
+      return out;
     }
 
     function next() {
@@ -1379,7 +1447,7 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
  * on load and `window.__startMobileAgentVideoExport` can be called later.
  */
 export function buildVideoExportDocument(html: string): string {
-  const script = `\n<script>${VIDEO_AUDIO_ANALYSIS_SCRIPT}</script>\n<script>${VIDEO_CHROMA_KEY_SCRIPT}</script>\n<script>${VIDEO_EXPORT_SCRIPT}</script>\n`;
+  const script = `\n<script>${VIDEO_AUDIO_ANALYSIS_SCRIPT}</script>\n<script>${VIDEO_CLIP_TIMELINE_SCRIPT}</script>\n<script>${VIDEO_CHROMA_KEY_SCRIPT}</script>\n<script>${VIDEO_EXPORT_SCRIPT}</script>\n`;
   const lower = html.toLowerCase();
   const index = lower.lastIndexOf("</body>");
   if (index === -1) return `${html}${script}`;

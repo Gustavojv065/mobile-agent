@@ -17,6 +17,8 @@ export type SegmentRenderResult = {
   timings?: VideoExportTimings;
   /** Non-fatal performance notes derived from the timings. */
   perfWarnings: string[];
+  /** One-time clip-mapping diagnostics, deduped across segments. */
+  visualWarnings: string[];
   /** Device codec that encoded the video, when the native module reported one. */
   encoder?: string;
 };
@@ -76,6 +78,7 @@ export async function renderSegments(options: {
       warnings: [],
       timings: result.timings,
       perfWarnings: result.perfWarnings ?? [],
+      visualWarnings: result.visualWarnings ?? [],
       encoder: result.encoder,
     };
   }
@@ -85,6 +88,7 @@ export async function renderSegments(options: {
   const uris: string[] = [];
   const audioWarnings: string[] = [];
   const perfWarnings: string[] = [];
+  const visualWarnings = new Set<string>();
   let hasAudio = false;
   let encoder: string | undefined;
   let slowest: { timings?: VideoExportTimings; cost: number } | null = null;
@@ -101,10 +105,14 @@ export async function renderSegments(options: {
           hasAudio?: boolean;
           audioWarnings?: string[];
           perfWarnings?: string[];
+          visualWarnings?: string[];
         };
         hasAudio = hasAudio || meta.hasAudio === true;
         if (Array.isArray(meta.audioWarnings)) audioWarnings.push(...meta.audioWarnings);
         if (Array.isArray(meta.perfWarnings)) perfWarnings.push(...meta.perfWarnings);
+        if (Array.isArray(meta.visualWarnings)) {
+          for (const note of meta.visualWarnings) visualWarnings.add(note);
+        }
       } catch {
         // Unreadable sidecar: keep the footage, audio flags stay conservative.
       }
@@ -125,6 +133,7 @@ export async function renderSegments(options: {
     if (result.encoder) encoder = result.encoder;
     audioWarnings.push(...result.audioWarnings);
     perfWarnings.push(...(result.perfWarnings ?? []));
+    for (const note of result.visualWarnings ?? []) visualWarnings.add(note);
     const timings = result.timings;
     if (timings) {
       const cost = timings.prepareAvgMs + timings.captureAvgMs + timings.bridgeAvgMs;
@@ -137,6 +146,7 @@ export async function renderSegments(options: {
           hasAudio: result.hasAudio,
           audioWarnings: result.audioWarnings,
           perfWarnings: result.perfWarnings ?? [],
+          visualWarnings: [...visualWarnings],
         }),
       );
     } catch {
@@ -166,6 +176,7 @@ export async function renderSegments(options: {
     audioWarnings,
     timings: slowest?.timings,
     perfWarnings,
+    visualWarnings: [...visualWarnings],
     encoder,
     warnings: [
       `Rendered in ${count} segments and concatenated; per-segment audio fades up to 50 ms at seams.`,
