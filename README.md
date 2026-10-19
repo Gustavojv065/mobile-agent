@@ -8,6 +8,7 @@ Mobile Agent is an open-source AI agent built specifically for mobile devices th
 
 ## Features
 
+- Generate/Edit videos without any video generate model.
 - On-device models that can run completely offline
 - Runs completely on-device
 - No external server required
@@ -18,6 +19,7 @@ Mobile Agent is an open-source AI agent built specifically for mobile devices th
 - Direct access to phone's internal storage
 - Android permission-based access
 - Community plugins
+- Voice to text support.
 
 ## Installation
 
