@@ -11,6 +11,7 @@ const MAX_CATALOG_SERVERS = 100;
 
 export type McpServerPreset = {
   authMode: McpServerAuthMode;
+  defaultInstalled: boolean;
   description: string;
   headerTemplate: string | null;
   id: string;
@@ -97,6 +98,18 @@ function getHttpsUrl(value: string, label: string) {
   return parsed.href;
 }
 
+function getOptionalBoolean(record: Record<string, unknown>, key: string) {
+  const value = record[key];
+
+  if (value === undefined || value === null) return false;
+
+  if (typeof value !== "boolean") {
+    throw new Error(`MCP catalog field ${key} must be a boolean.`);
+  }
+
+  return value;
+}
+
 function getOptionalOauthMode(record: Record<string, unknown>) {
   const value = record.oauthMode;
 
@@ -126,6 +139,7 @@ function parsePreset(value: unknown): McpServerPreset {
 
   return {
     authMode,
+    defaultInstalled: getOptionalBoolean(record, "defaultInstalled"),
     description: getRequiredString(record, "description", 240),
     headerTemplate: getOptionalString(record, "headerTemplate", 2048),
     id: getRequiredString(record, "id", 64),

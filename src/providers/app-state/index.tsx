@@ -92,6 +92,11 @@ import {
     SKILL_FILE_MAX_TOTAL_BYTES,
 } from "@/modules/skills/skill-files";
 import {
+    DEFAULT_CATALOG_SEED_VERSION,
+    DEFAULT_CATALOG_SEED_VERSION_KEY,
+    seedDefaultEntries,
+} from "@/modules/defaults/default-entries";
+import {
     isNativeAgentId,
     resolveConversationAgent,
 } from "@/modules/agents/registry";
@@ -1727,6 +1732,60 @@ export function AppStateProvider({ children }: AppStateProviderProps) {
         if (!ready || hydrating) return;
         checkPluginUpdates(repositoriesRef.current).catch(() => { });
     }, [hydrating, ready]);
+
+    const defaultCatalogSeedStartedRef = useRef(false);
+
+    useEffect(() => {
+        if (!ready || hydrating) return;
+        // Seed at most once per app launch; the effect re-runs whenever
+        // `hydrate` changes identity after a re-hydration.
+        if (defaultCatalogSeedStartedRef.current) return;
+        defaultCatalogSeedStartedRef.current = true;
+
+        let cancelled = false;
+
+        const seed = async () => {
+            const storedVersion = await repositoriesRef.current.configRepository.getSetting(
+                DEFAULT_CATALOG_SEED_VERSION_KEY,
+            );
+
+            if (storedVersion === String(DEFAULT_CATALOG_SEED_VERSION)) return;
+
+            const result = await seedDefaultEntries(repositoriesRef.current);
+
+            if (result.errors.length > 0) {
+                // Leave the version unset so the next launch retries the
+                // entries that failed (seeding is idempotent), but log for
+                // diagnostics.
+                console.warn(
+                    "Seeded default catalog entries with errors.",
+                    result.errors,
+                );
+            } else {
+                await repositoriesRef.current.configRepository.setSetting(
+                    DEFAULT_CATALOG_SEED_VERSION_KEY,
+                    String(DEFAULT_CATALOG_SEED_VERSION),
+                );
+            }
+
+            if (
+                !cancelled &&
+                (result.installedSkillIds.length > 0 ||
+                    result.installedMcpServerIds.length > 0)
+            ) {
+                await hydrate();
+            }
+        };
+
+        seed().catch((error) => {
+            // Never let seeding break startup; it will retry next launch.
+            console.warn("Could not seed default catalog entries.", error);
+        });
+
+        return () => {
+            cancelled = true;
+        };
+    }, [hydrate, hydrating, ready]);
 
     const dispatchScheduledRun = useCallback(async (schedule: Schedule) => {
         const { agentRun, assistantMessage, conversation, userMessage } =

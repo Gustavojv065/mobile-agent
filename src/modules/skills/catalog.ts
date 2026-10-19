@@ -12,6 +12,7 @@ const SKILL_ID_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 
 export type SkillCatalogEntry = {
   author: string | null;
+  defaultInstalled: boolean;
   description: string;
   extraFiles: string[];
   id: string;
@@ -125,6 +126,21 @@ function getExtraFiles(record: Record<string, unknown>) {
   });
 }
 
+function getOptionalBoolean(
+  record: Record<string, unknown>,
+  key: string,
+) {
+  const value = record[key];
+
+  if (value === undefined || value === null) return false;
+
+  if (typeof value !== "boolean") {
+    throw new Error(`Skill catalog field ${key} must be a boolean.`);
+  }
+
+  return value;
+}
+
 function parseEntry(value: unknown): SkillCatalogEntry {
   const record = getRecord(value, "Skill catalog entry");
   const id = getRequiredString(record, "id", 64);
@@ -135,6 +151,7 @@ function parseEntry(value: unknown): SkillCatalogEntry {
 
   return {
     author: getOptionalString(record, "author", 120),
+    defaultInstalled: getOptionalBoolean(record, "defaultInstalled"),
     description: getRequiredString(record, "description", 240),
     extraFiles: getExtraFiles(record),
     id,

@@ -314,6 +314,7 @@
     {
       "id": "exa",
       "label": "Exa",
+      "defaultInstalled": true,
       "description": "Search the web and retrieve content with Exa's neural search.",
       "url": "https://mcp.exa.ai/mcp",
       "transport": "http",
