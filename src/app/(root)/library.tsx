@@ -30,6 +30,14 @@ import {
   FilePreviewDialog,
   getFilePreviewKind,
 } from "@/components/ui/file-preview-dialog";
+import {
+  ImagePreviewDrawer,
+  type MediaPreviewTarget,
+} from "@/components/ui/image-preview-drawer";
+import {
+  VideoPlayerDialog,
+  type VideoPlayerTarget,
+} from "@/components/ui/video-player-dialog";
 import { Separator } from "@/components/ui/separator";
 import { downloadFile } from "@/core/services/download-service";
 import {
@@ -61,6 +69,22 @@ export default function LibraryScreen() {
   const [downloadingFileId, setDownloadingFileId] = useState<string | null>(null);
   const [deletingFileId, setDeletingFileId] = useState<string | null>(null);
   const [previewFile, setPreviewFile] = useState<WorkspaceFile | null>(null);
+  const [imagePreview, setImagePreview] = useState<MediaPreviewTarget | null>(
+    null,
+  );
+  const [videoPreview, setVideoPreview] = useState<VideoPlayerTarget | null>(
+    null,
+  );
+
+  const isVideoFile = (file: WorkspaceFile) => {
+    if (file.mimeType?.startsWith("video/")) {
+      return true;
+    }
+    const extension = file.displayName.split(".").pop()?.toLowerCase();
+    return extension
+      ? ["mp4", "mov", "m4v", "webm", "mkv"].includes(extension)
+      : false;
+  };
 
   useEffect(() => {
     refreshWorkspaceFiles().catch(console.error);
@@ -84,15 +108,35 @@ export default function LibraryScreen() {
     setOpeningFileId(workspaceFile.id);
 
     try {
-      // Previewable kinds (images, html, csv, text) open in the in-app
-      // dialog; pdf/docx/xlsx/pptx and everything else go to the external
-      // handler so they render faithfully in their real apps.
+      // Route to the same viewers the chat uses: videos open the player
+      // drawer, images open the shared image drawer, everything else falls
+      // through to the file dialog or the external handler.
+      const localFile = resolveWorkspaceFile(workspaceFile.relativePath);
+
+      if (isVideoFile(workspaceFile)) {
+        setVideoPreview({
+          displayName: workspaceFile.displayName,
+          localUri: localFile.uri,
+          mimeType: workspaceFile.mimeType ?? "video/mp4",
+        });
+        return;
+      }
+
+      if (getFilePreviewKind(workspaceFile) === "image") {
+        setImagePreview({
+          alt: workspaceFile.displayName,
+          uri: localFile.uri,
+        });
+        return;
+      }
+
+      // Previewable kinds (html, csv, text) open in the in-app dialog; pdf/
+      // docx/xlsx/pptx and everything else go to the external handler so they
+      // render faithfully in their real apps.
       if (getFilePreviewKind(workspaceFile)) {
         setPreviewFile(workspaceFile);
         return;
       }
-
-      const localFile = resolveWorkspaceFile(workspaceFile.relativePath);
 
       if (!localFile.exists) {
         throw new Error("This file is no longer available in the workspace.");
@@ -287,6 +331,14 @@ export default function LibraryScreen() {
       <FilePreviewDialog
         file={previewFile}
         onDismiss={() => setPreviewFile(null)}
+      />
+      <ImagePreviewDrawer
+        target={imagePreview}
+        onDismiss={() => setImagePreview(null)}
+      />
+      <VideoPlayerDialog
+        video={videoPreview}
+        onDismiss={() => setVideoPreview(null)}
       />
     </Container>
   );

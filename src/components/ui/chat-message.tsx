@@ -116,6 +116,12 @@ import {
   FilePreviewDialog,
   getFilePreviewKind,
 } from "@/components/ui/file-preview-dialog";
+import {
+  ImagePreviewDrawer,
+  isUserCanceledShare,
+  MEDIA_ASPECT_CACHE,
+  rememberMediaAspectRatio,
+} from "@/components/ui/image-preview-drawer";
 import { Loading } from "@/components/ui/loading";
 import { MathFallback } from "@/components/ui/math-fallback";
 import { Message, MessageFooter } from "@/components/ui/message";
@@ -129,6 +135,7 @@ import { hasLegacyToolResource } from "@/modules/chat/tool-resource";
 import { buildAssistantParts } from "@/modules/chat/assistant-parts";
 import {
   isTextWorkspaceFile,
+  isVideoWorkspaceFile,
   resolveWorkspaceFile,
 } from "@/core/services/workspace-file-service";
 import type {
@@ -365,25 +372,6 @@ const ChatMediaContext = createContext<{
 const MarkdownContainerWidthContext = createContext(0);
 
 /**
- * Session-wide known aspect ratios (poster: real width ÷ height) keyed by
- * resolved uri. Without it, every image mounts at a 16:9 guess and jumps to
- * its real ratio on decode — a layout jump each time FlashList recycles the
- * row back in. Cache tabs: bounded, uri-keyed, cheap to hit.
- */
-const MEDIA_ASPECT_CACHE = new Map<string, number>();
-const MEDIA_ASPECT_CACHE_LIMIT = 128;
-
-function rememberMediaAspectRatio(uri: string, ratio: number) {
-  if (MEDIA_ASPECT_CACHE.size >= MEDIA_ASPECT_CACHE_LIMIT) {
-    const oldest = MEDIA_ASPECT_CACHE.keys().next().value;
-    if (oldest !== undefined) {
-      MEDIA_ASPECT_CACHE.delete(oldest);
-    }
-  }
-  MEDIA_ASPECT_CACHE.set(uri, ratio);
-}
-
-/**
  * The trailing indicator for a streaming message. It renders the idle spinner
  * by default and swaps to a live "Rendering video…" label while the app-level
  * render host is recording — subscribed in isolation so progress ticks only
@@ -417,34 +405,6 @@ const StreamingIndicator = memo(function StreamingIndicator({
 
 // Hoisted so the streaming row doesn't allocate a fresh element per token.
 const STREAMING_IDLE_ELEMENT = <Loading />;
-
-function PreviewUriImage({ uri }: { uri: string }) {
-  const [aspectRatio, setAspectRatio] = useState(
-    () => MEDIA_ASPECT_CACHE.get(uri) ?? 16 / 9,
-  );
-  return (
-    <ChatMediaCard>
-      <Image
-        cachePolicy="memory-disk"
-        contentFit="contain"
-        onLoad={(event) => {
-          const { height, width } = event.source;
-          if (width > 0 && height > 0) {
-            rememberMediaAspectRatio(uri, width / height);
-            setAspectRatio(width / height);
-          }
-        }}
-        recyclingKey={uri}
-        source={{ uri }}
-        style={{
-          aspectRatio,
-          maxHeight: 420,
-          width: "100%",
-        }}
-      />
-    </ChatMediaCard>
-  );
-}
 
 function MarkdownImage({ alt, uri }: { alt: string; uri: string }) {
   const { onPreviewImage, workspaceFiles } = useContext(ChatMediaContext);
@@ -1694,77 +1654,6 @@ export const ChatMessage = memo(function ChatMessage({
     setImagePreview(null);
   };
 
-  const handleDownloadImage = async (image: { uri: string }) => {
-    setImageAction("download");
-
-    try {
-      // Loaded lazily so expo-media-library (a native-only module) is never
-      // evaluated in the node/server-manifest bundle during `export:embed`.
-      const {
-        Asset,
-        requestPermissionsAsync,
-      } = await import("expo-media-library");
-
-      const permission = await requestPermissionsAsync(true);
-
-      if (!permission.granted) {
-        Alert.alert(
-          "Permission required",
-          "Please allow photo access to save this image.",
-        );
-        return;
-      }
-
-      const localFile = await getLocalImageFile(image);
-
-      await Asset.create(localFile.uri);
-
-      Alert.alert("Image saved", "Image has been saved to your gallery.");
-    } catch (error) {
-      Alert.alert(
-        "Download failed",
-        error instanceof Error ? error.message : "Failed to save the image.",
-      );
-    } finally {
-      setImageAction(null);
-    }
-  };
-
-  const handleShareImage = async (image: { uri: string }) => {
-    setImageAction("share");
-
-    try {
-      const available = await Sharing.isAvailableAsync();
-
-      if (!available) {
-        Alert.alert(
-          "Share unavailable",
-          "Sharing is not available on this device.",
-        );
-        return;
-      }
-
-      const localFile = await getLocalImageFile(image);
-
-      await Sharing.shareAsync(localFile.uri, {
-        dialogTitle: "Share generated image",
-        mimeType: getImageMimeType(localFile.uri),
-        UTI: "public.image",
-      });
-    } catch (error) {
-      if (isUserCanceledShare(error)) {
-        return;
-      }
-
-      Alert.alert(
-        "Share failed",
-        error instanceof Error ? error.message : "Failed to share the image.",
-      );
-    } finally {
-      setImageAction(null);
-    }
-  };
-
   const handleDownloadSvg = async (markup: string) => {
     setImageAction("download");
 
@@ -1845,6 +1734,15 @@ export const ChatMessage = memo(function ChatMessage({
         return;
       }
 
+      if (getFilePreviewKind(workspaceFile) === "image") {
+        openImagePreview({
+          kind: "uri",
+          alt: workspaceFile.displayName,
+          uri: resolveWorkspaceFile(workspaceFile.relativePath).uri,
+        });
+        return;
+      }
+
       if (getFilePreviewKind(workspaceFile)) {
         setPreviewFile(workspaceFile);
         return;
@@ -1890,19 +1788,6 @@ export const ChatMessage = memo(function ChatMessage({
     }
   };
 
-  const getImageMimeType = (uri: string) => {
-    const cleanUri = uri.split("?")[0].toLowerCase();
-
-    if (cleanUri.endsWith(".jpg") || cleanUri.endsWith(".jpeg")) {
-      return "image/jpeg";
-    }
-
-    if (cleanUri.endsWith(".webp")) {
-      return "image/webp";
-    }
-
-    return "image/png";
-  };
   const memoryEvents = message.metadata?.memoryEvents ?? [];
   const todoList = message.metadata?.todoList ?? [];
   const pendingTodoList = todoList.filter(
@@ -2426,49 +2311,44 @@ export const ChatMessage = memo(function ChatMessage({
           </Text>
         ) : null}
       </View>
-      <Drawer
-        direction="bottom"
-        onOpenChange={(open) => {
-          if (!open) {
-            closePreview();
-          }
-        }}
-        open={imagePreview !== null}
-      >
-        <DrawerContent
-          className="w-full max-w-full"
-          contentClassName="max-w-full"
-          showCloseButton
-          showHandle
-          size={720}
+      <ImagePreviewDrawer
+        onDismiss={closePreview}
+        target={
+          imagePreview && imagePreview.kind !== "svg"
+            ? {
+                alt:
+                  imagePreview.kind === "generated"
+                    ? "Generated image"
+                    : imagePreview.alt || "Image",
+                uri:
+                  imagePreview.kind === "generated"
+                    ? imagePreview.image.uri
+                    : imagePreview.uri,
+              }
+            : null
+        }
+      />
+      {imagePreview?.kind === "svg" ? (
+        <Drawer
+          direction="bottom"
+          onOpenChange={(open) => {
+            if (!open) {
+              closePreview();
+            }
+          }}
+          open
         >
-          <DrawerHeader>
-            <DrawerTitle>
-              {imagePreview?.kind === "generated"
-                ? "Generated image"
-                : imagePreview?.kind === "svg"
-                  ? "SVG image"
-                  : "Image"}
-            </DrawerTitle>
-          </DrawerHeader>
-          <DrawerBody className="gap-sp-3" contentContainerClassName="gap-sp-3">
-            {imagePreview?.kind === "generated" ? (
-              <ChatMediaCard>
-                <Image
-                  contentFit="contain"
-                  source={{ uri: imagePreview.image.uri }}
-                  style={{
-                    aspectRatio: 1,
-                    maxHeight: 420,
-                    width: "100%",
-                  }}
-                />
-              </ChatMediaCard>
-            ) : null}
-            {imagePreview?.kind === "uri" ? (
-              <PreviewUriImage uri={imagePreview.uri} />
-            ) : null}
-            {imagePreview?.kind === "svg" ? (
+          <DrawerContent
+            className="w-full max-w-full"
+            contentClassName="max-w-full"
+            showCloseButton
+            showHandle
+            size={720}
+          >
+            <DrawerHeader>
+              <DrawerTitle>SVG image</DrawerTitle>
+            </DrawerHeader>
+            <DrawerBody className="gap-sp-3" contentContainerClassName="gap-sp-3">
               <SvgErrorBoundary
                 fallback={
                   <Text className="font-sans text-sm text-muted-foreground dark:text-muted-foreground-dark">
@@ -2491,51 +2371,33 @@ export const ChatMessage = memo(function ChatMessage({
                   />
                 </View>
               </SvgErrorBoundary>
-            ) : null}
-          </DrawerBody>
-          <DrawerFooter className="flex-row gap-sp-2">
-            <Button
-              className="flex-1"
-              leftIcon={<Download color={theme.text} size={16} />}
-              loading={imageAction === "download"}
-              onPress={() => {
-                if (!imagePreview) return;
-                if (imagePreview.kind === "generated") {
-                  handleDownloadImage(imagePreview.image).catch(console.error);
-                } else if (imagePreview.kind === "uri") {
-                  handleDownloadImage({ uri: imagePreview.uri }).catch(
-                    console.error,
-                  );
-                } else {
+            </DrawerBody>
+            <DrawerFooter className="flex-row gap-sp-2">
+              <Button
+                className="flex-1"
+                leftIcon={<Download color={theme.text} size={16} />}
+                loading={imageAction === "download"}
+                onPress={() => {
                   handleDownloadSvg(imagePreview.markup).catch(console.error);
-                }
-              }}
-              variant="outline"
-            >
-              Save
-            </Button>
-            <Button
-              className="flex-1"
-              leftIcon={<Share2 color={theme.background} size={16} />}
-              loading={imageAction === "share"}
-              onPress={() => {
-                if (!imagePreview) return;
-                if (imagePreview.kind === "generated") {
-                  handleShareImage(imagePreview.image).catch(console.error);
-                } else if (imagePreview.kind === "uri") {
-                  handleShareImage({ uri: imagePreview.uri }).catch(
-                    console.error,
-                  );
-                } else {
+                }}
+                variant="outline"
+              >
+                Save
+              </Button>
+              <Button
+                className="flex-1"
+                leftIcon={<Share2 color={theme.background} size={16} />}
+                loading={imageAction === "share"}
+                onPress={() => {
                   handleShareSvg(imagePreview.markup).catch(console.error);
-                }
-              }}
-            >
-              Share
-            </Button>
-          </DrawerFooter>
-        </DrawerContent>
-      </Drawer>
+                }}
+              >
+                Share
+              </Button>
+            </DrawerFooter>
+          </DrawerContent>
+        </Drawer>
+      ) : null}
       <Drawer
         direction="bottom"
         onOpenChange={setRegenerateOpen}
@@ -2587,33 +2449,6 @@ export const ChatMessage = memo(function ChatMessage({
     </Message>
   );
 });
-
-function getImageExtension(mimeType: string) {
-  if (mimeType === "image/jpeg") {
-    return "jpg";
-  }
-
-  if (mimeType === "image/webp") {
-    return "webp";
-  }
-
-  return "png";
-}
-
-function isUserCanceledShare(error: unknown) {
-  return error instanceof Error && /cancel/i.test(error.message);
-}
-
-const VIDEO_FILE_EXTENSIONS = new Set(["mp4", "mov", "m4v", "webm", "mkv"]);
-
-function isVideoWorkspaceFile(file: WorkspaceFile) {
-  if (file.mimeType?.startsWith("video/")) {
-    return true;
-  }
-
-  const extension = file.displayName.split(".").pop()?.toLowerCase();
-  return extension ? VIDEO_FILE_EXTENSIONS.has(extension) : false;
-}
 
 /**
  * The `workspace://` URIs a message already embeds inline as
@@ -2941,59 +2776,6 @@ function createMarkdownStyles(input: {
     },
   } satisfies StyleSheet.NamedStyles<any>;
 }
-
-function base64ToBytes(base64: string): Uint8Array {
-  const binary = atob(base64.replace(/\s/g, ""));
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index);
-  }
-  return bytes;
-}
-
-const getLocalImageFile = async (image: { uri: string }) => {
-  const extension = getImageExtension(image.uri);
-  const fileName = `generated-image-${Date.now()}.${extension}`;
-  const localFile = new File(Paths.cache, fileName);
-
-  if (image.uri.startsWith("data:")) {
-    const comma = image.uri.indexOf(",");
-    const meta = image.uri.slice(5, comma < 0 ? 5 : comma);
-    const data = comma < 0 ? "" : image.uri.slice(comma + 1);
-    const bytes = meta.includes(";base64")
-      ? base64ToBytes(data)
-      : new TextEncoder().encode(decodeURIComponent(data));
-    localFile.create({ intermediates: true, overwrite: true });
-    localFile.write(bytes);
-    return localFile;
-  }
-
-  if (image.uri.startsWith("file://")) {
-    return new File(image.uri);
-  }
-
-  if (image.uri.startsWith("content://")) {
-    const sourceFile = new File(image.uri);
-    sourceFile.copy(localFile, {
-      overwrite: true,
-    });
-
-    return localFile;
-  }
-
-  const response = await fetch(image.uri);
-  const arrayBuffer = await response.arrayBuffer();
-  const bytes = new Uint8Array(arrayBuffer);
-
-  localFile.create({
-    overwrite: true,
-    intermediates: true,
-  });
-
-  localFile.write(bytes);
-
-  return localFile;
-};
 
 function TermuxRunCard({
   command,

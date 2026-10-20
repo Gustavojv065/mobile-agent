@@ -5,7 +5,6 @@ import { useEffect, useState } from "react";
 import { Alert, View } from "react-native";
 
 import { Button } from "@/components/ui/button";
-import { ChatMediaCard } from "@/components/ui/chat-media-card";
 import {
   Drawer,
   DrawerBody,
@@ -22,6 +21,10 @@ export type VideoPlayerTarget = {
   localUri: string;
   mimeType: string;
 };
+
+// Matches the image drawer: caps how tall the frame grows so a 9:16 reel
+// shrinks to fit instead of overflowing the drawer body.
+const MAX_MEDIA_HEIGHT = 420;
 
 /**
  * Bottom-sheet player for a rendered MP4. Opens from the in-chat video card and
@@ -166,16 +169,24 @@ export function VideoPlayerDialog({
         </DrawerHeader>
         <DrawerBody className="gap-sp-3" contentContainerClassName="gap-sp-3">
           {video ? (
-            <ChatMediaCard>
+            // Same fit rule as the image drawer: cap the height and tie the
+            // width to that cap so a 9:16 reel shrinks to fit the drawer
+            // instead of overflowing it, and center the player horizontally.
+            <View style={{ alignItems: "center", alignSelf: "stretch" }}>
               <VideoView
                 contentFit="contain"
                 fullscreenOptions={{ enable: true }}
                 nativeControls
                 player={player}
-                style={{ aspectRatio: aspectRatio ?? 16 / 9, width: "100%" }}
+                style={{
+                  aspectRatio: aspectRatio ?? 16 / 9,
+                  maxHeight: MAX_MEDIA_HEIGHT,
+                  maxWidth: MAX_MEDIA_HEIGHT * (aspectRatio ?? 16 / 9),
+                  width: "100%",
+                }}
                 surfaceType="textureView"
               />
-            </ChatMediaCard>
+            </View>
           ) : null}
         </DrawerBody>
         <DrawerFooter className="flex-row gap-sp-2">

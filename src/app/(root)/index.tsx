@@ -87,7 +87,12 @@ import {
   FileAttachmentCard,
   isPreviewableAttachment,
 } from "@/components/ui/file-attachment-card";
-import { FilePreviewDialog } from "@/components/ui/file-preview-dialog";
+import {
+  FilePreviewDialog,
+  getFilePreviewKind,
+} from "@/components/ui/file-preview-dialog";
+import { ImagePreviewDrawer } from "@/components/ui/image-preview-drawer";
+import { VideoPlayerDialog } from "@/components/ui/video-player-dialog";
 import { Input } from "@/components/ui/input";
 import {
   MessageScroller,
@@ -111,7 +116,10 @@ import { Textarea } from "@/components/ui/textarea";
 import { VoiceInputBar } from "@/components/ui/voice-input-bar";
 import { CHAT_TEXT_STYLE } from "@/constants/chat-typography";
 import { isFolderPickerCancellation } from "@/core/services/external-folder/external-folder-service";
-import { resolveWorkspaceFile } from "@/core/services/workspace-file-service";
+import {
+  isVideoWorkspaceFile,
+  resolveWorkspaceFile,
+} from "@/core/services/workspace-file-service";
 import { inferMimeType } from "@/core/services/file-names";
 import { useColorScheme } from "@/hooks/use-color-scheme";
 import type {
@@ -1329,6 +1337,38 @@ const ChatInput = memo(function ChatInput({
   }));
   const [attachmentPreview, setAttachmentPreview] =
     useState<WorkspaceFile | null>(null);
+  const [attachmentImage, setAttachmentImage] =
+    useState<{ alt: string; uri: string } | null>(null);
+  const [attachmentVideo, setAttachmentVideo] = useState<{
+    displayName: string;
+    localUri: string;
+    mimeType: string;
+  } | null>(null);
+
+  /** Route one selected/sent file like the Library: video → player, image →
+   * image drawer, everything else → the file preview dialog. */
+  const openAttachment = useCallback((file: WorkspaceFile) => {
+    if (isVideoWorkspaceFile(file)) {
+      setAttachmentPreview(null);
+      setAttachmentVideo({
+        displayName: file.displayName,
+        localUri: resolveWorkspaceFile(file.relativePath).uri,
+        mimeType: file.mimeType ?? "video/mp4",
+      });
+      return;
+    }
+
+    if (getFilePreviewKind(file) === "image") {
+      setAttachmentPreview(null);
+      setAttachmentImage({
+        alt: file.displayName,
+        uri: resolveWorkspaceFile(file.relativePath).uri,
+      });
+      return;
+    }
+
+    setAttachmentPreview(file);
+  }, []);
   const [modelsDrawerOpen, setModelsDrawerOpen] = useState(false);
   const [reasoningDrawerOpen, setReasoningDrawerOpen] = useState(false);
   const [agentsDrawerOpen, setAgentsDrawerOpen] = useState(false);
@@ -2227,11 +2267,14 @@ const ChatInput = memo(function ChatInput({
               }}
               renderItem={({ item: file }) => (
                 <FileAttachmentCard
-                  disabled={!isPreviewableAttachment(file)}
+                  disabled={
+                    !isPreviewableAttachment(file) &&
+                    !isVideoWorkspaceFile(file)
+                  }
                   file={file}
                   onPress={() => {
                     KeyboardController.dismiss();
-                    setAttachmentPreview(file);
+                    openAttachment(file);
                   }}
                   onRemove={() => {
                     setSelectedFileIds(
@@ -2563,21 +2606,36 @@ const ChatInput = memo(function ChatInput({
         file={attachmentPreview}
         onDismiss={() => setAttachmentPreview(null)}
       />
+      <ImagePreviewDrawer
+        target={attachmentImage}
+        onDismiss={() => setAttachmentImage(null)}
+      />
+      <VideoPlayerDialog
+        onDismiss={() => setAttachmentVideo(null)}
+        video={attachmentVideo}
+      />
       <Drawer onOpenChange={setFilesDrawerOpen} open={filesDrawerOpen}>
         <DrawerContent showCloseButton showHandle size={filesDrawerSize}>
           <View className="min-h-0 flex-1 gap-sp-4 pb-sp-4">
-            <View className="pr-12">
-              <SearchBox
-                onChangeText={setFilesSearch}
-                placeholder="Search files"
-                value={filesSearch}
-              />
-            </View>
+            <SearchBox
+              onChangeText={setFilesSearch}
+              placeholder="Search files"
+              value={filesSearch}
+            />
             {mergedWorkspaceFiles.length > 0 ? (
               filteredWorkspaceFiles.length > 0 ? (
                 <FlatList
                   data={filesDrawerOpen ? filteredWorkspaceFiles : []}
                   keyExtractor={(file) => file.id}
+                  // Fill the flex-1 body so the footer stays pinned to the
+                  // bottom of the panel. Without this the list is
+                  // content-height and the footer floats up, leaving dead
+                  // space below it (className isn't interop'd for FlatList).
+                  style={{ flex: 1 }}
+                  // Rows render flush against each other, which reads as one
+                  // merged block. Separator matches the other drawers, which
+                  // all use gap-sp-3 (16px) between their rows.
+                  ItemSeparatorComponent={() => <View className="h-sp-3" />}
                   initialNumToRender={10}
                   maxToRenderPerBatch={8}
                   windowSize={3}

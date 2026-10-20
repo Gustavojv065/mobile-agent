@@ -62,7 +62,15 @@ function LoadedImageTile({ file, index, gallery }: { file: WorkspaceFile; index:
           cachePolicy="disk"
           recyclingKey={cacheKey}
           transition={250}
-          onError={() => setFailed(true)}
+          // The bounded decode is async, so `thumbnail` is null on the first
+          // frames and `source` resolves to an empty list — expo-image reports
+          // that as an error, but it is the placeholder window, not a broken
+          // file. Only latch a failure once a real ref is being displayed, and
+          // clear it again if a later load for this row succeeds.
+          onError={() => {
+            if (thumbnail) setFailed(true);
+          }}
+          onLoad={() => setFailed(false)}
           style={{ width: "100%", aspectRatio: thumbnail && thumbnail.height > 0 ? thumbnail.width / thumbnail.height : (index % 3 === 0 ? 0.75 : index % 3 === 1 ? 1.2 : 1) }}
         />
         {failed ? (

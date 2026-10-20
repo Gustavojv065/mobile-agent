@@ -240,6 +240,21 @@ export function isTextWorkspaceFile(file: Pick<WorkspaceFile, "displayName" | "m
   return false;
 }
 
+const VIDEO_MIME_PREFIX = "video/";
+const VIDEO_EXTENSIONS = new Set(["mp4", "mov", "m4v", "webm", "mkv"]);
+
+/** Videos have no in-app preview kind; they open in the shared player drawer. */
+export function isVideoWorkspaceFile(
+  file: Pick<WorkspaceFile, "displayName" | "mimeType">,
+) {
+  if (file.mimeType?.toLowerCase().startsWith(VIDEO_MIME_PREFIX)) {
+    return true;
+  }
+
+  const extension = file.displayName.split(".").pop()?.toLowerCase();
+  return extension ? VIDEO_EXTENSIONS.has(extension) : false;
+}
+
 export function isDocumentWorkspaceFile(
   file: Pick<WorkspaceFile, "displayName" | "mimeType">,
 ) {
