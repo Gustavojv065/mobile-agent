@@ -52,20 +52,30 @@ jobs:
         if: steps.guard.outputs.safe == 'true'
         run: pnpm install --frozen-lockfile
 
+      # Pinned so a surprise eas-cli release can't break the publish step.
+      # Bump deliberately after checking its changelog.
       - name: Install EAS CLI
         if: steps.guard.outputs.safe == 'true'
-        run: npm install -g eas-cli
+        run: npm install -g eas-cli@25.2.0
 
+      # The commit message goes through env, never through ${{ }} inside the
+      # script: GitHub writes env values into the process environment without
+      # shell parsing, so quotes, backticks and newlines stay inert. Inlining
+      # ${{ github.event.head_commit.message }} here let a " in the message
+      # close the shell quote, split the message into extra positional
+      # arguments, and make `eas update` exit 1 immediately (run #7).
       - name: Publish OTA update
         if: steps.guard.outputs.safe == 'true'
+        shell: bash
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
           CI: 1
+          OTA_MESSAGE: ${{ github.event.head_commit.message }}
         run: |
           eas update \
             --branch production \
             --platform android \
-            --message "${{ github.event.head_commit.message }}"
+            --message "${OTA_MESSAGE%%$'\n'*}"
 
       - name: Skip OTA
         if: steps.guard.outputs.safe == 'false'
