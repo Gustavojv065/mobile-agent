@@ -7,6 +7,12 @@ export function summarizeValue(value: unknown) {
   return serialized.length > 240 ? `${serialized.slice(0, 240)}...` : serialized;
 }
 
+/**
+ * Preview text is persisted with every tool record (message metadata), so it
+ * is bounded like the other captured content in the chat renderer.
+ */
+export const TOOL_PREVIEW_TEXT_LIMIT = 20000;
+
 export function createRecord(input: {
   preview?: ToolExecutionRecord["preview"];
   id?: string;

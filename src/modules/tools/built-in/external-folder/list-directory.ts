@@ -2,7 +2,7 @@ import { tool } from "ai";
 import { z } from "zod";
 
 import { createExternalFolderService } from "@/core/services/external-folder/external-folder-service";
-import { createRecord, summarizeValue } from "@/modules/tools/built-in/shared";
+import { createRecord, summarizeValue, TOOL_PREVIEW_TEXT_LIMIT } from "@/modules/tools/built-in/shared";
 import type { ExternalFolderToolFactoryParams } from "@/modules/tools/built-in/external-folder/types";
 
 export function createListDirectoryTool({
@@ -22,6 +22,7 @@ export function createListDirectoryTool({
       try {
         const entries = service.listEntries(session, path ?? "");
         const output = { entries };
+        const previewText = entries.map((entry) => entry.path).join("\n");
 
         onRecord?.(
           createRecord({
@@ -29,6 +30,11 @@ export function createListDirectoryTool({
             status: "completed",
             inputSummary,
             outputSummary: summarizeValue(output),
+            preview: {
+              title: `${entries.length} ${entries.length === 1 ? "entry" : "entries"}`,
+              text: previewText.slice(0, TOOL_PREVIEW_TEXT_LIMIT),
+              truncated: previewText.length > TOOL_PREVIEW_TEXT_LIMIT,
+            },
           }),
         );
 

@@ -1,7 +1,7 @@
 import { tool } from "ai";
 import { z } from "zod";
 
-import { createRecord, summarizeValue } from "@/modules/tools/built-in/shared";
+import { createRecord, summarizeValue, TOOL_PREVIEW_TEXT_LIMIT } from "@/modules/tools/built-in/shared";
 import {
   formatGrepMatches,
   matchesGlob,
@@ -80,6 +80,7 @@ export function createGrepTool({
           matches: visibleMatches,
           truncated,
         };
+        const formattedMatches = formatGrepMatches(matches, includeContent);
 
         onRecord?.(
           createRecord({
@@ -89,8 +90,15 @@ export function createGrepTool({
             outputSummary: summarizeValue({
               count: visibleMatches.length,
               truncated: output.truncated,
-              matches: formatGrepMatches(matches, includeContent),
+              matches: formattedMatches,
             }),
+            preview: {
+              title: `${visibleMatches.length} ${visibleMatches.length === 1 ? "match" : "matches"}`,
+              text: formattedMatches.slice(0, TOOL_PREVIEW_TEXT_LIMIT),
+              truncated:
+                output.truncated ||
+                formattedMatches.length > TOOL_PREVIEW_TEXT_LIMIT,
+            },
           }),
         );
 

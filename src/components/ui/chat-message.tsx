@@ -132,6 +132,10 @@ import {
 import { CHAT_TEXT_STYLE } from "@/constants/chat-typography";
 import { TraceResourceContent } from "@/components/ui/trace-resource-content";
 import { hasLegacyToolResource } from "@/modules/chat/tool-resource";
+import {
+  formatSummaryLines,
+  parseToolSummary,
+} from "@/modules/chat/tool-summary";
 import { buildAssistantParts } from "@/modules/chat/assistant-parts";
 import {
   isTextWorkspaceFile,
@@ -2877,15 +2881,10 @@ function ReasoningTraceRow({ block, streaming }: { block: ReasoningBlock; stream
   );
 }
 
-/** Historic summaries are bounded JSON; only use fields we can actually recover. */
-function parseToolSummary(summary: string | null): Record<string, unknown> {
-  if (!summary) return {};
-  try {
-    const value = JSON.parse(summary);
-    return value && typeof value === "object" && !Array.isArray(value) ? value : {};
-  } catch { return {}; }
-}
-
+/**
+ * The expanded detail of a tool trace row: media/thumbnails first, then the
+ * captured content, then whatever summary fields could be recovered.
+ */
 function ToolTraceDetail({ record }: { record: ToolExecutionRecord }) {
   const { workspaceFiles } = useContext(ChatMediaContext);
   const input = parseToolSummary(record.inputSummary);
@@ -2897,12 +2896,16 @@ function ToolTraceDetail({ record }: { record: ToolExecutionRecord }) {
   const isImage = preview?.mimeType?.startsWith("image/") || (file && getFilePreviewKind(file) === "image");
   const text = preview?.text ?? (typeof output.content === "string" ? output.content : typeof output.contentPreview === "string" ? output.contentPreview : null);
   // Unknown/custom tools retain a readable result rather than losing diagnostics.
-  const summary = Object.entries(output).filter(([key, value]) =>
-    !["fileId", "displayName", "content", "contentPreview", "link", "inlineImage", "inlineFile", "mimeType", "width", "height"].includes(key) &&
-    (typeof value === "string" || typeof value === "number" || typeof value === "boolean"),
-  ).map(([key, value]) => `${key.replace(/([A-Z])/g, " $1")}: ${String(value)}`).join("\n");
+  // Summaries are truncated JSON, so recover scalars and list values instead of rendering nothing.
+  const summary = formatSummaryLines(record.outputSummary).join("\n");
+  const inputLines = formatSummaryLines(record.inputSummary);
   const plainOutput = record.outputSummary && !/^[\s]*[\[{]/.test(record.outputSummary) ? record.outputSummary : null;
   const images = preview?.images ?? [];
+  const noPreviewDetail = record.status === "running"
+    ? "Waiting for output…"
+    : [inputLines.length > 0 ? `Input: ${inputLines.join(", ")}` : null, "No content preview was captured for this tool call."]
+        .filter((line): line is string => line !== null)
+        .join("\n");
   return (
     <View className="gap-sp-2">
       {uri && isImage ? <MarkdownImage key={uri} alt={title || "Viewed image"} uri={uri} /> : null}
@@ -2914,7 +2917,7 @@ function ToolTraceDetail({ record }: { record: ToolExecutionRecord }) {
           <CodeBlock size="sm"><CodeBlockContent>{text}</CodeBlockContent></CodeBlock>
         </ScrollView>
       ) : summary || plainOutput ? <Text selectable className="font-sans text-xs text-muted-foreground dark:text-muted-foreground-dark">{summary || plainOutput}</Text> : !record.error && !(uri && isImage) && images.length === 0 ? (
-        <Text className="font-sans text-xs text-muted-foreground dark:text-muted-foreground-dark">{record.status === "running" ? "Waiting for output…" : "No content preview was captured for this tool call."}</Text>
+        <Text className="font-sans text-xs text-muted-foreground dark:text-muted-foreground-dark">{noPreviewDetail}</Text>
       ) : null}
       {preview?.truncated || (!preview && text) ? <Text className="font-sans text-xs text-muted-foreground dark:text-muted-foreground-dark">Partial content captured for this step.</Text> : null}
     </View>

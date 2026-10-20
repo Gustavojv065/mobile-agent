@@ -1,7 +1,7 @@
 import { tool } from "ai";
 import { z } from "zod";
 
-import { createRecord, summarizeValue } from "@/modules/tools/built-in/shared";
+import { createRecord, summarizeValue, TOOL_PREVIEW_TEXT_LIMIT } from "@/modules/tools/built-in/shared";
 import {
   formatGlobFiles,
   matchesGlob,
@@ -34,6 +34,7 @@ export function createGlobTool({
           .slice(0, limit);
 
         const output = { files: matchingPaths };
+        const previewText = matchingPaths.join("\n");
 
         onRecord?.(
           createRecord({
@@ -44,6 +45,11 @@ export function createGlobTool({
               count: matchingPaths.length,
               files: formatGlobFiles(matchingPaths),
             }),
+            preview: {
+              title: `${matchingPaths.length} ${matchingPaths.length === 1 ? "file" : "files"}`,
+              text: previewText.slice(0, TOOL_PREVIEW_TEXT_LIMIT),
+              truncated: previewText.length > TOOL_PREVIEW_TEXT_LIMIT,
+            },
           }),
         );
 

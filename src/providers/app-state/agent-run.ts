@@ -1592,6 +1592,18 @@ export async function executeClaimedAgentRun(
     }
 
     const pluginTools = pluginSnapshot?.tools;
+    // MCP and plugin keys are spread after the built-ins, so a same-named tool
+    // silently replaces a built-in (e.g. an MCP `listFiles`). Surface that.
+    const builtInToolNames = new Set(Object.keys(builtInRuntimeTools ?? {}));
+    for (const source of [mcpRuntime?.tools, pluginTools]) {
+      for (const name of Object.keys(source ?? {})) {
+        if (builtInToolNames.has(name)) {
+          console.warn(
+            `[agent-run] tool "${name}" overrides the built-in tool of the same name`,
+          );
+        }
+      }
+    }
     const unapprovedRuntimeTools =
       builtInRuntimeTools || mcpRuntime?.tools || todosRuntime || questionRuntime || skillRuntime || scheduleRuntime || taskRuntime || agentRuntime || pluginManagementRuntime || secretRequestRuntime || pluginTools
         ? ({
