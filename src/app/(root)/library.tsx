@@ -5,10 +5,7 @@ import { useRouter } from "expo-router";
 import {
   ChevronLeft,
   File as FileIcon,
-  FileSpreadsheet,
-  FileText,
   Download,
-  Presentation,
   Trash2,
 } from "lucide-react-native";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
@@ -26,6 +23,7 @@ import { Container } from "@/components/shared/container";
 import { Button } from "@/components/ui/button";
 import { WorkspaceThumbnail } from "@/components/ui/workspace-thumbnail";
 import { LibraryImageGrid } from "@/components/ui/library-image-grid";
+import { FileRowIcon } from "@/components/ui/file-row-icon";
 import {
   FilePreviewDialog,
   getFilePreviewKind,
@@ -425,28 +423,6 @@ function LibraryFileRow({
       />
     </View>
   );
-}
-
-function FileRowIcon({
-  color,
-  file,
-  size,
-}: {
-  color: string;
-  file: WorkspaceFile;
-  size: number;
-}) {
-  const lowerName = file.displayName.toLowerCase();
-
-  if (lowerName.endsWith(".pptx")) {
-    return <Presentation color={color} size={size} />;
-  }
-
-  if (lowerName.endsWith(".xlsx") || lowerName.endsWith(".xls")) {
-    return <FileSpreadsheet color={color} size={size} />;
-  }
-
-  return <FileText color={color} size={size} />;
 }
 
 function RowAction({

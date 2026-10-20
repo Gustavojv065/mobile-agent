@@ -69,7 +69,6 @@ import { ComposerTip } from "@/components/chat/composer-tip";
 import { CodeBlock, CodeBlockContent } from "@/components/ui/code-block";
 import { Container } from "@/components/shared/container";
 import { SearchBox } from "@/components/shared/search-box";
-import { SkillImportDrawer } from "@/components/skills/skill-import-drawer";
 import { Button } from "@/components/ui/button";
 import { WorkspaceThumbnail } from "@/components/ui/workspace-thumbnail";
 import { ChatErrorBoundary } from "@/components/ui/chat-error-boundary";
@@ -91,6 +90,7 @@ import {
   FilePreviewDialog,
   getFilePreviewKind,
 } from "@/components/ui/file-preview-dialog";
+import { FileRowIcon } from "@/components/ui/file-row-icon";
 import { ImagePreviewDrawer } from "@/components/ui/image-preview-drawer";
 import { VideoPlayerDialog } from "@/components/ui/video-player-dialog";
 import { Input } from "@/components/ui/input";
@@ -1373,7 +1373,6 @@ const ChatInput = memo(function ChatInput({
   const [reasoningDrawerOpen, setReasoningDrawerOpen] = useState(false);
   const [agentsDrawerOpen, setAgentsDrawerOpen] = useState(false);
   const [skillsDrawerOpen, setSkillsDrawerOpen] = useState(false);
-  const [skillImportOpen, setSkillImportOpen] = useState(false);
   const [mcpServersDrawerOpen, setMcpServersDrawerOpen] = useState(false);
   const [busyAction, setBusyAction] = useState<
     null | "clear" | "import" | "folder" | "paste" | "photos"
@@ -2682,7 +2681,15 @@ const ChatInput = memo(function ChatInput({
                               width: 48,
                             }}
                           />
-                        ) : null
+                        ) : (
+                          <View className="h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-card bg-secondary dark:bg-secondary-dark">
+                            <FileRowIcon
+                              color={theme.text}
+                              file={file}
+                              size={20}
+                            />
+                          </View>
+                        )
                       }
                       onPress={() => {
                         setFilesDrawerOpen(false);
@@ -2865,7 +2872,7 @@ const ChatInput = memo(function ChatInput({
               filteredModelGroups.length > 0 ? (
                 filteredModelGroups.map(([providerLabel, models]) => (
                   <View className="gap-sp-2" key={providerLabel}>
-                    <Text className="font-sans text-sm font-semibold text-foreground dark:text-foreground-dark">
+                    <Text className="px-sp-1 pt-sp-2 font-sans text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground dark:text-muted-foreground-dark">
                       {providerLabel}
                     </Text>
                     {models.map((model) => (
@@ -2959,15 +2966,6 @@ const ChatInput = memo(function ChatInput({
             <Button
               onPress={() => {
                 setSkillsDrawerOpen(false);
-                setSkillImportOpen(true);
-              }}
-              variant="outline"
-            >
-              Import skill
-            </Button>
-            <Button
-              onPress={() => {
-                setSkillsDrawerOpen(false);
                 onOpenSettings();
               }}
               variant="outline"
@@ -2977,11 +2975,6 @@ const ChatInput = memo(function ChatInput({
           </DrawerFooter>
         </DrawerContent>
       </Drawer>
-
-      <SkillImportDrawer
-        onOpenChange={setSkillImportOpen}
-        open={skillImportOpen}
-      />
 
       <Drawer
         onOpenChange={setMcpServersDrawerOpen}
@@ -3158,6 +3151,9 @@ function DrawerSelectRow({
         onPress={onPress}
         style={({ pressed }) => (pressed ? { opacity: 0.85 } : null)}
       >
+        {/* Only reserve the 12×12 leading box when there's something to put
+            in it. Rendering it unconditionally left an empty square (and the
+            row gap) on rows without a leading icon, e.g. the skills list. */}
         {leading ? (
           <View className="h-12 w-12 shrink-0 overflow-hidden rounded-card">
             {leading}
