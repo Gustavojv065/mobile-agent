@@ -488,7 +488,10 @@ export default function Screen() {
 
   return (
     <ChatErrorBoundary>
-      <KeyboardAvoidingView behavior="padding" className="flex-1">
+      {/* react-native-keyboard-controller's KAV has no NativeWind interop
+          (only react-native's does), so className would be dropped and the
+          chat block would collapse to content height — pass style instead. */}
+      <KeyboardAvoidingView behavior="padding" style={{ flex: 1 }}>
         <Container
           contentClassName="flex-1 gap-sp-1 !px-4"
           contentStyle={keyboardVisible ? { paddingBottom: 8 } : undefined}

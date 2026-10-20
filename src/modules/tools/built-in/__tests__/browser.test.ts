@@ -11,6 +11,9 @@ vi.mock("@/core/services/workspace-file-service", () => ({
   createWorkspaceFileService: () => ({
     createDocumentFileFromFile: mocks.createDocumentFileFromFile,
   }),
+  resolveWorkspaceFile: (relativePath: string) => ({
+    uri: `file:///workspace/${relativePath}`,
+  }),
 }));
 
 vi.mock("@/modules/preview/browser-session", () => ({
@@ -52,6 +55,7 @@ describe("browser tool", () => {
       id: `shot-${name.replace(/[^a-z0-9]/gi, "-")}`,
       displayName: name,
       size: 4321,
+      relativePath: `shots/${name}`,
     }));
   });
 
@@ -115,6 +119,42 @@ describe("browser tool", () => {
     expect((out.overview as Record<string, unknown>).link).toBeTypeOf("string");
     expect((out as { slices: unknown[] }).slices).toHaveLength(2);
     expect(out.viewport).toBeUndefined();
+  });
+
+  it("passes the host's truncation note through to the agent", async () => {    mocks.requestBrowserCommand.mockResolvedValue({
+      kind: "screenshot",
+      fullPage: true,
+      pageHeight: 6400,
+      truncated: true,
+      shots: [{ uri: "file:///cache/s1.png", top: 0 }],
+      overview: { uri: "file:///cache/ov.png", truncated: false },
+      note: "Captured 1 of 8 slices before the time budget ran out.",
+    });
+
+    const out = (await execute(makeTool(), { action: "screenshot", fullPage: true })) as Record<string, unknown>;
+
+    expect(out.note).toBe("Captured 1 of 8 slices before the time budget ran out.");
+  });
+
+  it("records the capture as the tool's preview", async () => {
+    mocks.requestBrowserCommand.mockResolvedValue({
+      kind: "screenshot",
+      fullPage: false,
+      pageHeight: 800,
+      truncated: false,
+      shots: [{ uri: "file:///cache/shot.png", top: 0 }],
+      overview: null,
+    });
+
+    await execute(makeTool(), { action: "screenshot" });
+
+    const record = mocks.onRecord.mock.calls.at(-1)?.[0] as {
+      preview?: { uri?: string; mimeType?: string; title?: string };
+    };
+    expect(record.preview?.uri).toMatch(
+      /^file:\/\/\/workspace\/shots\/browse-\d+-1\.png$/,
+    );
+    expect(record.preview?.mimeType).toBe("image/png");
   });
 
   it.each([

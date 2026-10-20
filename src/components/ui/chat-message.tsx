@@ -1619,21 +1619,41 @@ export const ChatMessage = memo(function ChatMessage({
     },
     [setVideoPreview, workspaceRepository],
   );
+  /**
+   * One route for a workspace file, so tapping a link opens the same viewer
+   * the inline preview card uses: images go to the image drawer, videos to
+   * the player, everything else to the file preview dialog.
+   */
+  const openWorkspaceFile = useCallback(
+    (file: WorkspaceFile) => {
+      if (isVideoWorkspaceFile(file)) {
+        void openVideoFile({
+          displayName: file.displayName,
+          mimeType: file.mimeType ?? "video/mp4",
+          uri: `workspace://${file.id}`,
+        }).catch(console.error);
+        return;
+      }
+
+      if (getFilePreviewKind(file) === "image") {
+        openImagePreview({
+          kind: "uri",
+          alt: file.displayName,
+          uri: resolveWorkspaceFile(file.relativePath).uri,
+        });
+        return;
+      }
+
+      setPreviewFile(file);
+    },
+    [openImagePreview, openVideoFile, setPreviewFile],
+  );
   const handleLinkPress = useCallback(
     (url: string) => {
       const workspaceFile = workspaceFileFromUrl(url, workspaceFilesRef.current);
 
       if (workspaceFile) {
-        if (isVideoWorkspaceFile(workspaceFile)) {
-          void openVideoFile({
-            displayName: workspaceFile.displayName,
-            mimeType: workspaceFile.mimeType ?? "video/mp4",
-            uri: `workspace://${workspaceFile.id}`,
-          }).catch(console.error);
-          return false;
-        }
-
-        setPreviewFile(workspaceFile);
+        openWorkspaceFile(workspaceFile);
         return false;
       }
 
@@ -1645,16 +1665,7 @@ export const ChatMessage = memo(function ChatMessage({
             return;
           }
 
-          if (isVideoWorkspaceFile(file)) {
-            void openVideoFile({
-              displayName: file.displayName,
-              mimeType: file.mimeType ?? "video/mp4",
-              uri: `workspace://${file.id}`,
-            }).catch(console.error);
-            return;
-          }
-
-          setPreviewFile(file);
+          openWorkspaceFile(file);
         }).catch((error) => Alert.alert("Could not open file", String(error)));
         return false;
       }
@@ -1662,7 +1673,7 @@ export const ChatMessage = memo(function ChatMessage({
 
       return false;
     },
-    [openVideoFile, setPreviewFile, workspaceRepository],
+    [openWorkspaceFile, workspaceRepository],
   );
   const mediaContext = useMemo(
     () => ({
@@ -2072,7 +2083,7 @@ export const ChatMessage = memo(function ChatMessage({
                             </TraceLine>
                           </TraceCollapsibleTrigger>
                           <TraceCollapsibleContent>
-                            <View className="gap-sp-1.5 border-l border-border pl-sp-3 dark:border-border-dark">
+                            <View className="ml-sp-2 gap-sp-1.5 border-l border-border pl-sp-3 dark:border-border-dark">
                               {pendingTodoList.map((task) => (
                                 <View
                                   key={task.id}
@@ -2125,7 +2136,7 @@ export const ChatMessage = memo(function ChatMessage({
                             </TraceLine>
                           </TraceCollapsibleTrigger>
                           <TraceCollapsibleContent>
-                            <View className="gap-sp-1.5 border-l border-border pl-sp-3 dark:border-border-dark">
+                            <View className="ml-sp-2 gap-sp-1.5 border-l border-border pl-sp-3 dark:border-border-dark">
                               {completedTodoList.map((task) => (
                                 <View
                                   key={task.id}
@@ -3077,7 +3088,7 @@ function ReasoningTraceRow({ block, streaming }: { block: ReasoningBlock; stream
           </TraceLine>
         </TraceCollapsibleTrigger>
         <TraceCollapsibleContent>
-          <Text selectable className="border-l border-border pl-sp-3 font-sans text-sm text-muted-foreground dark:border-border-dark dark:text-muted-foreground-dark">{block.text || (running ? "Thinking…" : "No reasoning text was recorded for this step.")}</Text>
+          <Text selectable className="ml-sp-2 border-l border-border pl-sp-3 font-sans text-sm text-muted-foreground dark:border-border-dark dark:text-muted-foreground-dark">{block.text || (running ? "Thinking…" : "No reasoning text was recorded for this step.")}</Text>
         </TraceCollapsibleContent>
       </TraceCollapsible>
     </Trace>
@@ -3265,7 +3276,7 @@ function ToolTraceRow({
           </TraceLine>
         </TraceCollapsibleTrigger>
         <TraceCollapsibleContent>
-          <View className="gap-sp-1.5 border-l border-border pl-sp-3 dark:border-border-dark">
+          <View className="ml-sp-2 gap-sp-1.5 border-l border-border pl-sp-3 dark:border-border-dark">
             <ToolTraceDetail record={record} />
             {record.error ? (
               <Text

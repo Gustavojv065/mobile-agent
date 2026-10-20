@@ -9,6 +9,8 @@
  * inside the calling job instead of crashing the app.
  */
 
+import { File } from "expo-file-system";
+
 type ViewShotModule = typeof import("react-native-view-shot");
 let cached: ViewShotModule | null | undefined;
 
@@ -42,4 +44,26 @@ export async function captureViewToTmpFile(
     );
   }
   return viewShot.captureRef(target, options);
+}
+
+/**
+ * A capture smaller than this holds no rendered page: a blank or
+ * single-colour bitmap compresses to a few KB, a real page to far more.
+ */
+export const BLANK_CAPTURE_MAX_BYTES = 15_000;
+
+/**
+ * True when a captured file cannot hold a rendered page. Guards against
+ * handing the agent a white rectangle: a view that never painted (or a
+ * WebView whose content stayed on the GPU) still produces a valid PNG,
+ * just an empty one.
+ */
+export function isBlankCapture(uri: string): boolean {
+  try {
+    const size = new File(uri).size ?? 0;
+    return size < BLANK_CAPTURE_MAX_BYTES;
+  } catch {
+    // Unreadable file: unknown, not blank.
+    return false;
+  }
 }

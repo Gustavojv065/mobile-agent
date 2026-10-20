@@ -31,10 +31,20 @@ import {
   KeyboardAwareScrollView,
   type KeyboardAwareScrollViewRef,
 } from "react-native-keyboard-controller";
+import { cssInterop } from "nativewind";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { useTheme } from "@/hooks/use-theme";
 import { cn } from "@/core/utils";
+
+// react-native-keyboard-controller's ScrollView is a Reanimated component, so
+// NativeWind's built-in interop (which only covers react-native's ScrollView)
+// never sees it. Without this, DrawerBody's `min-h-0 flex-1` is dropped and
+// the body collapses to content height instead of filling the drawer.
+cssInterop(KeyboardAwareScrollView, {
+  className: "style",
+  contentContainerClassName: "contentContainerStyle",
+});
 
 type DrawerDirection = "top" | "right" | "bottom" | "left";
 

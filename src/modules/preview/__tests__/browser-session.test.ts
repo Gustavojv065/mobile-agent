@@ -1,6 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  BROWSER_CAPTURE_TIMEOUT_MS,
+  BROWSER_COMMAND_TIMEOUT_MS,
+  BROWSER_MAX_SLICES,
+  BROWSER_PAGE_LOAD_TIMEOUT_MS,
+  browserCommandBudgetMs,
+  browserCommandTimeoutError,
+  browserLoadTimeoutError,
   hasBrowserHost,
   requestBrowserCommand,
   subscribeBrowser,
@@ -59,5 +66,61 @@ describe("browser session queue", () => {
       /only available on Android/,
     );
     expect(listener).not.toHaveBeenCalled();
+  });
+});
+
+describe("browser command budget", () => {
+  it("gives a full-page screenshot room for every capture", () => {
+    const budget = browserCommandBudgetMs({
+      kind: "screenshot",
+      fullPage: true,
+      maxSlices: 4,
+    });
+    // One overview plus four slices, each with its own capture allowance.
+    expect(budget).toBe(
+      BROWSER_COMMAND_TIMEOUT_MS + BROWSER_CAPTURE_TIMEOUT_MS * 5,
+    );
+  });
+
+  it("caps the full-page budget at the maximum slice count", () => {
+    const budget = browserCommandBudgetMs({
+      kind: "screenshot",
+      fullPage: true,
+      maxSlices: BROWSER_MAX_SLICES * 4,
+    });
+    expect(budget).toBe(
+      BROWSER_COMMAND_TIMEOUT_MS +
+        BROWSER_CAPTURE_TIMEOUT_MS * (BROWSER_MAX_SLICES + 1),
+    );
+  });
+
+  it("keeps a viewport screenshot on the single-command budget", () => {
+    expect(
+      browserCommandBudgetMs({ kind: "screenshot", fullPage: false }),
+    ).toBe(BROWSER_COMMAND_TIMEOUT_MS);
+  });
+
+  it("gives page loads the load budget", () => {
+    expect(browserCommandBudgetMs({ kind: "navigate", url: "https://x" })).toBe(
+      BROWSER_PAGE_LOAD_TIMEOUT_MS,
+    );
+  });
+
+  it("reports the real budget in the timeout message", () => {
+    const command = { kind: "screenshot", fullPage: true, maxSlices: 4 } as const;
+    const seconds = Math.round(browserCommandBudgetMs(command) / 1000);
+    expect(browserCommandTimeoutError(command).message).toContain(
+      `timed out after ${seconds}s`,
+    );
+    expect(browserCommandTimeoutError(command).message).toContain(
+      "full-page screenshot",
+    );
+  });
+
+  it("reports the load budget in the navigation timeout message", () => {
+    const command = { kind: "navigate", url: "https://x" } as const;
+    expect(browserLoadTimeoutError(command).message).toContain(
+      `timed out after ${Math.round(BROWSER_PAGE_LOAD_TIMEOUT_MS / 1000)}s`,
+    );
   });
 });

@@ -54,6 +54,8 @@ export type BrowserCommandScreenshotPayload = {
   shots: { uri: string; top: number }[];
   /** Zoomed-out whole-page overview (full-page shots only). */
   overview: { uri: string; truncated: boolean } | null;
+  /** Why the page is incomplete (budget ran out, slice cap hit). */
+  note?: string | null;
 } & BrowserTarget;
 
 export type BrowserCommandWithResult = {
@@ -124,8 +126,12 @@ export const BROWSER_PAGE_LOAD_TIMEOUT_MS = 45_000;
 /** Time bound for one in-page command (scroll/click/type/read/screenshot). */
 export const BROWSER_COMMAND_TIMEOUT_MS = 30_000;
 
-/** Time added per screenshot slice (scroll + settle + capture). */
-export const BROWSER_SLICE_TIMEOUT_MS = 4_000;
+/**
+ * Time one capture may take. A capture rasterizes the viewport in software
+ * and encodes it to PNG, so it is by far the most expensive step of a
+ * screenshot command — the budget has to be sized around it.
+ */
+export const BROWSER_CAPTURE_TIMEOUT_MS = 8_000;
 
 /** Back button on single-page apps never fires a new load; cap the settle. */
 export const BROWSER_HISTORY_SETTLE_MS = 1_500;
@@ -135,6 +141,33 @@ export const BROWSER_SETTLE_MS = 1_200;
 
 /** Uppercase bound of slices one screenshot command may take. */
 export const BROWSER_MAX_SLICES = 8;
+
+/**
+ * How long the host waits for a command before failing it. A full-page
+ * screenshot is one overview plus N slices, and every slice rasterizes and
+ * encodes a whole viewport, so the budget scales with the slice count
+ * instead of pretending the command is a single fast step.
+ */
+export function browserCommandBudgetMs(command: BrowserCommand): number {
+  if (
+    command.kind === "navigate" ||
+    command.kind === "reload" ||
+    command.kind === "back"
+  ) {
+    return BROWSER_PAGE_LOAD_TIMEOUT_MS;
+  }
+  if (command.kind === "screenshot" && command.fullPage) {
+    const slices = Math.min(
+      command.maxSlices ?? BROWSER_MAX_SLICES,
+      BROWSER_MAX_SLICES,
+    );
+    // One overview plus every slice, each with its own capture allowance.
+    return (
+      BROWSER_COMMAND_TIMEOUT_MS + BROWSER_CAPTURE_TIMEOUT_MS * (slices + 1)
+    );
+  }
+  return BROWSER_COMMAND_TIMEOUT_MS;
+}
 
 /** Fallback heading for click/type results when no heading was found. */
 export function describeCommandDetails(command: BrowserCommand): string {
@@ -155,7 +188,7 @@ export function describeCommandDetails(command: BrowserCommand): string {
 /** The page never announced itself after a navigation command. */
 export function browserLoadTimeoutError(command: BrowserCommand): Error {
   return new Error(
-    `Browser navigation timed out after ${Math.round(BROWSER_PAGE_LOAD_TIMEOUT_MS / 1000)}s ` +
+    `Browser navigation timed out after ${Math.round(browserCommandBudgetMs(command) / 1000)}s ` +
       `(${describeCommandDetails(command)}). The page may be unreachable or too slow — try again later or use fetchPage for its raw text.`,
   );
 }
@@ -163,7 +196,7 @@ export function browserLoadTimeoutError(command: BrowserCommand): Error {
 /** The page loaded but never answered the command. */
 export function browserCommandTimeoutError(command: BrowserCommand): Error {
   return new Error(
-    `Browser command timed out after ${Math.round(BROWSER_COMMAND_TIMEOUT_MS / 1000)}s ` +
+    `Browser command timed out after ${Math.round(browserCommandBudgetMs(command) / 1000)}s ` +
       `(${describeCommandDetails(command)}). The page may be busy, or the selector matched nothing — try text= with the visible label or read the page first.`,
   );
 }

@@ -1,14 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Platform, View } from "react-native";
+import { PixelRatio, Platform, View } from "react-native";
 import WebView, { type WebViewMessageEvent } from "react-native-webview";
 
 import {
-  BROWSER_COMMAND_TIMEOUT_MS,
+  BROWSER_CAPTURE_TIMEOUT_MS,
   BROWSER_HISTORY_SETTLE_MS,
   BROWSER_MAX_SLICES,
-  BROWSER_PAGE_LOAD_TIMEOUT_MS,
   BROWSER_SETTLE_MS,
-  BROWSER_SLICE_TIMEOUT_MS,
+  browserCommandBudgetMs,
   browserCommandTimeoutError,
   browserLoadTimeoutError,
   subscribeBrowser,
@@ -16,17 +15,28 @@ import {
   type BrowserCommandResult,
   type BrowserCommandWithResult,
 } from "@/modules/preview/browser-session";
-import { captureViewToTmpFile } from "@/modules/preview/view-shot";
+import { captureViewToTmpFile, isBlankCapture } from "@/modules/preview/view-shot";
 
 const VIEWPORT_WIDTH = 1280;
 const VIEWPORT_HEIGHT = 800;
 /** Overview: the CSS zoom floor — below this the overview is unreadable anyway. */
 const OVERVIEW_MIN_ZOOM = 0.22;
-/** Functional waits for in-page paints after zoom/scroll changes (not watchdogs). */
-const ZOOM_SETTLE_MS = 450;
-const SLICE_SETTLE_MS = 400;
+/**
+ * Functional waits for in-page paints after zoom/scroll changes (not
+ * watchdogs). The browser renders in a software layer, so Chromium re-rasters
+ * the whole viewport off the UI thread after every scroll — a capture taken
+ * before that lands shows the previous frame.
+ */
+const ZOOM_SETTLE_MS = 1_000;
+const SLICE_SETTLE_MS = 1_000;
 /** A click/type may trigger navigation; give a cross-document load this window. */
 const NAV_BOOT_WINDOW_MS = 2_500;
+/**
+ * Widest capture we keep. The model downsamples images to roughly this
+ * width anyway, and PNG-encoding a 3840 px viewport costs seconds per
+ * slice — a narrower capture is cheaper *and* what the reader wants.
+ */
+const MAX_CAPTURE_WIDTH_PX = 1568;
 
 /**
  * In-page bridge, free of backticks and `${` (house style for injected
@@ -286,6 +296,16 @@ export function BrowserHost() {
   const [pageUrl, setPageUrl] = useState<string | null>(null);
 
   const webViewRef = useRef<WebView>(null);
+  /**
+   * The capture target. `react-native-webview` v13 hands out an imperative
+   * handle (`{ goForward, goBack, ... }`), not a native view, so it cannot
+   * be snapshotted — `findNodeHandle` rejects it with "Argument appears to
+   * not be a ReactComponent". view-shot can only capture a WebView through
+   * a non-collapsible parent View anyway, so that parent is the target.
+   */
+  const captureHostRef = useRef<View>(null);
+  /** The capture host's size in dp, used to size the captured image. */
+  const hostSizeRef = useRef({ width: VIEWPORT_WIDTH, height: VIEWPORT_HEIGHT });
   const jobRef = useRef<BrowserCommandWithResult | null>(null);
   const settledRef = useRef<WeakSet<BrowserCommandWithResult>>(new WeakSet());
   const abortCleanupRef = useRef<(() => void) | null>(null);
@@ -436,23 +456,71 @@ export function BrowserHost() {
     [finalState, nextBootWithin, postCommand],
   );
 
-  /** Full-page pipeline: zoomed-out overview, then top-to-bottom viewport slices. */
+  /**
+   * Snapshots the browser viewport as a PNG. The host View (not the WebView
+   * handle) is the capture target; the WebView renders in a software layer
+   * so its pixels actually reach the snapshot.
+   *
+   * Reports how long the capture took: a full-page command is a chain of
+   * them, and the next one has to fit in what is left of the budget.
+   */
+  const capturePage = useCallback(
+    async (what: string): Promise<{ uri: string; ms: number }> => {
+      if (!captureHostRef.current) throw new Error("The browser view is gone.");
+      const startedAt = Date.now();
+      let uri: string;
+      try {
+        uri = await captureViewToTmpFile(
+          captureHostRef,
+          captureOptions(hostSizeRef.current),
+          what,
+        );
+      } catch (error) {
+        throw new Error(
+          `${what} failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      const ms = Date.now() - startedAt;
+      if (isBlankCapture(uri)) {
+        throw new Error(
+          `${what} produced an empty image — the page did not paint. Reload the page, wait for it to settle, and try again.`,
+        );
+      }
+      return { uri, ms };
+    },
+    [],
+  );
+
+  /**
+   * Full-page pipeline: zoomed-out overview, then top-to-bottom viewport
+   * slices.
+   *
+   * `deadline` is the command's wall-clock budget. Every capture is
+   * expensive (software raster + PNG encode), so the slice loop stops
+   * *before* it would blow the budget and returns what it has — a partial
+   * page beats a command that times out with nothing.
+   */
   const captureFullPage = useCallback(
-    async (fullPage: boolean, maxSlices: number): Promise<BrowserCommandResult> => {
-      const view = webViewRef.current;
-      if (!view) throw new Error("The browser view is gone.");
+    async (
+      fullPage: boolean,
+      maxSlices: number,
+      deadline: number,
+    ): Promise<BrowserCommandResult> => {
       const d = await postCommand({ kind: "dims" });
       const innerH = num(d.innerH, VIEWPORT_HEIGHT);
       const contentH = Math.max(1, num(d.contentH, VIEWPORT_HEIGHT));
 
       const shots: { uri: string; top: number }[] = [];
       let overview: { uri: string; truncated: boolean } | null = null;
+      let note: string | null = null;
+      /** What the next slice costs, estimated until a capture is measured. */
+      let sliceCostMs = BROWSER_CAPTURE_TIMEOUT_MS;
 
       // Viewport capture: whatever is on screen, no page-height gymnastics.
       if (!fullPage) {
-        const uri = await captureViewToTmpFile(view, { format: "png", quality: 1, result: "tmpfile" }, "Page capture");
+        const shot = await capturePage("Page capture");
         shots.push({
-          uri,
+          uri: shot.uri,
           top: Math.round(num(d.scrollY, 0)),
         });
         return {
@@ -462,6 +530,7 @@ export function BrowserHost() {
           truncated: false,
           shots,
           overview: null,
+          note: null,
           url: text(d.url) ?? "",
           title: text(d.title) ?? null,
         };
@@ -471,8 +540,8 @@ export function BrowserHost() {
       if (contentH <= innerH * 1.05) {
         await postCommand({ kind: "scroll", top: 0 });
         await delay(SLICE_SETTLE_MS);
-        const uri = await captureViewToTmpFile(view, { format: "png", quality: 1, result: "tmpfile" }, "Full-page capture");
-        shots.push({ uri, top: 0 });
+        const shot = await capturePage("Full-page capture");
+        shots.push({ uri: shot.uri, top: 0 });
         return {
           kind: "screenshot",
           fullPage: true,
@@ -480,12 +549,14 @@ export function BrowserHost() {
           truncated: false,
           shots,
           overview: null,
+          note: null,
           url: text(d.url) ?? "",
           title: text(d.title) ?? null,
         };
       }
 
       // 1. Overview: shrink the CSS layout so the whole page fits 800 px.
+      // It goes first — it is the one image that shows the entire page.
       const zoom = Math.max(OVERVIEW_MIN_ZOOM, Math.min(1, VIEWPORT_HEIGHT / contentH));
       if (zoom < 1) {
         const after = await postCommand({ kind: "zoom", scale: zoom });
@@ -493,8 +564,12 @@ export function BrowserHost() {
         // Chromium may refuse non-integer zooms; only trust an overview that
         // actually shrank the layout near the requested factor.
         if (zoomedH < contentH * (zoom + 0.25) && zoomedH > innerH * 0.5) {
-          const uri = await captureViewToTmpFile(view, { format: "png", quality: 1, result: "tmpfile" }, "Full-page capture");
-          overview = { uri, truncated: zoomedH > VIEWPORT_HEIGHT * 1.02 };
+          // The zoom re-lays the page out and Chromium re-rasters the whole
+          // viewport off the UI thread; capture after it has settled or the
+          // overview shows the unzoomed page.
+          await delay(ZOOM_SETTLE_MS);
+          const shot = await capturePage("Full-page capture");
+          overview = { uri: shot.uri, truncated: zoomedH > VIEWPORT_HEIGHT * 1.02 };
         }
         await postCommand({ kind: "resetZoom" });
         await delay(ZOOM_SETTLE_MS);
@@ -506,28 +581,44 @@ export function BrowserHost() {
       const budget = Math.max(1, Math.min(maxSlices, BROWSER_MAX_SLICES));
       const count = Math.min(totalSlices, budget);
       for (let i = 0; i < count; i += 1) {
+        // Only start a slice that can still finish inside the budget.
+        if (Date.now() + sliceCostMs > deadline) {
+          note =
+            `Captured ${shots.length} of ${count} slices before the time budget ran out — ` +
+            `each slice rasterizes and encodes a full viewport. Read the page text for the rest, ` +
+            `or capture the page again for the remaining part.`;
+          break;
+        }
         const top = i * step;
         await postCommand({ kind: "scroll", top });
         await delay(SLICE_SETTLE_MS);
-        const uri = await captureViewToTmpFile(view, { format: "png", quality: 1, result: "tmpfile" }, "Full-page capture");
-        shots.push({ uri, top });
+        const shot = await capturePage("Full-page capture");
+        shots.push({ uri: shot.uri, top });
+        // The measured capture replaces the estimate for the next slice.
+        sliceCostMs = shot.ms + SLICE_SETTLE_MS + 500;
       }
       return {
         kind: "screenshot",
         fullPage: true,
         pageHeight: Math.round(contentH),
-        truncated: totalSlices > count,
+        truncated: totalSlices > count || note !== null,
         shots,
         overview,
+        note: note ?? (totalSlices > count
+          ? `The page is taller than the slice budget (${Math.round(contentH)}px captured as top slices; pass a bigger maxSlices to go further).`
+          : null),
         url: text(d.url) ?? "",
         title: text(d.title) ?? null,
       };
     },
-    [postCommand],
+    [capturePage, postCommand],
   );
 
   const execute = useCallback(
-    async (command: BrowserCommand): Promise<BrowserCommandResult> => {
+    async (
+      command: BrowserCommand,
+      deadline: number,
+    ): Promise<BrowserCommandResult> => {
       switch (command.kind) {
         case "navigate": {
           const state = await beginNav(command);
@@ -575,7 +666,11 @@ export function BrowserHost() {
           };
         }
         case "screenshot": {
-          return captureFullPage(command.fullPage === true, command.maxSlices ?? BROWSER_MAX_SLICES);
+          return captureFullPage(
+            command.fullPage === true,
+            command.maxSlices ?? BROWSER_MAX_SLICES,
+            deadline,
+          );
         }
       }
     },
@@ -594,26 +689,23 @@ export function BrowserHost() {
         abortCleanupRef.current = () => job.signal?.removeEventListener("abort", onAbort);
       }
 
-      // One guard per command: loads get the load bound, everything else the
-      // command bound (plus slice budget for full-page captures).
-      const guard =
-        job.command.kind === "navigate" || job.command.kind === "reload" || job.command.kind === "back"
-          ? BROWSER_PAGE_LOAD_TIMEOUT_MS
-          : job.command.kind === "screenshot" && job.command.fullPage
-            ? BROWSER_COMMAND_TIMEOUT_MS +
-              BROWSER_SLICE_TIMEOUT_MS * Math.min(job.command.maxSlices ?? BROWSER_MAX_SLICES, BROWSER_MAX_SLICES)
-            : BROWSER_COMMAND_TIMEOUT_MS;
+      // One guard per command. The budget knows how expensive the command
+      // is (a full-page screenshot is a chain of captures); the guard adds
+      // one capture of slack so a command that is nearly done still gets to
+      // return its result instead of being cut off mid-capture.
+      const budget = browserCommandBudgetMs(job.command);
+      const deadline = Date.now() + budget;
       guardTimerRef.current = setTimeout(() => {
         stopActive(
           job.command.kind === "navigate" || job.command.kind === "reload"
             ? browserLoadTimeoutError(job.command)
             : browserCommandTimeoutError(job.command),
         );
-      }, guard);
+      }, budget + BROWSER_CAPTURE_TIMEOUT_MS);
 
       void (async () => {
         try {
-          const result = await execute(job.command);
+          const result = await execute(job.command, deadline);
           if (jobRef.current !== job) return;
           settle(job, { type: "resolve", result });
           finishJob();
@@ -719,18 +811,39 @@ export function BrowserHost() {
         width: VIEWPORT_WIDTH,
       }}
     >
-      <WebView
-        ref={webViewRef}
-        injectedJavaScript={BRIDGE_SCRIPT}
-        originWhitelist={["http://*", "https://*", "about:*"]}
-        onLoadEnd={handleLoadEnd}
-        onMessage={handleMessage}
-        onError={handleWebViewError}
-        onRenderProcessGone={handleRenderProcessGone}
-        setSupportMultipleWindows={false}
-        source={{ uri: pageUrl ?? "about:blank" }}
-        style={{ backgroundColor: "#ffffff", flex: 1 }}
-      />
+      {/*
+        The capture target: a plain, non-collapsible View around the WebView.
+        view-shot can only snapshot a WebView through such a parent, and the
+        parent's own opacity stays out of the bitmap (only alphas inside the
+        captured subtree are applied) — so the dimmed wrapper above does not
+        wash the page out.
+      */}
+      <View
+        collapsable={false}
+        onLayout={(event) => {
+          const { width, height } = event.nativeEvent.layout;
+          hostSizeRef.current = { width, height };
+        }}
+        ref={captureHostRef}
+        style={{ flex: 1 }}
+      >
+        <WebView
+          ref={webViewRef}
+          // Chromium composites the page on the GPU; a hardware layer never
+          // reaches a snapshot. Software rendering is what puts real pixels
+          // into the captured bitmap.
+          androidLayerType="software"
+          injectedJavaScript={BRIDGE_SCRIPT}
+          originWhitelist={["http://*", "https://*", "about:*"]}
+          onLoadEnd={handleLoadEnd}
+          onMessage={handleMessage}
+          onError={handleWebViewError}
+          onRenderProcessGone={handleRenderProcessGone}
+          setSupportMultipleWindows={false}
+          source={{ uri: pageUrl ?? "about:blank" }}
+          style={{ backgroundColor: "#ffffff", flex: 1 }}
+        />
+      </View>
     </View>
   );
 }
@@ -739,4 +852,29 @@ function resolveNavCommand(command: BrowserCommand): Record<string, unknown> {
   if (command.kind === "navigate") return { kind: "navigate", url: command.url };
   if (command.kind === "reload") return { kind: "reload" };
   return { kind: "back" };
+}
+
+/**
+ * Capture options for a host of the given size (dp). The view is always
+ * rasterized at its full physical size, but the PNG is encoded after
+ * view-shot scales it down — and encoding is the expensive half, so the
+ * captured image is capped at the width a reader can actually use.
+ */
+function captureOptions(size: { width: number; height: number }) {
+  const base = {
+    format: "png" as const,
+    quality: 1,
+    result: "tmpfile" as const,
+  };
+  const pixelWidth = Math.round(size.width * PixelRatio.get());
+  const pixelHeight = Math.round(size.height * PixelRatio.get());
+  if (pixelWidth <= 0 || pixelHeight <= 0 || pixelWidth <= MAX_CAPTURE_WIDTH_PX) {
+    return base;
+  }
+  const scale = MAX_CAPTURE_WIDTH_PX / pixelWidth;
+  return {
+    ...base,
+    width: Math.round(pixelWidth * scale),
+    height: Math.round(pixelHeight * scale),
+  };
 }

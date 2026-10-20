@@ -2,7 +2,10 @@ import { tool } from "ai";
 import { z } from "zod";
 import { File } from "expo-file-system";
 
-import { createWorkspaceFileService } from "@/core/services/workspace-file-service";
+import {
+  createWorkspaceFileService,
+  resolveWorkspaceFile,
+} from "@/core/services/workspace-file-service";
 import { createRecord, summarizeValue } from "@/modules/tools/built-in/shared";
 import type { WorkspaceToolFactoryParams } from "@/modules/tools/built-in/types";
 import { checkUrl } from "@/modules/tools/built-in/fetch-page";
@@ -21,7 +24,15 @@ type PersistedShot = {
   mimeType: "image/png";
   size: number;
   top: number;
+  /** Local file URI, for the trace preview card. */
+  uri: string;
 };
+
+/** The workspace reference the model gets, without the local preview path. */
+function toShot(shot: PersistedShot) {
+  const { uri: _uri, ...rest } = shot;
+  return rest;
+}
 
 export function createBrowserTool({ onRecord, repository }: WorkspaceToolFactoryParams) {
   const workspaceService = createWorkspaceFileService(repository);
@@ -71,7 +82,7 @@ export function createBrowserTool({ onRecord, repository }: WorkspaceToolFactory
         }
         const command = buildCommand(action, input);
         const result = await requestBrowserCommand({ command, signal: abortSignal });
-        const output = await finishRecordOutput(action, result, workspaceService, input);
+        const { output, preview } = await finishRecordOutput(action, result, workspaceService, input);
 
         onRecord?.(
           createRecord({
@@ -79,6 +90,7 @@ export function createBrowserTool({ onRecord, repository }: WorkspaceToolFactory
             status: "completed",
             inputSummary,
             outputSummary: summarizeValue(output),
+            preview,
           }),
         );
         return output;
@@ -139,15 +151,15 @@ async function finishRecordOutput(
     case "navigate":
     case "back":
     case "reload":
-      return base;
+      return { output: base };
     case "scroll":
-      return { ...base, top: result.top };
+      return { output: { ...base, top: result.top } };
     case "click":
-      return { ...base, clickedInto: result.heading ?? result.title ?? null };
+      return { output: { ...base, clickedInto: result.heading ?? result.title ?? null } };
     case "type":
-      return { ...base, submitted: result.submit, typedInto: result.heading ?? result.title ?? null };
+      return { output: { ...base, submitted: result.submit, typedInto: result.heading ?? result.title ?? null } };
     case "read":
-      return { ...base, text: result.text, links: result.links };
+      return { output: { ...base, text: result.text, links: result.links } };
     case "screenshot": {
       const persist = async (uri: string, index: number, suffix: string): Promise<PersistedShot> => {
         const file = await workspaceService.createDocumentFileFromFile({
@@ -162,6 +174,7 @@ async function finishRecordOutput(
           mimeType: "image/png",
           size: file.size ?? 0,
           top: index,
+          uri: resolveWorkspaceFile(file.relativePath).uri,
         };
       };
       const shots = await Promise.all(
@@ -172,17 +185,46 @@ async function finishRecordOutput(
       const overview = result.overview
         ? { ...(await persist(result.overview.uri, 0, "-overview.png")), truncated: result.overview.truncated }
         : null;
-      const note = result.truncated
-        ? `The page is taller than the slice budget (${result.pageHeight}px captured as top slices; pass a bigger maxSlices to go further).`
-        : null;
+      // The host explains why a page is incomplete (slice cap, or the time
+      // budget ran out mid-capture) — pass its wording through.
+      const note =
+        result.note ??
+        (result.truncated
+          ? `The page is taller than the slice budget (${result.pageHeight}px captured as top slices; pass a bigger maxSlices to go further).`
+          : null);
+      // The trace row shows the capture itself, so the run reads as "here is
+      // the page" instead of a bare "no content preview".
+      const preview = result.fullPage
+        ? {
+            title: result.title ?? "Page capture",
+            images: [
+              ...(overview
+                ? [{ uri: overview.uri, title: "Whole page (zoomed out)" }]
+                : []),
+              ...shots.map((shot) => ({
+                uri: shot.uri,
+                title: `Slice at ${shot.top}px`,
+              })),
+            ],
+          }
+        : shots[0]
+          ? {
+              title: result.title ?? "Page capture",
+              uri: shots[0].uri,
+              mimeType: "image/png" as const,
+            }
+          : undefined;
       return {
-        ...base,
-        pageHeight: result.pageHeight,
-        truncated: result.truncated,
-        viewport: result.fullPage ? undefined : shots[0],
-        slices: result.fullPage ? shots : undefined,
-        overview,
-        note,
+        output: {
+          ...base,
+          pageHeight: result.pageHeight,
+          truncated: result.truncated,
+          viewport: result.fullPage ? undefined : shots[0] ? toShot(shots[0]) : undefined,
+          slices: result.fullPage ? shots.map(toShot) : undefined,
+          overview: overview ? { ...toShot(overview), truncated: overview.truncated } : null,
+          note,
+        },
+        preview,
       };
     }
   }
