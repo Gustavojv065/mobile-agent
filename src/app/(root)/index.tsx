@@ -154,6 +154,7 @@ import {
   toolTraceIcon,
 } from "@/modules/runtime/tool-label";
 import { appendQuote, formatQuotedText } from "@/modules/chat/quote-text";
+import { getAssistantResponseFooters } from "@/modules/chat/assistant-response";
 import {
   formatUsagePlanLabel,
   formatUsageWindowLabel,
@@ -340,6 +341,10 @@ export default function Screen() {
       null,
     [messages],
   );
+  const assistantResponseFooters = useMemo(
+    () => getAssistantResponseFooters(messages),
+    [messages],
+  );
   // Prompts waiting for delivery (steer or queue) in the open chat only.
   const currentPendingInputs = useMemo(
     () =>
@@ -483,6 +488,8 @@ export default function Screen() {
           message.id === latestUserMessageId && !currentConversationBusy
         }
         message={message}
+        showFooter={assistantResponseFooters.has(message.id)}
+        speechContent={assistantResponseFooters.get(message.id)}
         onEditMessage={handleEditMessage}
         onRegenerate={handleRegenerate}
         onSavePrompt={handleSavePrompt}
@@ -495,6 +502,7 @@ export default function Screen() {
       handleRegenerate,
       handleSavePrompt,
       latestUserMessageId,
+      assistantResponseFooters,
       workspaceFiles,
     ],
   );
@@ -2036,19 +2044,13 @@ const ChatInput = memo(function ChatInput({
   const hasSendableContent = Boolean(
     prompt.trim() || pendingQuote || selectedFileIds.length > 0,
   );
-  // Mid-run: Send appears only when the composed content is valid (it then
-  // steers the active run); the dedicated Stop control carries the row
-  // otherwise and is always present while a run is active — never a morph,
-  // never disabled out of reach, even if the model config changes mid-run.
-  const busySendReady =
-    loading &&
-    hasSendableContent &&
-    editDraft === null &&
-    canSend &&
-    canAttachSelectedFiles;
+  // One primary action beside the mic: Stop while running with an empty
+  // composer, Send as soon as there is text, a quote, or an attachment.
+  const showStop = loading && !hasSendableContent;
   const sendDisabled =
-    !loading &&
-    (!hasSendableContent || !canSend || !canAttachSelectedFiles);
+    !hasSendableContent || !canSend || !canAttachSelectedFiles ||
+    (loading && editDraft !== null);
+  const primaryActionDisabled = !showStop && sendDisabled;
   const clearTriggerText = () => {
     setPrompt((current) => clearComposerTrigger(current));
   };
@@ -2573,7 +2575,7 @@ const ChatInput = memo(function ChatInput({
                     }}
                     placeholder={
                       loading && editDraft === null
-                        ? "Steer the running task, e.g. “skip the tests”"
+                        ? "You can still send messages while the task is running."
                         : "Type a message..."
                     }
                     returnKeyType="default"
@@ -2656,55 +2658,43 @@ const ChatInput = memo(function ChatInput({
                   >
                     <Mic color={theme.text} size={20} />
                   </Pressable>
-                  {/* Send: always there when idle; mid-run only with valid
-                      content, where it delivers as steer or queue. */}
-                  {!loading || busySendReady ? (
-                    <Pressable
-                      accessibilityLabel={
-                        loading ? "Send steering prompt" : "Send message"
-                      }
-                      accessibilityRole="button"
-                      accessibilityState={{ disabled: sendDisabled }}
-                      className="h-12 w-12 items-center justify-center rounded-full bg-foreground dark:bg-foreground-dark"
-                      disabled={sendDisabled}
-                      hitSlop={8}
-                      onPress={() => {
-                        if (sendDisabled) return;
-                        if (editDraft !== null) {
-                          const cleanEditPrompt = prompt.trim();
-                          if (!cleanEditPrompt) return;
-                          KeyboardController.dismiss();
-                          composerRef.current?.blur();
-                          onEditSend(cleanEditPrompt).catch(console.error);
-                          return;
-                        }
-                        handleGenerate().catch(console.error);
-                      }}
-                      style={({ pressed }) => ({
-                        opacity: sendDisabled ? 0.5 : pressed ? 0.85 : 1,
-                      })}
-                    >
-                      <ArrowUp color={theme.background} size={18} />
-                    </Pressable>
-                  ) : null}
-                  {/* Dedicated Stop: its own control for the duration of the
-                      run, independent of what is composed. */}
-                  {loading ? (
-                    <Pressable
-                      accessibilityLabel="Stop generating"
-                      accessibilityRole="button"
-                      className="h-12 w-12 items-center justify-center rounded-full bg-[#F0F0F3] dark:bg-secondary-dark"
-                      hitSlop={8}
-                      onPress={() => {
+                  <Pressable
+                    accessibilityLabel={
+                      showStop
+                        ? "Stop generating"
+                        : loading ? "Send steering prompt" : "Send message"
+                    }
+                    accessibilityRole="button"
+                    accessibilityState={{ disabled: primaryActionDisabled }}
+                    className="h-12 w-12 items-center justify-center rounded-full bg-foreground dark:bg-foreground-dark"
+                    disabled={primaryActionDisabled}
+                    hitSlop={8}
+                    onPress={() => {
+                      if (showStop) {
                         onStop().catch(console.error);
-                      }}
-                      style={({ pressed }) =>
-                        pressed ? { opacity: 0.72 } : null
+                        return;
                       }
-                    >
-                      <StopCircle color={theme.destructive} size={20} />
-                    </Pressable>
-                  ) : null}
+                      if (sendDisabled) return;
+                      if (editDraft !== null) {
+                        const cleanEditPrompt = prompt.trim();
+                        if (!cleanEditPrompt) return;
+                        KeyboardController.dismiss();
+                        composerRef.current?.blur();
+                        onEditSend(cleanEditPrompt).catch(console.error);
+                        return;
+                      }
+                      handleGenerate().catch(console.error);
+                    }}
+                    style={({ pressed }) => ({
+                      opacity: primaryActionDisabled ? 0.5 : pressed ? 0.85 : 1,
+                    })}
+                  >
+                    {showStop ? (
+                      <StopCircle color={theme.background} size={20} />
+                    ) : (
+                      <ArrowUp color={theme.background} size={18} />
+                    )}
+                  </Pressable>
                 </View>
               </>
             )}

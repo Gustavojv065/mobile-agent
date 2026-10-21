@@ -137,6 +137,7 @@ import {
   parseToolSummary,
 } from "@/modules/chat/tool-summary";
 import { buildAssistantParts } from "@/modules/chat/assistant-parts";
+import { splitSpeechText } from "@/modules/chat/assistant-response";
 import {
   isTextWorkspaceFile,
   isVideoWorkspaceFile,
@@ -205,6 +206,8 @@ const MAX_INLINE_SVG_LENGTH = 50_000;
 
 type ChatMessageProps = {
   canEditAndResend?: boolean;
+  showFooter?: boolean;
+  speechContent?: string;
   message: StoredMessage;
   onEditMessage?: (content: string) => void;
   onRegenerate?: (instruction: string) => void;
@@ -1382,6 +1385,8 @@ function SpinningLoader({ color, size }: { color: string; size: number }) {
 
 export const ChatMessage = memo(function ChatMessage({
   canEditAndResend = false,
+  showFooter = true,
+  speechContent,
   message,
   onEditMessage,
   onRegenerate,
@@ -1482,27 +1487,33 @@ export const ChatMessage = memo(function ChatMessage({
     };
   }, [regenerateOpen]);
 
-  const handleToggleSpeech = useCallback(() => {
+  const handleToggleSpeech = useCallback(async () => {
     if (speaking) {
-      Speech.stop().catch(() => {});
+      await Speech.stop().catch(() => {});
       setSpeaking(false);
       return;
     }
 
-    const content = message.content.trim();
+    const content = (speechContent ?? message.content).trim();
 
     if (!content) {
       return;
     }
 
-    Speech.stop().catch(() => {});
-    Speech.speak(content, {
-      onDone: () => setSpeaking(false),
-      onError: () => setSpeaking(false),
-      onStopped: () => setSpeaking(false),
-    });
+    await Speech.stop().catch(() => {});
+    const chunks = splitSpeechText(content, Speech.maxSpeechInputLength);
     setSpeaking(true);
-  }, [message.content, setSpeaking, speaking]);
+    chunks.forEach((chunk, index) => {
+      Speech.speak(chunk, {
+        onDone: index === chunks.length - 1 ? () => setSpeaking(false) : undefined,
+        onError: () => {
+          Speech.stop().catch(() => {});
+          setSpeaking(false);
+        },
+        onStopped: () => setSpeaking(false),
+      });
+    });
+  }, [message.content, setSpeaking, speaking, speechContent]);
 
   const persistCustomPresets = useCallback((presets: RegeneratePreset[]) => {
     setCustomPresets(presets);
@@ -1860,7 +1871,10 @@ export const ChatMessage = memo(function ChatMessage({
     <Message align={align}>
       <ChatMediaContext.Provider value={mediaContext}>
       <View
-        className={cn("w-full gap-1", align === "end" ? "items-end" : "items-start")}
+        className={cn(
+          "w-full gap-1",
+          align === "end" ? "items-end" : "items-start",
+        )}
       >
         {hasUserAttachments ? (
           <FlatList
@@ -1895,7 +1909,11 @@ export const ChatMessage = memo(function ChatMessage({
             variant={variant}
           >
             <BubbleContent
-              className={cn("!px-4", isAssistant ? "!py-0" : undefined)}
+              className={cn(
+                "!px-4",
+                isAssistant ? "!py-0" : undefined,
+                isUser && Boolean(message.metadata?.steeredIntoRunId) && "rounded-br-none",
+              )}
             >
               {isAssistant ? (
               <MarkdownContainerWidthContext.Provider
@@ -2248,9 +2266,9 @@ export const ChatMessage = memo(function ChatMessage({
           </Bubble>
         ) : null}
 
-        {isAssistant &&
+        {isAssistant && showFooter &&
         message.status !== "streaming" &&
-        (message.content.trim() ||
+        ((speechContent ?? message.content).trim() ||
           memoryEvents.length > 0 ||
           generatedImages.length > 0) ? (
           <MessageFooter className="ml-2 -mt-2">
@@ -2270,7 +2288,7 @@ export const ChatMessage = memo(function ChatMessage({
               className="h-9 w-9 px-0"
               variant="ghost"
             />
-            {message.content.trim() ? (
+            {(speechContent ?? message.content).trim() ? (
               <Button
                 accessibilityLabel={speaking ? "Stop" : "Play"}
                 leftIcon={

@@ -111,7 +111,7 @@ export const TraceLine = forwardRef<ComponentRef<typeof View>, TraceLineProps>(
       <TraceLineContext.Provider value={{ status }}>
         <View
           ref={ref}
-          className={cn("min-w-0 flex-row flex-wrap items-center gap-1.5", className)}
+          className={cn("min-w-0 shrink flex-row flex-nowrap items-center gap-1.5", className)}
           {...props}
         >
           {children}
@@ -167,7 +167,7 @@ export const TraceTitle = forwardRef<
         // Not `flex-1`: the title keeps its own width so the chevron sits
         // right after it instead of being pushed to the far end of the row.
         // It still shrinks (and truncates) when the title is long.
-        "flex-shrink",
+        "min-w-0 flex-shrink",
         className,
       )}
       numberOfLines={1}
@@ -337,7 +337,7 @@ export const TraceCollapsibleTrigger = forwardRef<
       ref={ref}
       accessibilityRole="button"
       accessibilityState={{ expanded }}
-      className={cn("flex-row items-center gap-1.5", className)}
+      className={cn("min-w-0 max-w-full flex-row flex-nowrap items-center gap-1.5", className)}
       onPress={() => {
         setOpen(!expanded);
       }}
