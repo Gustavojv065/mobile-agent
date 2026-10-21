@@ -19,6 +19,7 @@ import type {
   McpServerOAuthMode,
   McpServerStatus,
   McpServerTransport,
+  PendingInputDelivery,
   ProviderAuthType,
   ProviderFamily,
   ReasoningEffort,
@@ -170,6 +171,27 @@ export const documentSections = sqliteTable(
     index("idx_document_sections_file_position").on(
       table.fileId,
       table.position,
+    ),
+  ],
+);
+
+export const pendingInputs = sqliteTable(
+  "pending_inputs",
+  {
+    id: text("id").primaryKey().notNull(),
+    conversationId: text("conversation_id")
+      .notNull()
+      .references(() => conversations.id, { onDelete: "cascade" }),
+    content: text("content").notNull(),
+    metadata: text("metadata_json", { mode: "json" }).$type<MessageMetadata | null>(),
+    delivery: text("delivery").$type<PendingInputDelivery>().notNull(),
+    seq: integer("seq").notNull(),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [
+    index("idx_pending_inputs_conversation_seq").on(
+      table.conversationId,
+      table.seq,
     ),
   ],
 );
@@ -423,6 +445,7 @@ export const schema = {
   messages,
   mcpServers,
   modelPresets,
+  pendingInputs,
   pluginStorage,
   plugins,
   providerAccounts,

@@ -29,6 +29,21 @@ export type GenerateModelTextStreamParams = {
   sessionId?: string;
   system?: string;
   tools?: ToolSet;
+  /**
+   * Called by the driver at each safe step boundary (before steps 1+).
+   * Returns user messages that arrived mid-run ("steered" input); the driver
+   * appends them to the loop's message state via `prepareStep`, so the model
+   * sees them before its next step. A whole batch is delivered at once.
+   */
+  takeSteeredUserInput?: (
+    stepNumber: number,
+  ) => ModelMessage[] | Promise<ModelMessage[]>;
+  /**
+   * When steered input is promoted, the caller returns the completed-step
+   * count to reset its step budget from, so the agent gets fresh budget to
+   * incorporate the correction (opencode parity). Read on every stop check.
+   */
+  getStepBudgetBase?: () => number;
 };
 
 export type GenerateModelTextStreamResult = {

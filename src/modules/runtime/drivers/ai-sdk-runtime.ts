@@ -1,4 +1,4 @@
-import { generateText, streamText, type LanguageModelUsage, type StepResult, type ToolSet } from "ai";
+import { generateText, streamText, type LanguageModelUsage, type ModelMessage, type StepResult, type ToolSet } from "ai";
 import { Platform } from "react-native";
 
 import type {
@@ -11,6 +11,36 @@ export function shouldUseStreamingAISDK() {
   return (
     Platform.OS === "web" || Platform.OS === "android" || Platform.OS === "ios"
   );
+}
+
+/**
+ * Step-boundary hook that promotes steered user input into the loop's
+ * message state. Runs before every step after the first, so a steer is
+ * injected exactly once, at the next safe boundary after it arrives —
+ * never mid-stream and never inside a step's retries.
+ */
+function buildSteerPrepareStep(params: GenerateModelTextStreamParams) {
+  const takeSteeredUserInput = params.takeSteeredUserInput;
+  if (!takeSteeredUserInput) return undefined;
+
+  return async (options: { stepNumber: number; messages: ModelMessage[] }) => {
+    if (options.stepNumber === 0) {
+      return undefined;
+    }
+
+    const steered = await takeSteeredUserInput(options.stepNumber);
+
+    if (steered.length === 0) {
+      return undefined;
+    }
+
+    return { messages: [...options.messages, ...steered] };
+  };
+}
+
+/** Steps completed before the current budget window (reset on steer promotion). */
+function getStepBudgetBase(params: GenerateModelTextStreamParams) {
+  return params.getStepBudgetBase?.() ?? 0;
 }
 
 function shouldFallbackToNonStreaming(error: unknown) {
@@ -80,6 +110,17 @@ export async function generateViaAISDK(
 const CONTINUE_AFTER_TOOLS =
   "Continue the original task using the tool results above. Those tool calls already executed: do not repeat completed actions or re-render an existing output. If the requested output is still missing, finish it with the remaining tools. Otherwise provide the final response with the existing output links. Progress commentary before a tool call is not a final response.";
 
+/**
+ * The AI SDK loop ends the moment a step finishes without tool calls, so a
+ * steer that arrived during a run's final (or only) step never sees a
+ * prepareStep boundary. We then continue the turn manually — the SDK's
+ * documented manual-loop pattern — so the steer still lands mid-run instead
+ * of stranding and running later like a queue. Capped so runaway input
+ * cannot chain model calls forever; leftovers fall through to the inbox's
+ * after-run promotion.
+ */
+const MAX_LATE_STEER_CONTINUATIONS = 8;
+
 function needsToolFollowup(steps: StepResult<ToolSet>[], hasTools: boolean, text: string) {
   if (!hasTools) return false;
   const last = steps.at(-1);
@@ -124,6 +165,7 @@ async function generateViaAISDKWithContinuation(
   providerModel: ProviderLanguageModel,
   params: GenerateModelTextStreamParams,
   emptyToolContinuationCount: number,
+  lateSteerCount = 0,
 ): Promise<GenerateModelTextStreamResult> {
   let finalText = "";
   let providerError: unknown;
@@ -143,6 +185,7 @@ async function generateViaAISDKWithContinuation(
   };
 
   try {
+    const steerPrepareStep = buildSteerPrepareStep(params);
     const result = streamText({
       abortSignal: params.abortSignal,
       headers: params.requestHeaders,
@@ -211,10 +254,12 @@ async function generateViaAISDKWithContinuation(
         params.onEvent?.("tool-execution-start", event);
       },
       providerOptions: params.providerOptions as any,
+      ...(steerPrepareStep ? { prepareStep: steerPrepareStep } : {}),
       ...(params.reasoning !== undefined
         ? { reasoning: params.reasoning }
         : {}),
-      stopWhen: ({ steps }) => steps.length >= params.maxToolSteps,
+      stopWhen: ({ steps }) =>
+        steps.length - getStepBudgetBase(params) >= params.maxToolSteps,
       system: params.system,
       tools: params.tools,
     });
@@ -271,9 +316,9 @@ async function generateViaAISDKWithContinuation(
         generatedFiles: allFiles.length > 0 ? allFiles : files,
         toolResults: allToolResults.length > 0 ? allToolResults : toolResults,
         usage,
-        stepLimitReached: steps.length >= params.maxToolSteps && steps.at(-1)?.finishReason === "tool-calls",
+        stepLimitReached: steps.length - getStepBudgetBase(params) >= params.maxToolSteps && steps.at(-1)?.finishReason === "tool-calls",
       };
-      if (needsToolFollowup(steps, (current.toolResults?.length ?? 0) > 0, finalText) && steps.length < params.maxToolSteps) {
+      if (needsToolFollowup(steps, (current.toolResults?.length ?? 0) > 0, finalText) && steps.length - getStepBudgetBase(params) < params.maxToolSteps) {
         if (emptyToolContinuationCount >= 2) {
           throw new Error("The model stopped after tools without a final response after two recovery attempts. Completed tool outputs are preserved in the chat activity; ask to continue rather than repeat the task.");
         }
@@ -281,7 +326,7 @@ async function generateViaAISDKWithContinuation(
           providerModel,
           {
             ...params,
-            maxToolSteps: params.maxToolSteps - steps.length,
+            maxToolSteps: params.maxToolSteps - (steps.length - getStepBudgetBase(params)),
             messages: [
               ...params.messages,
               ...responseMessages,
@@ -295,6 +340,36 @@ async function generateViaAISDKWithContinuation(
           emptyToolContinuationCount + 1,
         );
         return mergeContinuation(current, next);
+      }
+
+      // Late steers: the model finished this turn without tool calls, so no
+      // further step boundary exists to inject them. Continue the same turn
+      // manually so they still land mid-run.
+      if (
+        params.takeSteeredUserInput &&
+        !params.abortSignal?.aborted &&
+        lateSteerCount < MAX_LATE_STEER_CONTINUATIONS
+      ) {
+        // stepNumber 0: this continuation restarts the step window, so the
+        // promotion resets the budget for the fresh call.
+        const lateSteers = await params.takeSteeredUserInput(0);
+        if (lateSteers.length > 0) {
+          const next = await generateViaAISDKWithContinuation(
+            providerModel,
+            {
+              ...params,
+              maxToolSteps: params.maxToolSteps,
+              messages: [
+                ...params.messages,
+                ...responseMessages,
+                ...lateSteers,
+              ],
+            },
+            emptyToolContinuationCount,
+            lateSteerCount + 1,
+          );
+          return mergeContinuation(current, next);
+        }
       }
 
       return current;
@@ -345,7 +420,9 @@ export async function generateViaAISDKNonStreaming(
   providerModel: ProviderLanguageModel,
   params: GenerateModelTextStreamParams,
   continuationCount = 0,
+  lateSteerCount = 0,
 ): Promise<GenerateModelTextStreamResult> {
+  const steerPrepareStep = buildSteerPrepareStep(params);
   const result = await generateText({
     abortSignal: params.abortSignal,
     headers: params.requestHeaders,
@@ -364,8 +441,10 @@ export async function generateViaAISDKNonStreaming(
       params.onEvent?.("tool-execution-start", event);
     },
     providerOptions: params.providerOptions as any,
+    ...(steerPrepareStep ? { prepareStep: steerPrepareStep } : {}),
     ...(params.reasoning !== undefined ? { reasoning: params.reasoning } : {}),
-    stopWhen: ({ steps }) => steps.length >= params.maxToolSteps,
+    stopWhen: ({ steps }) =>
+      steps.length - getStepBudgetBase(params) >= params.maxToolSteps,
     system: params.system,
     tools: params.tools,
   });
@@ -407,17 +486,37 @@ export async function generateViaAISDKNonStreaming(
     toolResults: allToolResults.length > 0 ? allToolResults : result.toolResults,
     usage: result.totalUsage,
     stepLimitReached:
-      result.steps.length >= params.maxToolSteps &&
+      result.steps.length - getStepBudgetBase(params) >= params.maxToolSteps &&
       result.steps.at(-1)?.finishReason === "tool-calls",
   };
-  if (needsToolFollowup(result.steps, (current.toolResults?.length ?? 0) > 0, result.text) && result.steps.length < params.maxToolSteps) {
+  if (needsToolFollowup(result.steps, (current.toolResults?.length ?? 0) > 0, result.text) && result.steps.length - getStepBudgetBase(params) < params.maxToolSteps) {
     if (continuationCount >= 2) throw new Error("The model stopped after tools without a final response after two recovery attempts. Ask to continue rather than repeat the task.");
     const next = await generateViaAISDKNonStreaming(providerModel, {
       ...params,
-      maxToolSteps: params.maxToolSteps - result.steps.length,
+      maxToolSteps: params.maxToolSteps - (result.steps.length - getStepBudgetBase(params)),
       messages: [...params.messages, ...result.responseMessages, { role: "user", content: CONTINUE_AFTER_TOOLS }],
     }, continuationCount + 1);
     return mergeContinuation(current, next);
+  }
+
+  // Late steers: no further prepareStep boundary exists (the model finished
+  // without tool calls), so continue the same turn manually to deliver them.
+  if (
+    params.takeSteeredUserInput &&
+    !params.abortSignal?.aborted &&
+    lateSteerCount < MAX_LATE_STEER_CONTINUATIONS
+  ) {
+    // stepNumber 0: this continuation restarts the step window, so the
+    // promotion resets the budget for the fresh call.
+    const lateSteers = await params.takeSteeredUserInput(0);
+    if (lateSteers.length > 0) {
+      const next = await generateViaAISDKNonStreaming(providerModel, {
+        ...params,
+        maxToolSteps: params.maxToolSteps,
+        messages: [...params.messages, ...result.responseMessages, ...lateSteers],
+      }, continuationCount, lateSteerCount + 1);
+      return mergeContinuation(current, next);
+    }
   }
   return current;
 }

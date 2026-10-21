@@ -183,6 +183,7 @@ export async function buildHeadlessSnapshot(
     memory,
     mcpServers,
     messages,
+    pendingInputs: await repositories.pendingInputRepository.listAll(),
     plugins,
     providerAccounts: [],
     savedPrompts,

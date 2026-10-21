@@ -12,6 +12,7 @@ import {
   ChevronDown,
   ChevronLeft,
   ClipboardList,
+  Clock,
   Edit,
   FolderOpen,
   Image as ImageIcon,
@@ -24,6 +25,7 @@ import {
   Trash2,
   Upload,
   X,
+  Zap,
 } from "lucide-react-native";
 import {
   memo,
@@ -127,6 +129,8 @@ import type {
   ExternalFolderSession,
   McpServerConfig,
   ModelRef,
+  PendingInput,
+  PendingInputDelivery,
   PendingToolApproval,
   ReasoningEffort,
   SavedPrompt,
@@ -296,6 +300,8 @@ export default function Screen() {
     editAndResendMessage,
     createSavedPrompt,
     messages,
+    pendingInputs,
+    cancelPendingInput,
     pendingToolApproval,
     pendingQuestionnaire,
     pendingSecretRequest,
@@ -333,6 +339,14 @@ export default function Screen() {
       [...messages].reverse().find((message) => message.role === "user")?.id ??
       null,
     [messages],
+  );
+  // Prompts waiting for delivery (steer or queue) in the open chat only.
+  const currentPendingInputs = useMemo(
+    () =>
+      pendingInputs.filter(
+        (item) => item.conversationId === currentConversation?.id,
+      ),
+    [currentConversation?.id, pendingInputs],
   );
   const latestUserMessageIdRef = useRef(latestUserMessageId);
   latestUserMessageIdRef.current = latestUserMessageId;
@@ -641,6 +655,8 @@ export default function Screen() {
                 editNonce={editNonce}
                 importFiles={importFiles}
                 loading={currentConversationBusy}
+                pendingInputs={currentPendingInputs}
+                onCancelPendingInput={cancelPendingInput}
                 onEditSend={handleEditSend}
                 onCreateConversation={createConversation}
                 onOpenSettings={handleOpenSettings}
@@ -1210,12 +1226,14 @@ const ChatInput = memo(function ChatInput({
   importFiles,
   loading,
   mcpServers,
+  onCancelPendingInput,
   onCreateConversation,
   onEditSend,
   onOpenMcpSettings,
   onOpenSettings,
   onSend,
   onStop,
+  pendingInputs,
   pickConversationFolder,
   clearConversationFolder,
   clearWorkspaceFiles,
@@ -1268,6 +1286,9 @@ const ChatInput = memo(function ChatInput({
     : never;
   loading: boolean;
   mcpServers: McpServerConfig[];
+  /** Prompts awaiting delivery in this conversation (steer/queue inbox). */
+  pendingInputs: PendingInput[];
+  onCancelPendingInput: (pendingInputId: string) => Promise<void>;
   onCreateConversation: () => Promise<void>;
   onEditSend: (content: string) => Promise<void>;
   onOpenMcpSettings: () => void;
@@ -1276,6 +1297,7 @@ const ChatInput = memo(function ChatInput({
     content: string;
     fileContextSource?: "external-folder" | "workspace";
     selectedFileIds?: string[];
+    delivery?: PendingInputDelivery;
   }) => Promise<void>;
   onStop: () => Promise<void>;
   pickConversationFolder: () => Promise<ExternalFolderSession>;
@@ -1686,19 +1708,19 @@ const ChatInput = memo(function ChatInput({
             ? "external-folder"
             : "workspace";
 
+    // While a run is active the send still goes through — sendMessage
+    // admits it to the pending inbox as a steer or queue instead of
+    // failing, so a blocked send is only about content/permissions.
     if (
-      loading ||
       !canSend ||
       (!cleanPrompt && !pendingQuote && selectedFileIds.length === 0) ||
       !canAttachSelectedFiles
     ) {
-      const reason = loading
-        ? "loading"
-        : !canSend
-          ? "canSend"
-          : !canAttachSelectedFiles
-            ? "canAttachSelectedFiles"
-            : "empty";
+      const reason = !canSend
+        ? "canSend"
+        : !canAttachSelectedFiles
+          ? "canAttachSelectedFiles"
+          : "empty";
       logComposerDebug("handle-generate-blocked", {
         canAttachSelectedFiles,
         canSend,
@@ -1720,6 +1742,7 @@ const ChatInput = memo(function ChatInput({
 
     const previousPrompt = prompt;
     const previousSelectedFileIds = selectedFileIds;
+    const wasBusy = loading;
 
     if (folderIntent.requiresFolderAccess) {
       if (!supportsTools) {
@@ -1760,9 +1783,17 @@ const ChatInput = memo(function ChatInput({
 
       await onSend({
         content: cleanPrompt,
+        // Mid-run sends always steer: the prompt is injected into the
+        // active run at its next safe boundary. There is no queue picker —
+        // typing mid-run means redirecting the run now.
+        ...(wasBusy
+          ? { delivery: "steer" as PendingInputDelivery }
+          : {}),
         fileContextSource: nextFileContextSource,
         selectedFileIds: previousSelectedFileIds,
       });
+      // The mode stays sticky for the rest of the run: several back-to-back
+      // steers in a row must not silently fall back to queue.
       requestAnimationFrame(() => {
         scrollToEnd();
       });
@@ -2002,11 +2033,22 @@ const ChatInput = memo(function ChatInput({
     );
   };
 
+  const hasSendableContent = Boolean(
+    prompt.trim() || pendingQuote || selectedFileIds.length > 0,
+  );
+  // Mid-run: Send appears only when the composed content is valid (it then
+  // steers the active run); the dedicated Stop control carries the row
+  // otherwise and is always present while a run is active — never a morph,
+  // never disabled out of reach, even if the model config changes mid-run.
+  const busySendReady =
+    loading &&
+    hasSendableContent &&
+    editDraft === null &&
+    canSend &&
+    canAttachSelectedFiles;
   const sendDisabled =
     !loading &&
-    ((!prompt.trim() && !pendingQuote && selectedFileIds.length === 0) ||
-      !canSend ||
-      !canAttachSelectedFiles);
+    (!hasSendableContent || !canSend || !canAttachSelectedFiles);
   const clearTriggerText = () => {
     setPrompt((current) => clearComposerTrigger(current));
   };
@@ -2309,6 +2351,58 @@ const ChatInput = memo(function ChatInput({
           </View>
         ) : null}
 
+        {pendingInputs.length > 0 ? (
+          <Animated.View
+            entering={FadeIn.duration(150)}
+            layout={LinearTransition.duration(220)}
+            className="overflow-hidden rounded-card border border-border bg-card dark:border-border-dark dark:bg-card-dark"
+          >
+            {pendingInputs.map((item, index) => (
+              <Animated.View
+                key={item.id}
+                exiting={FadeOut.duration(120)}
+                layout={LinearTransition.duration(200)}
+              >
+                {index > 0 ? <Separator /> : null}
+                <View className="flex-row items-center gap-2 px-3 py-2.5">
+                  {item.delivery === "steer" ? (
+                    <Zap color={theme.accent} size={14} />
+                  ) : (
+                    <Clock color={theme.textSecondary} size={14} />
+                  )}
+                  <Text
+                    className="min-w-0 flex-1 font-sans text-sm text-foreground dark:text-foreground-dark"
+                    numberOfLines={1}
+                  >
+                    {item.content}
+                  </Text>
+                  <Text className="font-sans text-xs text-muted-foreground dark:text-muted-foreground-dark">
+                    {item.delivery === "steer" ? "Steering" : "Queued"}
+                  </Text>
+                  <Pressable
+                    accessibilityHint="Removes the prompt before it is delivered"
+                    accessibilityLabel={
+                      item.delivery === "steer"
+                        ? "Cancel steering prompt"
+                        : "Cancel queued prompt"
+                    }
+                    accessibilityRole="button"
+                    hitSlop={8}
+                    onPress={() => {
+                      onCancelPendingInput(item.id).catch(console.error);
+                    }}
+                    style={({ pressed }) =>
+                      pressed ? { opacity: 0.6 } : null
+                    }
+                  >
+                    <X color={theme.textSecondary} size={14} />
+                  </Pressable>
+                </View>
+              </Animated.View>
+            ))}
+          </Animated.View>
+        ) : null}
+
         {composerActionsOpen ? (
           <View className="overflow-hidden rounded-card border border-border bg-card dark:border-border-dark dark:bg-card-dark">
             <ScrollView
@@ -2477,7 +2571,11 @@ const ChatInput = memo(function ChatInput({
                         event.nativeEvent.contentSize.height,
                       );
                     }}
-                    placeholder="Type a message..."
+                    placeholder={
+                      loading && editDraft === null
+                        ? "Steer the running task, e.g. “skip the tests”"
+                        : "Type a message..."
+                    }
                     returnKeyType="default"
                     scrollEnabled={composerScrollEnabled}
                     submitBehavior="newline"
@@ -2537,60 +2635,76 @@ const ChatInput = memo(function ChatInput({
                   </Pressable>
 
                   <View className="flex-1" />
-                  {!loading ? (
+                  {/* Mid-run sends always steer — no delivery-mode toggle
+                      lives in this row. */}
+                  {/* Voice stays available while a run is active so a steer
+                      can be dictated hands-free. */}
+                  <Pressable
+                    accessibilityLabel="Start voice input"
+                    accessibilityRole="button"
+                    className="h-12 w-12 items-center justify-center rounded-full bg-[#F0F0F3] dark:bg-secondary-dark"
+                    hitSlop={8}
+                    onPress={() => {
+                    KeyboardController.dismiss();
+                    composerRef.current?.blur();
+                    setComposerActionsOpen(false);
+                    voiceInput.start().catch(console.error);
+                    }}
+                    style={({ pressed }) =>
+                      pressed ? { opacity: 0.82 } : null
+                    }
+                  >
+                    <Mic color={theme.text} size={20} />
+                  </Pressable>
+                  {/* Send: always there when idle; mid-run only with valid
+                      content, where it delivers as steer or queue. */}
+                  {!loading || busySendReady ? (
                     <Pressable
-                      accessibilityLabel="Start voice input"
+                      accessibilityLabel={
+                        loading ? "Send steering prompt" : "Send message"
+                      }
+                      accessibilityRole="button"
+                      accessibilityState={{ disabled: sendDisabled }}
+                      className="h-12 w-12 items-center justify-center rounded-full bg-foreground dark:bg-foreground-dark"
+                      disabled={sendDisabled}
+                      hitSlop={8}
+                      onPress={() => {
+                        if (sendDisabled) return;
+                        if (editDraft !== null) {
+                          const cleanEditPrompt = prompt.trim();
+                          if (!cleanEditPrompt) return;
+                          KeyboardController.dismiss();
+                          composerRef.current?.blur();
+                          onEditSend(cleanEditPrompt).catch(console.error);
+                          return;
+                        }
+                        handleGenerate().catch(console.error);
+                      }}
+                      style={({ pressed }) => ({
+                        opacity: sendDisabled ? 0.5 : pressed ? 0.85 : 1,
+                      })}
+                    >
+                      <ArrowUp color={theme.background} size={18} />
+                    </Pressable>
+                  ) : null}
+                  {/* Dedicated Stop: its own control for the duration of the
+                      run, independent of what is composed. */}
+                  {loading ? (
+                    <Pressable
+                      accessibilityLabel="Stop generating"
                       accessibilityRole="button"
                       className="h-12 w-12 items-center justify-center rounded-full bg-[#F0F0F3] dark:bg-secondary-dark"
                       hitSlop={8}
                       onPress={() => {
-                      KeyboardController.dismiss();
-                      composerRef.current?.blur();
-                      setComposerActionsOpen(false);
-                      voiceInput.start().catch(console.error);
+                        onStop().catch(console.error);
                       }}
                       style={({ pressed }) =>
-                        pressed ? { opacity: 0.82 } : null
+                        pressed ? { opacity: 0.72 } : null
                       }
                     >
-                      <Mic color={theme.text} size={20} />
+                      <StopCircle color={theme.destructive} size={20} />
                     </Pressable>
                   ) : null}
-                  <Pressable
-                    accessibilityLabel={
-                      loading ? "Stop generating" : "Send message"
-                    }
-                    accessibilityRole="button"
-                    accessibilityState={{ disabled: sendDisabled }}
-                    className="h-12 w-12 items-center justify-center rounded-full bg-foreground dark:bg-foreground-dark"
-                    disabled={sendDisabled}
-                    hitSlop={8}
-                    onPress={() => {
-                      if (sendDisabled) return;
-                      if (loading) {
-                        onStop().catch(console.error);
-                        return;
-                      }
-                      if (editDraft !== null) {
-                        const cleanEditPrompt = prompt.trim();
-                        if (!cleanEditPrompt) return;
-                        KeyboardController.dismiss();
-                        composerRef.current?.blur();
-                        onEditSend(cleanEditPrompt).catch(console.error);
-                        return;
-                      }
-                      handleGenerate().catch(console.error);
-                    }}
-                    style={({ pressed }) => ({
-                      opacity: sendDisabled ? 0.5 : pressed ? 0.85 : 1,
-                    })}
-                  >
-                    {loading ? (
-                      <StopCircle color={theme.background} size={18} />
-                    ) : (
-                      <ArrowUp color={theme.background} size={18} />
-                    )}
-                  </Pressable>
                 </View>
               </>
             )}

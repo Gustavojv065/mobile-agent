@@ -23,6 +23,8 @@ import type {
   MessageMetadata,
   ModelPreset,
   NotificationSettings,
+  PendingInput,
+  PendingInputDelivery,
   PluginConfig,
   ProviderAccount,
   ProviderConfig,
@@ -130,6 +132,7 @@ export interface MessageRepository {
     sequence: number;
     status: StoredMessage["status"];
   }): Promise<StoredMessage>;
+  delete(id: string): Promise<void>;
   getNextSequence(conversationId: string): Promise<number>;
   listByConversation(conversationId: string): Promise<StoredMessage[]>;
   listStreaming(): Promise<StoredMessage[]>;
@@ -176,6 +179,7 @@ export interface AgentRunRepository {
     input: {
   agentId?: string | null;
   agentMode?: AgentMode;
+  assistantMessageId?: string;
   completedAt?: string | null;
   externalFolderSession?: ExternalFolderSession | null;
   fileContextSource?: FileContextSource | null;
@@ -498,6 +502,20 @@ export interface ProviderAccountRepository {
   updateLabel(id: string, label: string): Promise<void>;
 }
 
+export interface PendingInputRepository {
+  create(input: {
+    content: string;
+    conversationId: string;
+    delivery: PendingInputDelivery;
+    id?: string;
+    metadata?: MessageMetadata | null;
+  }): Promise<PendingInput>;
+  listByConversation(conversationId: string): Promise<PendingInput[]>;
+  listAll(): Promise<PendingInput[]>;
+  delete(id: string): Promise<void>;
+  deleteByConversation(conversationId: string): Promise<void>;
+}
+
 export interface PluginRepository {
   create(input: {
     author?: string | null;
@@ -546,6 +564,7 @@ export type Repositories = {
   memoryStore: MemoryStore;
   mcpServerRepository: McpServerRepository;
   messageRepository: MessageRepository;
+  pendingInputRepository: PendingInputRepository;
   pluginRepository: PluginRepository;
   providerAccountRepository: ProviderAccountRepository;
   savedPromptRepository: SavedPromptRepository;

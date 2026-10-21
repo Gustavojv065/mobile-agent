@@ -118,12 +118,15 @@ import type {
     BuiltInToolSettings,
     Conversation,
     ExternalFolderSession,
+    FileContextSource,
     McpServerAuthMode,
     McpServerConfig,
     McpServerOAuthMode,
     McpServerTransport,
     MemoryEntry,
     ModelRef,
+    PendingInput,
+    PendingInputDelivery,
     PendingQuestionnaire,
     PendingQuestionnaireAnswer,
     PendingSecretRequest,
@@ -429,6 +432,9 @@ type AppStateContextValue = {
     importConversationJson: (json: string) => Promise<Conversation>;
     selectModel: (modelRef: ModelRef) => Promise<void>;
     sendMessage: (input: SendMessageInput) => Promise<void>;
+    /** Pending (not yet delivered) mid-run prompts for all conversations. */
+    pendingInputs: PendingInput[];
+    cancelPendingInput: (pendingInputId: string) => Promise<void>;
     sending: boolean;
     stopSending: () => Promise<void>;
     reasoningEffort: ReasoningEffort;
@@ -597,6 +603,8 @@ const CHAT_KEYS = [
     "sendMessage",
     "sending",
     "stopSending",
+    "pendingInputs",
+    "cancelPendingInput",
     "reasoningEffort",
     "setReasoningEffort",
     "conversationAgentName",
@@ -911,6 +919,13 @@ export function AppStateProvider({ children }: AppStateProviderProps) {
         async (runId) => {
             pendingAgentRunIdsRef.current.push(runId);
         },
+    );
+    // Set alongside sendMessage below; lets executeAgentRun (declared
+    // earlier) promote stranded/queued inputs when a run settles.
+    const promoteAfterRunRef = useRef<(runId: string) => void>(() => {});
+    // Boot sweep hook, assigned with the other inbox callbacks below.
+    const promoteBootPendingInputsRef = useRef<() => Promise<void>>(
+        async () => {},
     );
     const schedulerEngineRef = useRef<ReturnType<typeof createSchedulerEngine> | null>(
         null,
@@ -1544,6 +1559,8 @@ export function AppStateProvider({ children }: AppStateProviderProps) {
                 : [];
             const memory = await repositories.memoryStore.read();
             const mcpServers = await repositories.mcpServerRepository.list();
+            const pendingInputs =
+                await repositories.pendingInputRepository.listAll();
             const savedPrompts = await repositories.savedPromptRepository.list();
             const schedules = await repositories.scheduleRepository.list();
             const skills = await repositories.skillRepository.list();
@@ -1587,6 +1604,7 @@ export function AppStateProvider({ children }: AppStateProviderProps) {
                 memory,
                 mcpServers,
                 messages,
+                pendingInputs,
                 plugins: hydratedPlugins,
                 providerAccounts,
                 savedPrompts,
@@ -1615,6 +1633,19 @@ export function AppStateProvider({ children }: AppStateProviderProps) {
                             current.currentConversation?.id === currentConversation?.id
                                 ? upsertMessages(nextSnapshot.messages, current.messages)
                                 : nextSnapshot.messages,
+                        // Keep inbox rows admitted after this hydration's DB
+                        // read (steers land while runs — and hydrates — run).
+                        pendingInputs: (() => {
+                            const seen = new Set(
+                                nextSnapshot.pendingInputs.map((item) => item.id),
+                            );
+                            return [
+                                ...nextSnapshot.pendingInputs,
+                                ...current.pendingInputs.filter(
+                                    (item) => !seen.has(item.id),
+                                ),
+                            ];
+                        })(),
                     }
                     : nextSnapshot;
                 const attachmentSafeSnapshot = reconcileHydratedAttachments(
@@ -1726,6 +1757,10 @@ export function AppStateProvider({ children }: AppStateProviderProps) {
         }
 
         resumePendingRuns().catch(() => { });
+        // Promote inbox rows whose conversation has no run to resume
+        // (app killed after the run finished). Skipped automatically for
+        // conversations with active/resumable runs.
+        promoteBootPendingInputsRef.current().catch(() => { });
     }, [hydrating, ready, resumePendingRuns]);
 
     useEffect(() => {
@@ -3821,6 +3856,9 @@ Your output must be:
 
     const deleteConversation = useCallback(
         async (conversationId: string) => {
+        await repositoriesRef.current.pendingInputRepository
+            .deleteByConversation(conversationId)
+            .catch(() => {});
         await repositoriesRef.current.conversationRepository.deleteById(
             conversationId,
         );
@@ -4468,6 +4506,12 @@ Your output must be:
                 () => {},
             );
             throw error;
+        } finally {
+            // Run settled (completed/failed/cancelled): promote anything the
+            // user steered or queued while it was busy.
+            if (!registry.isDisposed()) {
+                promoteAfterRunRef.current(runId);
+            }
         }
     },
         [failOrphanedStreamingMessage, generateAndApplyConversationTitle, hydrate, notifyRunStateChange, refreshScheduler, requestRunQuestionnaire, requestRunSecret, requestToolApproval, updateRunRecord],
@@ -4659,6 +4703,73 @@ Your output must be:
         });
     }, [cancelRun]);
 
+    /**
+     * Admits a prompt submitted while the conversation's run is busy into
+     * the pending-input inbox (opencode-style): "steer" is injected into the
+     * active run at its next safe step boundary, "queue" becomes the next
+     * normal turn once the chat is idle. Rows are deleted on delivery or
+     * cancellation, so nothing lingers after it has been used.
+     */
+    const admitPendingInput = useCallback(
+        async (input: {
+            content: string;
+            conversationId: string;
+            delivery: PendingInputDelivery;
+            externalFolderSession: ExternalFolderSession | null;
+            fileContextSource: FileContextSource;
+            selectedFileIds: string[];
+        }) => {
+            const repositories = repositoriesRef.current;
+            const metadata: import("@/core/types/app-state").MessageMetadata = {};
+
+            if (
+                input.selectedFileIds.length > 0 ||
+                input.fileContextSource === "external-folder"
+            ) {
+                metadata.externalFolderDisplayName =
+                    input.externalFolderSession?.displayName ?? null;
+                metadata.fileContextSource = input.fileContextSource;
+                if (input.selectedFileIds.length > 0) {
+                    metadata.selectedFileIds = input.selectedFileIds;
+                }
+            }
+
+            const pendingInput = await repositories.pendingInputRepository.create(
+                {
+                    content: input.content,
+                    conversationId: input.conversationId,
+                    delivery: input.delivery,
+                    metadata: Object.keys(metadata).length > 0 ? metadata : null,
+                },
+            );
+
+            setSnapshot((current) => ({
+                ...current,
+                pendingInputs: [...current.pendingInputs, pendingInput],
+            }));
+
+            return pendingInput;
+        },
+        [],
+    );
+
+    const cancelPendingInput = useCallback(async (pendingInputId: string) => {
+        try {
+            await repositoriesRef.current.pendingInputRepository.delete(
+                pendingInputId,
+            );
+        } catch (error) {
+            console.warn("Failed to cancel pending input.", error);
+        }
+
+        setSnapshot((current) => ({
+            ...current,
+            pendingInputs: current.pendingInputs.filter(
+                (item) => item.id !== pendingInputId,
+            ),
+        }));
+    }, []);
+
     const sendMessage = useCallback(async (input: SendMessageInput) => {
         const cleanContent = input.content.trim();
         const selectedFileIds = Array.from(
@@ -4674,7 +4785,11 @@ Your output must be:
         }
 
         const repositories = repositoriesRef.current;
-        const activeConversation = snapshotRef.current.currentConversation;
+        const activeConversation = input.conversationId
+            ? (snapshotRef.current.conversations.find(
+                  (item) => item.id === input.conversationId,
+              ) ?? null)
+            : snapshotRef.current.currentConversation;
         const currentModel = snapshotRef.current.resolvedConfig.currentModel;
         const fileContextSource = resolveFileContextSource({
             currentConversation: activeConversation,
@@ -4732,10 +4847,21 @@ Your output must be:
                 conversationId: conversation.id,
                 existingRunId: existingRun.id,
                 existingRunStatus: existingRun.status,
+                delivery: input.delivery ?? "queue",
             });
-            failSend(
-                "This chat is still finishing the previous request. Wait for it to complete or stop it before sending again.",
-            );
+            // Busy conversation: don't fail — admit the prompt to the
+            // pending-input inbox. "steer" injects into the active run at
+            // its next step boundary; "queue" waits as the next turn.
+            setError(null);
+            await admitPendingInput({
+                content: cleanContent,
+                conversationId: conversation.id,
+                delivery: input.delivery ?? "queue",
+                externalFolderSession,
+                fileContextSource,
+                selectedFileIds,
+            });
+            return;
         }
 
         if (!currentModel) {
@@ -5110,7 +5236,118 @@ Your output must be:
                 runError instanceof Error ? runError.message : "Failed to start run.",
             );
         });
-    }, [ensureConversationPersisted]);
+    }, [admitPendingInput, ensureConversationPersisted]);
+
+    /**
+     * Promotes one pending input once the chat has no active run: stranded
+     * steers first (they outlived the run they were aimed at), then the
+     * oldest queued item — one per run, like opencode. Each promotion
+     * removes its row, so the chain terminates when the inbox is empty.
+     */
+    const promotePendingInputs = useCallback(
+        async (conversationId: string) => {
+            const repositories = repositoriesRef.current;
+            try {
+                const activeRun =
+                    await repositories.agentRunRepository.getActiveByConversation(
+                        conversationId,
+                    );
+                if (activeRun) {
+                    return;
+                }
+
+                const pending =
+                    await repositories.pendingInputRepository.listByConversation(
+                        conversationId,
+                    );
+                if (pending.length === 0) {
+                    return;
+                }
+
+                const next =
+                    pending.find((item) => item.delivery === "steer") ??
+                    pending[0];
+                await repositories.pendingInputRepository.delete(next.id);
+                setSnapshot((current) => ({
+                    ...current,
+                    pendingInputs: current.pendingInputs.filter(
+                        (item) => item.id !== next.id,
+                    ),
+                }));
+
+                await sendMessage({
+                    content: next.content,
+                    conversationId,
+                    fileContextSource: next.metadata?.fileContextSource,
+                    selectedFileIds: next.metadata?.selectedFileIds ?? [],
+                });
+            } catch (error) {
+                console.warn("Failed to promote pending input.", error);
+            }
+        },
+        [sendMessage],
+    );
+
+    /**
+     * After a run settles (completed, failed, or cancelled), hand the inbox
+     * to the next turn instead of stranding whatever was steered/queued.
+     */
+    const promoteAfterRun = useCallback(
+        (runId: string) => {
+            if (runRegistryRef.current.isDisposed()) {
+                return;
+            }
+            void (async () => {
+                const run =
+                    snapshotRef.current.agentRuns.find(
+                        (item) => item.id === runId,
+                    ) ??
+                    (await repositoriesRef.current.agentRunRepository.getById(
+                        runId,
+                    ));
+                if (!run) {
+                    return;
+                }
+                await promotePendingInputs(run.conversationId);
+            })().catch(() => {
+                // Promotion is best-effort; rows stay in the DB for the
+                // next completion or boot pass.
+            });
+        },
+        [promotePendingInputs],
+    );
+    promoteAfterRunRef.current = promoteAfterRun;
+
+    /**
+     * Boot-time sweep: pending inputs whose conversation has no run at all
+     * (the app was killed after the run finished) are promoted immediately.
+     * Conversations with active/resumable runs are skipped — those runs
+     * drain the inbox through their own completion hook.
+     */
+    const promoteBootPendingInputs = useCallback(async () => {
+        const repositories = repositoriesRef.current;
+        try {
+            const pending =
+                await repositories.pendingInputRepository.listAll();
+            const conversationIds = Array.from(
+                new Set(pending.map((item) => item.conversationId)),
+            );
+
+            for (const conversationId of conversationIds) {
+                const activeRun =
+                    await repositories.agentRunRepository.getActiveByConversation(
+                        conversationId,
+                    );
+                if (activeRun) {
+                    continue;
+                }
+                await promotePendingInputs(conversationId);
+            }
+        } catch (error) {
+            console.warn("Failed to promote pending inputs on boot.", error);
+        }
+    }, [promotePendingInputs]);
+    promoteBootPendingInputsRef.current = promoteBootPendingInputs;
 
     const retryRun = useCallback(
         async (runId: string) => {
@@ -5278,6 +5515,8 @@ Your output must be:
             sendMessage,
             sending,
             stopSending,
+            pendingInputs: snapshot.pendingInputs,
+            cancelPendingInput,
             reasoningEffort:
                 snapshot.currentConversation?.reasoningEffort ?? "medium",
             setReasoningEffort,
@@ -5290,7 +5529,7 @@ Your output must be:
             setCurrentSelectedSkillIds,
             conversations: snapshot.conversations,
         }),
-        [cancelRun, clearConversationFolder, createConversation, deleteConversation, dismissPendingSecretRequest, editAndResendMessage, exportConversationJson, importConversationJson, pendingQuestionnaire, pendingSecretRequest, pendingToolApproval, pickConversationFolder, renameConversation, resolveNotificationApproval, resolvePendingQuestionnaire, resolvePendingToolApproval, resumePendingRuns, retryRun, runStatusByConversation, selectConversation, sendMessage, sending, setConversationAgent, setCurrentSelectedFileIds, setCurrentSelectedSkillIds, setReasoningEffort, snapshot.agentRuns, snapshot.agents, snapshot.conversations, snapshot.currentConversation, snapshot.currentSelectedAgentId, snapshot.currentSelectedFileIds, snapshot.currentSelectedSkillIds, snapshot.messages, stopSending, submitPendingSecretRequest],
+        [cancelPendingInput, cancelRun, clearConversationFolder, createConversation, deleteConversation, dismissPendingSecretRequest, editAndResendMessage, exportConversationJson, importConversationJson, pendingQuestionnaire, pendingSecretRequest, pendingToolApproval, pickConversationFolder, renameConversation, resolveNotificationApproval, resolvePendingQuestionnaire, resolvePendingToolApproval, resumePendingRuns, retryRun, runStatusByConversation, selectConversation, sendMessage, sending, setConversationAgent, setCurrentSelectedFileIds, setCurrentSelectedSkillIds, setReasoningEffort, snapshot.agentRuns, snapshot.agents, snapshot.conversations, snapshot.currentConversation, snapshot.currentSelectedAgentId, snapshot.currentSelectedFileIds, snapshot.currentSelectedSkillIds, snapshot.messages, snapshot.pendingInputs, stopSending, submitPendingSecretRequest],
     );
     const configValue = useMemo(
         (): ConfigContextValue => ({
@@ -5577,6 +5816,8 @@ export function useChat() {
         selectConversation: chat.selectConversation,
         setConversationPinned: chat.setConversationPinned,
         sendMessage: chat.sendMessage,
+        pendingInputs: chat.pendingInputs,
+        cancelPendingInput: chat.cancelPendingInput,
         skills: config.skills,
         updateSavedPrompt: config.updateSavedPrompt,
         deleteSavedPrompt: config.deleteSavedPrompt,

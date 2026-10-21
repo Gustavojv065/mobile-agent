@@ -390,6 +390,8 @@ export type MessageMetadata = {
   promptArtifacts?: PromptArtifact[];
   reasoning?: ReasoningBlock[];
   runId?: string | null;
+  /** Set on a user message that was steered into a running turn. */
+  steeredIntoRunId?: string | null;
   selectedFileIds?: string[];
   termuxRunAnchors?: TermuxRunAnchor[];
   todoList?: TodoListItem[];
@@ -583,10 +585,41 @@ export type DocumentSection = {
   updatedAt: string;
 };
 
+/**
+ * How a prompt submitted while a run is active gets delivered:
+ * - "steer": injected into the running turn at the next step boundary, as
+ *   guidance for the task in progress (not a new task).
+ * - "queue": parked as the next normal user turn, delivered after the
+ *   current run finishes (steers always win over queued items).
+ */
+export type PendingInputDelivery = "steer" | "queue";
+
+/**
+ * A user prompt that was admitted while the conversation's run was busy.
+ * Pending rows are deleted on delivery or cancellation (opencode-style
+ * pending-only inbox).
+ */
+export type PendingInput = {
+  id: string;
+  conversationId: string;
+  content: string;
+  metadata: MessageMetadata | null;
+  delivery: PendingInputDelivery;
+  createdAt: string;
+};
+
 export type SendMessageInput = {
   content: string;
   fileContextSource?: FileContextSource;
   selectedFileIds?: string[];
+  /** Mid-run delivery mode; only used when the conversation is busy. */
+  delivery?: PendingInputDelivery;
+  /**
+   * Target a specific conversation instead of the current one. Used to
+   * promote stranded/queued pending inputs (they may belong to a chat the
+   * user is no longer viewing).
+   */
+  conversationId?: string;
 };
 
 export type AppSettings = {
@@ -674,6 +707,7 @@ export type AppStateSnapshot = {
   memory: MemoryEntry | null;
   mcpServers: McpServerConfig[];
   messages: StoredMessage[];
+  pendingInputs: PendingInput[];
   plugins: PluginConfig[];
   providerAccounts: ProviderAccount[];
   savedPrompts: SavedPrompt[];

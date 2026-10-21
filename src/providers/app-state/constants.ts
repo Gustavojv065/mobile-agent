@@ -107,6 +107,7 @@ export const EMPTY_SNAPSHOT: AppStateSnapshot = {
     memory: null,
     mcpServers: [],
     messages: [],
+    pendingInputs: [],
     plugins: [],
     providerAccounts: [],
     savedPrompts: [],

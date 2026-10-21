@@ -1,4 +1,4 @@
-import type { ToolSet } from "ai";
+import type { ModelMessage, ToolSet } from "ai";
 import { updateReasoningPhase } from "@/modules/runtime/reasoning-stream";
 import type { RefObject } from "react";
 
@@ -96,6 +96,7 @@ import type {
   ExternalFolderSession,
   MemoryEvent,
   MessageMetadata,
+  PendingInput,
   PendingQuestionnaireAnswer,
   PendingQuestionnaireRequest,
   PendingSecretRequestAnswer,
@@ -138,6 +139,20 @@ const FOLDER_BOUND_TOOL_NAMES = new Set([
   "moveEntry",
   "renameEntry",
 ]);
+
+/**
+ * Marks a steered prompt so the model cannot mistake it for old context.
+ * Without an explicit marker, weaker models treat mid-run input as noise and
+ * keep executing their previous plan (observed in the opencode #32157
+ * incident report).
+ */
+function formatSteeredUserContent(content: string) {
+  return [
+    "[Steered input] The user sent this while you were already working. It is guidance for the task in progress, not a new task. Apply it to your next step and continue; only stop if it explicitly asks you to.",
+    "",
+    content,
+  ].join("\n");
+}
 
 const WORKSPACE_AUTO_APPROVED_BUILT_IN_TOOL_NAMES = new Set([
   "analyzeAudio",
@@ -920,6 +935,13 @@ export async function executeClaimedAgentRun(
   let refreshAssistantState: null | (() => void) = null;
   const pendingArtifactWrites: Promise<void>[] = [];
   let assistantText = startingAssistantText;
+  // A mid-run steer splits the assistant's single message row: text
+  // streamed before the steer is finalized on the current row, the steer
+  // entries land next, and a fresh continuation row receives everything
+  // after it. Without the split a steer row always sorts below the entire
+  // (still-growing) response, which reads as "the steer landed at the end".
+  let activeAssistantMessage = assistantMessage;
+  let assistantSplitCharOffset = 0;
   let persistTimeout: ReturnType<typeof setTimeout> | null = null;
   let lastSnapshotTime = 0;
   let snapshotTimer: ReturnType<typeof setTimeout> | null = null;
@@ -940,7 +962,7 @@ export async function executeClaimedAgentRun(
       return {
         ...current,
         messages: current.messages.map((msg) =>
-          msg.id === assistantMessage.id
+          msg.id === activeAssistantMessage.id
             ? {
                 ...msg,
                 content: assistantText,
@@ -990,7 +1012,7 @@ export async function executeClaimedAgentRun(
       if (runRegistry.isDisposed()) return;
       repositories.messageRepository
         .updateContent({
-          id: assistantMessage.id,
+          id: activeAssistantMessage.id,
           content: assistantText,
           error: null,
           metadata: buildLiveAssistantMetadata(),
@@ -1022,7 +1044,7 @@ export async function executeClaimedAgentRun(
     }
 
     await repositories.messageRepository.updateContent({
-      id: assistantMessage.id,
+      id: activeAssistantMessage.id,
       content: assistantText,
       error: errorMessage,
       metadata,
@@ -1187,7 +1209,7 @@ export async function executeClaimedAgentRun(
       const storedMessages =
         await repositories.messageRepository.listByConversation(conversation.id);
       const storedMessage = storedMessages.find(
-        (message) => message.id === assistantMessage.id,
+        (message) => message.id === activeAssistantMessage.id,
       );
       if (!storedMessage) {
         pushTimelineEvent(backgroundCompletionEvent);
@@ -1944,8 +1966,231 @@ export async function executeClaimedAgentRun(
       }),
     );
 
+    // Steer inbox for this run. Promoted at the next safe step boundary by
+    // the driver's prepareStep; queued items are never drained here — they
+    // only start a new turn once this run is idle.
+    let steerStepBudgetBase = 0;
+    const takeSteeredUserInput = async (
+      stepNumber: number,
+    ): Promise<ModelMessage[]> => {
+      if (runRegistry.isDisposed() || abortController.signal.aborted) {
+        return [];
+      }
+
+      let pending: PendingInput[];
+      try {
+        pending = await repositories.pendingInputRepository.listByConversation(
+          conversation.id,
+        );
+      } catch (pendingError) {
+        console.warn("Failed to read pending steers.", pendingError);
+        return [];
+      }
+
+      const steers = pending.filter((item) => item.delivery === "steer");
+      if (steers.length === 0) {
+        return [];
+      }
+
+      const steerIds = new Set(steers.map((steer) => steer.id));
+      for (const steer of steers) {
+        try {
+          await repositories.pendingInputRepository.delete(steer.id);
+        } catch (deleteError) {
+          console.warn("Failed to consume pending steer.", deleteError);
+        }
+      }
+
+      // Fresh step budget so the run can act on the correction even when it
+      // is close to maxToolSteps (opencode resets its step allowance on
+      // steer promotion; a batch of steers resets it once).
+      steerStepBudgetBase = stepNumber;
+
+      ui.publishSnapshot((current) => ({
+        ...current,
+        pendingInputs: current.pendingInputs.filter(
+          (item) => !steerIds.has(item.id),
+        ),
+      }));
+
+      // Split the assistant's row at the delivery point: text streamed so
+      // far is finalized on the current row, the steer entries land next,
+      // and a fresh continuation row receives everything after — so the
+      // steer renders mid-response instead of after the full reply.
+      const preSplitText = assistantText;
+      const rowToSplit = activeAssistantMessage;
+      // Deep copy: buildAssistantMetadata hands back the live closure
+      // arrays by reference, and those are reset below for the
+      // continuation row.
+      const liveSplitMetadata = buildLiveAssistantMetadata();
+      const splitMetadata = liveSplitMetadata
+        ? (JSON.parse(JSON.stringify(liveSplitMetadata)) as MessageMetadata)
+        : null;
+      if (preSplitText.trim()) {
+        try {
+          await repositories.messageRepository.updateContent({
+            content: preSplitText,
+            error: null,
+            id: rowToSplit.id,
+            metadata: splitMetadata,
+            status: "completed",
+          });
+        } catch (splitError) {
+          console.warn(
+            "Failed to finalize the pre-steer assistant segment.",
+            splitError,
+          );
+        }
+      } else {
+        // Nothing streamed yet: drop the empty row instead of rendering an
+        // empty bubble ahead of the steer. Activity metadata lives in this
+        // run's closures and is written to the continuation row, so no
+        // durable record is lost.
+        try {
+          await repositories.messageRepository.delete(rowToSplit.id);
+        } catch (deleteError) {
+          console.warn(
+            "Failed to remove the empty pre-steer assistant segment.",
+            deleteError,
+          );
+        }
+      }
+
+      const deliveredMessages: StoredMessage[] = [];
+      for (const steer of steers) {
+        try {
+          deliveredMessages.push(
+            await repositories.messageRepository.create({
+              conversationId: conversation.id,
+              content: steer.content,
+              metadata: {
+                ...(steer.metadata ?? {}),
+                steeredIntoRunId: run.id,
+              },
+              role: "user",
+              sequence: await repositories.messageRepository.getNextSequence(
+                conversation.id,
+              ),
+              status: "completed",
+            }),
+          );
+        } catch (persistError) {
+          console.warn("Failed to persist delivered steer.", persistError);
+        }
+      }
+
+      // Fresh continuation row for the post-steer text. The run record
+      // follows it so resume/recovery and the final flush land there too.
+      let continuationRow: StoredMessage | null = null;
+      try {
+        continuationRow = await repositories.messageRepository.create({
+          conversationId: conversation.id,
+          content: "",
+          role: "assistant",
+          sequence: await repositories.messageRepository.getNextSequence(
+            conversation.id,
+          ),
+          status: "streaming",
+        });
+        activeAssistantMessage = continuationRow;
+        run.assistantMessageId = continuationRow.id;
+        await safeUpdateRunRecord(run.id, {
+          assistantMessageId: continuationRow.id,
+        });
+      } catch (continuationError) {
+        console.warn(
+          "Failed to start a post-steer assistant segment.",
+          continuationError,
+        );
+      }
+
+      // Pending debounced writes for the old row are dropped so they cannot
+      // land on the new one, text-anchored activity metadata restarts with
+      // the continuation row (its frozen copy stays on the previous row),
+      // and the active-row accumulator starts empty at this split point.
+      if (persistTimeout) {
+        clearTimeout(persistTimeout);
+        persistTimeout = null;
+      }
+      if (snapshotTimer) {
+        clearTimeout(snapshotTimer);
+        snapshotTimer = null;
+      }
+      pendingSnapshotStatus = null;
+      pendingSnapshotError = null;
+      if (continuationRow) {
+        toolExecutions.length = 0;
+        toolRunAnchors.clear();
+        reasoning.length = 0;
+        activeReasoning.clear();
+        executionTimeline.length = 0;
+        memoryEvents.length = 0;
+        promptArtifacts.length = 0;
+        todoList.length = 0;
+        assistantSplitCharOffset += preSplitText.length;
+        assistantText = "";
+      }
+
+      if (deliveredMessages.length > 0 || continuationRow) {
+        const preSplitSegment: StoredMessage | null = preSplitText.trim()
+          ? {
+              ...rowToSplit,
+              content: preSplitText,
+              error: null,
+              metadata: splitMetadata,
+              status: "completed",
+              updatedAt: new Date().toISOString(),
+            }
+          : null;
+        ui.publishSnapshot((current) => {
+          if (current.currentConversation?.id !== conversation.id) {
+            return current;
+          }
+          // An empty pre-split row was deleted above; a populated one is
+          // replaced by its finalized segment.
+          const baseMessages = preSplitText.trim()
+            ? current.messages
+            : current.messages.filter((item) => item.id !== rowToSplit.id);
+          return {
+            ...current,
+            messages: upsertMessages(baseMessages, [
+              ...deliveredMessages,
+              ...(preSplitSegment ? [preSplitSegment] : []),
+              ...(continuationRow ? [continuationRow] : []),
+            ]),
+          };
+        });
+        if (deliveredMessages.length > 0) {
+          pushTimelineEvent(
+            createExecutionTimelineEvent({
+              detail:
+                deliveredMessages.length === 1
+                  ? "Delivered mid-run guidance into the active turn."
+                  : `Delivered ${deliveredMessages.length} steered prompts into the active turn.`,
+              kind: "run",
+              status: "info",
+              title: "Steer delivered",
+              createdAt: new Date().toISOString(),
+            }),
+          );
+        }
+      }
+
+      // If transcript persistence failed, still hand the steers to the
+      // model — the rows are already consumed, and losing the user's
+      // guidance would be worse than missing a transcript row.
+      return (deliveredMessages.length > 0
+        ? deliveredMessages.map((message) => message.content)
+        : steers.map((steer) => steer.content)
+      ).map((content) => ({
+        role: "user" as const,
+        content: formatSteeredUserContent(content),
+      }));
+    };
+
     const runtimeResultPromise = modelRuntime.generateTextStream({
       abortSignal: abortController.signal,
+      getStepBudgetBase: () => steerStepBudgetBase,
       maxToolSteps: 9999,
       messages: runtimeMessages,
       model: resolvedModel,
@@ -1999,6 +2244,7 @@ export async function executeClaimedAgentRun(
       secretStore: secureSecretStore,
       sessionId: run.id,
       system: runtimeSystem,
+      takeSteeredUserInput,
       tools: runtimeTools,
     });
     // Attach an early handler so React Native doesn't report the abort
@@ -2094,7 +2340,11 @@ export async function executeClaimedAgentRun(
 
     await Promise.allSettled(pendingArtifactWrites);
 
-    assistantText = runtimeResult.text || assistantText;
+    // A steer split already finalized the pre-split text on its own row;
+    // the merged driver text spans every segment, so this row owns only
+    // the post-split tail.
+    assistantText =
+      runtimeResult.text.slice(assistantSplitCharOffset) || assistantText;
     const generatedImages = await persistGeneratedImages(
       runtimeResult.generatedFiles ?? [],
     );
@@ -2201,7 +2451,7 @@ export async function executeClaimedAgentRun(
           current.currentConversation?.id === conversation.id
             ? upsertMessages(current.messages, [
                 {
-                  ...assistantMessage,
+                  ...activeAssistantMessage,
                   content: assistantText,
                   error: null,
                   metadata: assistantMetadata,
@@ -2338,7 +2588,7 @@ export async function executeClaimedAgentRun(
             current.currentConversation?.id === conversation.id
               ? upsertMessages(current.messages, [
                   {
-                    ...assistantMessage,
+                    ...activeAssistantMessage,
                     content:
                       assistantText ||
                       `Retrying (${nextRetryCount}/${maxRetries})...`,
@@ -2429,7 +2679,7 @@ export async function executeClaimedAgentRun(
           current.currentConversation?.id === conversation.id
             ? upsertMessages(current.messages, [
                 {
-                  ...assistantMessage,
+                  ...activeAssistantMessage,
                   content: assistantText,
                   error: finalStatus === "canceled" ? null : errorMessage,
                   metadata: assistantMetadata,

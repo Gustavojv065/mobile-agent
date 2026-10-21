@@ -5,7 +5,7 @@ import {
 } from "@/modules/agents/agent-markdown";
 import { serializeSkillToMarkdown } from "@/modules/skills/skill-markdown";
 
-const DATABASE_VERSION = 33;
+const DATABASE_VERSION = 34;
 
 const CORE_SCHEMA_REPAIR_SQL = `
   PRAGMA journal_mode = WAL;
@@ -130,6 +130,19 @@ const CORE_SCHEMA_REPAIR_SQL = `
 
   CREATE INDEX IF NOT EXISTS idx_plugin_storage_plugin_id
   ON plugin_storage(plugin_id);
+
+  CREATE TABLE IF NOT EXISTS pending_inputs (
+    id TEXT PRIMARY KEY NOT NULL,
+    conversation_id TEXT NOT NULL,
+    content TEXT NOT NULL,
+    metadata_json TEXT,
+    delivery TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_pending_inputs_conversation_seq
+  ON pending_inputs(conversation_id, seq);
 `;
 
 export async function migrateAppDatabase(db: SQLiteDatabase) {
@@ -1541,6 +1554,28 @@ export async function migrateAppDatabase(db: SQLiteDatabase) {
     `);
 
     currentVersion = 33;
+  }
+
+  if (currentVersion === 33) {
+    // Pending user inputs (steer/queue inbox): prompts submitted while the
+    // conversation's run was busy. Rows are deleted on delivery or cancel.
+    await db.execAsync(`
+      CREATE TABLE IF NOT EXISTS pending_inputs (
+        id TEXT PRIMARY KEY NOT NULL,
+        conversation_id TEXT NOT NULL,
+        content TEXT NOT NULL,
+        metadata_json TEXT,
+        delivery TEXT NOT NULL,
+        seq INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_pending_inputs_conversation_seq
+      ON pending_inputs(conversation_id, seq);
+    `);
+
+    currentVersion = 34;
   }
 
   await db.execAsync(`PRAGMA user_version = ${currentVersion}`);

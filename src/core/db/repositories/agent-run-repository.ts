@@ -98,6 +98,7 @@ export function createAgentRunRepository(db: AppDatabase): AgentRunRepository {
         .update(agentRuns)
         .set({
           status: input.status ?? current.status,
+          assistantMessageId: input.assistantMessageId ?? current.assistantMessageId,
           providerId: input.providerId ?? current.providerId,
           modelId: input.modelId ?? current.modelId,
           input: input.input ?? current.input,

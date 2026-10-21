@@ -34,6 +34,9 @@ export function createMessageRepository(db: AppDatabase): MessageRepository {
 
       return row;
     },
+    async delete(id) {
+      await db.delete(messages).where(eq(messages.id, id));
+    },
     async getNextSequence(conversationId) {
       const row = (
         await db
