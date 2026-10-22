@@ -24,6 +24,7 @@ import {
   DrawerTrigger,
 } from "@/components/ui/drawer";
 import { Input } from "@/components/ui/input";
+import { progressLabel } from "@/modules/updates/progress";
 import { Separator } from "@/components/ui/separator";
 import type { DatabaseMode, ModelRef } from "@/core/types/app-state";
 import { cn } from "@/core/utils";
@@ -75,7 +76,7 @@ export default function SettingsScreen() {
     updateThemeMode,
     providers,
   } = useConfig();
-  const { release, installing, installUpdate } = useUpdate();
+  const { release, installing, downloadProgress, installUpdate } = useUpdate();
   const [databaseUrlInput, setDatabaseUrlInput] = useState("");
   const [modelSearch, setModelSearch] = useState("");
   const [busyKey, setBusyKey] = useState<string | null>(null);
@@ -597,7 +598,9 @@ export default function SettingsScreen() {
           label="App Update"
           value={
             installing
-              ? "Downloading..."
+              ? downloadProgress !== null
+                ? `Downloading ${progressLabel(downloadProgress)}`
+                : "Downloading..."
               : release
                 ? `Update ${release.tagName}`
                 : "Up to date"

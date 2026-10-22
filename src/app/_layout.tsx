@@ -6,6 +6,7 @@ import { AudioAnalysisHost } from "@/components/ui/audio-analysis-host";
 import { DismissibleBanner } from "@/components/ui/dismissible-banner";
 import { BrowserHost } from "@/components/ui/browser-host";
 import { ReleaseNotesDrawer } from "@/components/ui/release-notes-drawer";
+import { OtaUpdateDrawer } from "@/components/ui/ota-update-drawer";
 import { ScenePreviewHost } from "@/components/ui/video-preview-host";
 import { MixCheckHost } from "@/components/ui/video-mix-host";
 import { VideoRenderHost } from "@/components/ui/video-render-host";
@@ -227,34 +228,57 @@ function InAppNotificationBanner() {
  * New-release notice: a "what's new" drawer with the release notes. Dismissing it
  * hides it for the rest of the session; "Skip this version" hides it permanently
  * for that release (Settings > App Update stays as the manual path).
+ *
+ * OTA updates get their own informational drawer instead: it opens only once
+ * the downloaded bundle is actually running — never while it downloads — with
+ * a full-width Close. An APK release takes precedence — it needs a decision
+ * from the user.
  */
 function ReleaseUpdateNotice() {
-  const { release, bannerDismissed, installing, installUpdate, skipUpdate } =
-    useUpdate();
+  const {
+    release,
+    bannerDismissed,
+    downloadProgress,
+    installing,
+    installUpdate,
+    skipUpdate,
+    ota,
+  } = useUpdate();
   const [notesDismissedTag, setNotesDismissedTag] = useState<string | null>(
     null,
   );
 
-  if (!release || bannerDismissed || notesDismissedTag === release.tagName) {
-    return null;
+  if (release && !bannerDismissed && notesDismissedTag !== release.tagName) {
+    return (
+      <ReleaseNotesDrawer
+        downloadProgress={downloadProgress}
+        installing={installing}
+        onInstall={() => {
+          void installUpdate();
+        }}
+        onLater={() => {
+          setNotesDismissedTag(release.tagName);
+        }}
+        onSkip={() => {
+          void skipUpdate();
+        }}
+        open
+        release={release}
+      />
+    );
   }
 
-  return (
-    <ReleaseNotesDrawer
-      installing={installing}
-      onInstall={() => {
-        void installUpdate();
-      }}
-      onLater={() => {
-        setNotesDismissedTag(release.tagName);
-      }}
-      onSkip={() => {
-        void skipUpdate();
-      }}
-      open
-      release={release}
-    />
-  );
+  if (ota.phase === "applied") {
+    return (
+      <OtaUpdateDrawer
+        notes={ota.notes}
+        onDone={ota.acknowledge}
+        open
+      />
+    );
+  }
+
+  return null;
 }
 
 function SplashScreenController({

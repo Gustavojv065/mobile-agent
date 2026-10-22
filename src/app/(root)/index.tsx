@@ -2575,7 +2575,7 @@ const ChatInput = memo(function ChatInput({
                     }}
                     placeholder={
                       loading && editDraft === null
-                        ? "You can still send messages while the task is running."
+                        ? "You can still send messages."
                         : "Type a message..."
                     }
                     returnKeyType="default"
