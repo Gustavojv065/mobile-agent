@@ -31,6 +31,40 @@ The top-level `version` is the catalog schema version, not a content revision.
 Keep it at `1` when adding or updating entries. Incrementing it requires shipping
 parser support in the app first; older app releases reject unknown versions.
 
+## Chat starter prompts
+
+Edit `chat-prompts.json` on `main` to change the suggestion buttons on the empty
+chat screen without shipping a new app version (after the version with this
+feature is installed). The app checks on launch, every 5 minutes while active,
+and on resume when stale. Offline or invalid responses keep the last in-memory
+prompts, or the bundled default on a fresh launch.
+
+```json
+{
+  "version": 1,
+  "enabled": true,
+  "prompts": [
+    {
+      "label": "Design a landing page",
+      "prompt": "Design a landing page for a product. Start by asking what the product is and who it's for..."
+    }
+  ]
+}
+```
+
+- Keep `version` at `1`. Set `enabled` to `false` to hide the whole block
+  remotely.
+- Up to 6 prompts. Each has a short `label` (the button text, at most 60
+  characters after whitespace is flattened) and a full `prompt` (up to 2000
+  characters, newlines preserved) that is dropped into the composer when the
+  button is tapped — the user can then edit and send it.
+- Content is plain text, not HTML or executable Markdown. Never include
+  secrets. Invalid content is ignored rather than breaking the empty chat.
+
+The top-level `version` is the catalog schema version, not a content revision.
+Keep it at `1` when adding or updating entries. Incrementing it requires shipping
+parser support in the app first; older app releases reject unknown versions.
+
 The app fetches the other catalogs from the `main` branch at runtime and caches them in
 memory for 30 minutes. After a catalog change is merged, users receive it when
 that cache expires or the app restarts; an app rebuild is not required.

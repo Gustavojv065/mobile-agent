@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "enabled": true,
+  "prompts": [
+    {
+      "label": "Design a landing page",
+      "prompt": "Design a landing page for a product. Start by asking what the product is and who it's for if it isn't clear. Then propose a headline, a short subheadline, a primary call to action, and a simple section layout (hero, features, social proof, footer). Keep the copy concise and the design clean."
+    },
+    {
+      "label": "Draft a professional email",
+      "prompt": "Draft a professional email. Tell me the recipient, the goal of the email, and any key points to include. Write a clear subject line, a polite opening, the main message in the body, and a specific call to action or next step in the closing. Keep it short and easy to read."
+    },
+    {
+      "label": "Brainstorm ideas for a side project",
+      "prompt": "Brainstorm ideas for a side project. Ask about my interests, skills, and how much time I have, then suggest several realistic project ideas. For each idea, give a one-line pitch, the core feature to build first, and why it would be fun or worthwhile."
+    },
+    {
+      "label": "Remember that I prefer concise answers",
+      "prompt": "Remember that I prefer concise answers. Going forward, keep responses short and to the point, skip unnecessary preamble, and lead with the answer or result. Only add detail when I ask for it."
+    }
+  ]
+}

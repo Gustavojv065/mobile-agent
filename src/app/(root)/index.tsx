@@ -68,6 +68,7 @@ import {
 } from "quote-selection";
 
 import { ComposerTip } from "@/components/chat/composer-tip";
+import { useStarterPrompts } from "@/modules/chat/use-starter-prompts";
 import { CodeBlock, CodeBlockContent } from "@/components/ui/code-block";
 import { Container } from "@/components/shared/container";
 import { SearchBox } from "@/components/shared/search-box";
@@ -234,13 +235,6 @@ function matchesMenuQuery(
   return haystack.includes(query);
 }
 
-const STARTER_PROMPTS = [
-  "Design a landing page",
-  "Draft a professional email",
-  "Brainstorm ideas for a side project",
-  "Remember that I prefer concise answers",
-];
-
 function messageKeyExtractor(message: StoredMessage) {
   return message.id;
 }
@@ -286,6 +280,7 @@ export default function Screen() {
     setConversationApprovalMode,
   } = useConfig();
   const chatInfo = useChatInfo();
+  const starterPrompts = useStarterPrompts();
   const {
     approvePendingToolApproval,
     approvePendingToolApprovalForChat,
@@ -360,6 +355,8 @@ export default function Screen() {
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState<string | null>(null);
   const [editNonce, setEditNonce] = useState(0);
+  const [insertDraft, setInsertDraft] = useState<string | null>(null);
+  const [insertNonce, setInsertNonce] = useState(0);
   const [savePromptTitle, setSavePromptTitle] = useState("");
   const [savePromptContent, setSavePromptContent] = useState("");
   const [savePromptBusy, setSavePromptBusy] = useState(false);
@@ -375,6 +372,10 @@ export default function Screen() {
     setEditDraft(content);
     setEditNonce((current) => current + 1);
     setEditingMessageId(latestUserMessageIdRef.current);
+  }, []);
+  const handleSelectStarterPrompt = useCallback((prompt: string) => {
+    setInsertDraft(prompt);
+    setInsertNonce((current) => current + 1);
   }, []);
   const handleRegenerate = useCallback(
     (instruction: string) => {
@@ -590,24 +591,25 @@ export default function Screen() {
                       showsVerticalScrollIndicator={false}
                       ListEmptyComponent={
                         currentModel ? (
-                          <View className="gap-sp-3 py-sp-5">
-                            <View>
-                              {STARTER_PROMPTS.map((prompt) => (
-                                <Button
-                                  key={prompt}
-                                  className="justify-start"
-                                  onPress={() =>
-                                    sendMessage({
-                                      content: prompt,
-                                    }).catch(console.error)
-                                  }
-                                  variant="ghost"
-                                >
-                                  {prompt}
-                                </Button>
-                              ))}
+                          starterPrompts.enabled &&
+                          starterPrompts.prompts.length > 0 ? (
+                            <View className="gap-sp-3 py-sp-5">
+                              <View>
+                                {starterPrompts.prompts.map((starter) => (
+                                  <Button
+                                    key={starter.label}
+                                    className="justify-start"
+                                    onPress={() =>
+                                      handleSelectStarterPrompt(starter.prompt)
+                                    }
+                                    variant="ghost"
+                                  >
+                                    {starter.label}
+                                  </Button>
+                                ))}
+                              </View>
                             </View>
-                          </View>
+                          ) : null
                         ) : (
                           <View className="px-sp-2 py-sp-8">
                             <Text className="font-sans text-base text-muted-foreground dark:text-muted-foreground-dark">
@@ -661,6 +663,8 @@ export default function Screen() {
                 currentModelRef={currentModel?.ref ?? null}
                 editDraft={editDraft}
                 editNonce={editNonce}
+                insertDraft={insertDraft}
+                insertNonce={insertNonce}
                 importFiles={importFiles}
                 loading={currentConversationBusy}
                 pendingInputs={currentPendingInputs}
@@ -1232,6 +1236,8 @@ const ChatInput = memo(function ChatInput({
   editDraft,
   editNonce,
   importFiles,
+  insertDraft,
+  insertNonce,
   loading,
   mcpServers,
   onCancelPendingInput,
@@ -1287,6 +1293,9 @@ const ChatInput = memo(function ChatInput({
   currentModelRef: ModelRef | null;
   editDraft: string | null;
   editNonce: number;
+  /** Full text dropped into the composer by an external trigger (e.g. a starter prompt). */
+  insertDraft: string | null;
+  insertNonce: number;
   importFiles: typeof useChat extends () => infer T
     ? T extends { importFiles: infer F }
       ? F
@@ -1357,6 +1366,10 @@ const ChatInput = memo(function ChatInput({
     quoted: string;
   } | null>(null);
   const [composerContentHeight, setComposerContentHeight] = useState(0);
+  // Bumped to force a re-mount of the composer field. Android only fires
+  // `onContentSizeChange` when a controlled TextInput mounts, not when its
+  // value is set programmatically, so a remount is what re-measures the height.
+  const [composerKey, setComposerKey] = useState(0);
   const [filesDrawerOpen, setFilesDrawerOpen] = useState(false);
   const [composerActionsOpen, setComposerActionsOpen] = useState(false);
   const composerActionsRotation = useDerivedValue(() =>
@@ -1446,6 +1459,31 @@ const ChatInput = memo(function ChatInput({
 
     setPrompt("");
   }, [editDraft, editNonce]);
+
+  // Starter prompts drop a full prompt straight into the composer (rather than
+  // sending it). This is separate from the edit flow so it never flips the send
+  // button into edit-and-resend mode, and it leaves the composer alone when idle.
+  useEffect(() => {
+    if (insertDraft === null) return;
+
+    setPrompt(insertDraft);
+    // Remount the field so Android re-measures the inserted content height
+    // (programmatic value changes don't emit `onContentSizeChange`).
+    setComposerKey((current) => current + 1);
+    const focusComposer = () => {
+      composerRef.current?.focus();
+      KeyboardController.setFocusTo("current");
+    };
+
+    // Focus after the remount commits, not before, so the ref points at the
+    // live field.
+    const focusFrame = requestAnimationFrame(focusComposer);
+    const focusTimeout = setTimeout(focusComposer, 320);
+    return () => {
+      cancelAnimationFrame(focusFrame);
+      clearTimeout(focusTimeout);
+    };
+  }, [insertDraft, insertNonce]);
 
   // Native Android text selection offers an "Ask agent" item (see the
   // `quote-selection` Expo module). The highlighted text becomes a pending
@@ -2564,6 +2602,7 @@ const ChatInput = memo(function ChatInput({
                   }}
                 >
                   <Textarea
+                    key={composerKey}
                     ref={composerRef}
                     className="min-h-0 rounded-full border-0 bg-transparent px-4 py-3 text-base dark:bg-transparent"
                     onChangeText={setPrompt}
