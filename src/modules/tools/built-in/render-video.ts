@@ -179,6 +179,7 @@ export function createRenderVideoTool({
           hasAudio: result.hasAudio,
           audioWarnings: result.audioWarnings,
           timings: result.timings,
+          phases: result.phases,
           encoder: result.encoder,
           visualWarnings: result.visualWarnings ?? [],
         };

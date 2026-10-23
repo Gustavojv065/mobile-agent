@@ -70,6 +70,18 @@ function segResult(index: number, hasAudio = true, encoder = "c2.samsung.avc.enc
     hasAudio,
     audioWarnings: index === 0 ? ["first-seg-note"] : [],
     encoder,
+    timings: {
+      frames: 900,
+      prepareAvgMs: 10,
+      prepareMaxMs: 40,
+      captureAvgMs: 5,
+      captureMaxMs: 12,
+      bridgeAvgMs: 3,
+      bridgeMaxMs: 9,
+      audioPrepMs: 50,
+      pageLoadMs: 100,
+      firstFrameMs: 400,
+    },
   };
 }
 
@@ -103,6 +115,12 @@ describe("renderSegments", () => {
     expect(out.uri).toBe("file:///cache/job-seg-0.mp4");
     expect(out.warnings).toEqual([]);
     expect(out.audioWarnings).toEqual(["first-seg-note"]);
+    // Single-pass: wall time only, no concat; fixed costs pass through.
+    expect(out.phases?.totalMs).toBeGreaterThanOrEqual(0);
+    expect(out.phases?.concatMs).toBeUndefined();
+    expect(out.phases?.pageLoadTotalMs).toBe(100);
+    expect(out.phases?.firstFrameTotalMs).toBe(400);
+    expect(out.phases?.audioPrepTotalMs).toBe(50);
   });
 
   it("splits long timelines into 30 s jobs and concatenates", async () => {
@@ -128,6 +146,21 @@ describe("renderSegments", () => {
     expect(out.hasAudio).toBe(true);
     expect(progress[0]).toBeGreaterThanOrEqual(0);
     expect(progress[progress.length - 1]).toBeGreaterThan(progress[0]);
+  });
+
+  it("sums fixed per-segment costs across every fresh segment", async () => {
+    const out = await renderSegments({
+      contractDuration: 65,
+      documentHtml: DOC,
+      sourceFileId: "src-phases",
+    });
+
+    // Three fresh segments, each reporting 100/400/50 ms of fixed cost.
+    expect(out.phases?.totalMs).toBeGreaterThanOrEqual(0);
+    expect(out.phases?.concatMs).toBeGreaterThanOrEqual(0);
+    expect(out.phases?.pageLoadTotalMs).toBe(300);
+    expect(out.phases?.firstFrameTotalMs).toBe(1200);
+    expect(out.phases?.audioPrepTotalMs).toBe(150);
   });
 
   it("does not report 100 percent until joining has succeeded", async () => {

@@ -514,6 +514,12 @@ describe("VIDEO_EXPORT_SCRIPT audio engine", () => {
     expect(messages.find((m) => m.type === "mobileAgentVideoAudioConfig")).toMatchObject({
       sampleRate: 48000, channels: 2, encoding: "pcm16",
     });
+    // Soundtrack prep is a fixed per-segment cost the per-frame stats miss;
+    // it must be reported so a slow render can be attributed to it.
+    const done = messages.find((m) => m.type === "mobileAgentVideoDone");
+    const audioPrepMs = (done?.timings as { audioPrepMs?: number } | undefined)?.audioPrepMs;
+    expect(typeof audioPrepMs).toBe("number");
+    expect(audioPrepMs).toBeGreaterThanOrEqual(0);
     const pcm = messages.find((m) => m.type === "mobileAgentVideoAudioPcmChunk");
     expect(pcm).toBeDefined();
     const bytes = Buffer.from(pcm!.base64 as string, "base64");

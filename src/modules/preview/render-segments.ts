@@ -15,6 +15,23 @@ export type SegmentRenderResult = {
   warnings: string[];
   /** Per-stage timing summary of the slowest measured segment, when reported. */
   timings?: VideoExportTimings;
+  /**
+   * Wall-clock attribution for the run, summed over freshly rendered segments
+   * (cached resume segments contribute nothing). Instrumentation for slow-
+   * render analysis; never gates or changes the render.
+   */
+  phases?: {
+    /** Whole run body: every segment plus the native join (ms). */
+    totalMs: number;
+    /** Native concat only (ms); absent for single-pass renders. */
+    concatMs?: number;
+    /** Σ job start → WebView load end across fresh segments (ms). */
+    pageLoadTotalMs?: number;
+    /** Σ job start → first frame message across fresh segments (ms); includes page load. */
+    firstFrameTotalMs?: number;
+    /** Σ soundtrack prep before frame 1 across fresh segments (ms). */
+    audioPrepTotalMs?: number;
+  };
   /** Non-fatal performance notes derived from the timings. */
   perfWarnings: string[];
   /** One-time clip-mapping diagnostics, deduped across segments. */
@@ -80,14 +97,22 @@ export async function renderSegments(options: {
   };
 
   if (contractDuration == null || contractDuration <= SEGMENT_SECONDS) {
+    const startedAt = Date.now();
     const result = await runOne(undefined, { base: 0, span: 1 });
     onProgress?.({ bytesWritten: 10000, totalBytes: 10000 });
+    const timings = result.timings;
     return {
       uri: result.uri,
       hasAudio: result.hasAudio,
       audioWarnings: result.audioWarnings,
       warnings: [],
       timings: result.timings,
+      phases: {
+        totalMs: Date.now() - startedAt,
+        ...(timings?.pageLoadMs == null ? {} : { pageLoadTotalMs: timings.pageLoadMs }),
+        ...(timings?.firstFrameMs == null ? {} : { firstFrameTotalMs: timings.firstFrameMs }),
+        ...(timings?.audioPrepMs == null ? {} : { audioPrepTotalMs: timings.audioPrepMs }),
+      },
       perfWarnings: result.perfWarnings ?? [],
       visualWarnings: result.visualWarnings ?? [],
       encoder: result.encoder,
@@ -110,6 +135,7 @@ export async function renderSegments(options: {
    * restarts through the sidecars, so resume-after-kill stays on one codec.
    */
   const renderAll = async () => {
+    const startedAt = Date.now();
     const uris: string[] = [];
     const audioWarnings: string[] = [];
     const perfWarnings: string[] = [];
@@ -117,6 +143,10 @@ export async function renderSegments(options: {
     let hasAudio = false;
     let runEncoder: string | undefined;
     let slowest: { timings?: VideoExportTimings; cost: number } | null = null;
+    let pageLoadTotalMs = 0;
+    let firstFrameTotalMs = 0;
+    let audioPrepTotalMs = 0;
+    let haveFixedCosts = false;
     for (let i = 0; i < count; i += 1) {
       const offset = i * SEGMENT_SECONDS;
       const length = Math.min(SEGMENT_SECONDS, total - offset);
@@ -186,6 +216,19 @@ export async function renderSegments(options: {
       if (timings) {
         const cost = timings.prepareAvgMs + timings.captureAvgMs + timings.bridgeAvgMs;
         if (!slowest || cost > slowest.cost) slowest = { timings, cost };
+        // Fixed-cost attribution: summed per fresh segment so the run's
+        // numbers expose the per-segment overheads (boot, first-frame setup,
+        // whole-file audio re-decode) instead of one segment's sample.
+        if (
+          timings.pageLoadMs != null ||
+          timings.firstFrameMs != null ||
+          timings.audioPrepMs != null
+        ) {
+          haveFixedCosts = true;
+          pageLoadTotalMs += timings.pageLoadMs ?? 0;
+          firstFrameTotalMs += timings.firstFrameMs ?? 0;
+          audioPrepTotalMs += timings.audioPrepMs ?? 0;
+        }
       }
       await new File(result.uri).move(segFile, { overwrite: true });
       try {
@@ -213,6 +256,7 @@ export async function renderSegments(options: {
       throw new Error("Segmented rendering needs the video export module (concatSegments).");
     }
     reportProgress(0, 1, 1);
+    const concatStartedAt = Date.now();
     try {
       await module.concatSegments(uris.map(stripScheme), stripScheme(outFile.uri));
     } catch (error) {
@@ -220,6 +264,7 @@ export async function renderSegments(options: {
         `Video segments finished, but joining failed. Completed segments were kept; the export did not restart automatically. ${error instanceof Error ? error.message : String(error)}`,
       );
     }
+    const concatMs = Date.now() - concatStartedAt;
     return {
       uris,
       outFile,
@@ -229,6 +274,11 @@ export async function renderSegments(options: {
       visualWarnings: [...visualWarnings],
       encoder: runEncoder,
       timings: slowest?.timings,
+      phases: {
+        totalMs: Date.now() - startedAt,
+        concatMs,
+        ...(haveFixedCosts ? { pageLoadTotalMs, firstFrameTotalMs, audioPrepTotalMs } : {}),
+      },
     };
   };
 
@@ -246,6 +296,7 @@ export async function renderSegments(options: {
     hasAudio: merged.hasAudio,
     audioWarnings: merged.audioWarnings,
     timings: merged.timings,
+    phases: merged.phases,
     perfWarnings: merged.perfWarnings,
     visualWarnings: merged.visualWarnings,
     encoder: merged.encoder,

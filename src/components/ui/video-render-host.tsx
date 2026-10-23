@@ -56,6 +56,12 @@ export function VideoRenderHost() {
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const configReceivedRef = useRef(false);
   const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Fixed per-segment costs the page's per-frame stats cannot see: job start
+  // → page load end → first frame message. Attribution only (Phase-0 speed
+  // work); never gates the render.
+  const jobStartedAtRef = useRef(0);
+  const pageLoadMsRef = useRef<number | null>(null);
+  const firstFrameMsRef = useRef<number | null>(null);
 
   const clearRetries = useCallback(() => {
     if (retryTimerRef.current) {
@@ -166,6 +172,23 @@ export function VideoRenderHost() {
     [stopActive],
   );
 
+  // Folds the host's fixed-cost measurements into the page's timing summary
+  // so one object carries the whole per-segment attribution. Only attaches
+  // when the page reported timings; a run without them keeps its result as-is.
+  const attachHostTimings = useCallback((result: VideoRenderResult): VideoRenderResult => {
+    const pageLoadMs = pageLoadMsRef.current;
+    const firstFrameMs = firstFrameMsRef.current;
+    if (!result.timings || (pageLoadMs === null && firstFrameMs === null)) return result;
+    return {
+      ...result,
+      timings: {
+        ...result.timings,
+        ...(pageLoadMs === null ? {} : { pageLoadMs }),
+        ...(firstFrameMs === null ? {} : { firstFrameMs }),
+      },
+    };
+  }, []);
+
   const beginRender = useCallback(
     (job: VideoRenderJob) => {
       const module = getHtmlVideoExportModule();
@@ -195,6 +218,9 @@ export function VideoRenderHost() {
       }
       fileRef.current = file;
       jobRef.current = job;
+      jobStartedAtRef.current = Date.now();
+      pageLoadMsRef.current = null;
+      firstFrameMsRef.current = null;
       lastPercentRef.current = -1;
       configReceivedRef.current = false;
       clearRetries();
@@ -237,7 +263,7 @@ export function VideoRenderHost() {
           // tool persists it and deletes the cache copy), so do not clean it up
           // here — a queued render could race the tool's read.
           fileRef.current = null;
-          settle(job, { type: "resolve", result });
+          settle(job, { type: "resolve", result: attachHostTimings(result) });
           finishJob();
         },
         onError: (message) => {
@@ -306,7 +332,7 @@ export function VideoRenderHost() {
         void activateKeepAwakeAsync(KEEP_AWAKE_TAG).catch(() => {});
       }
     },
-    [abortCurrentFile, armPageSilenceWatch, clearRetries, finishJob, settle, stopActive],
+    [abortCurrentFile, armPageSilenceWatch, attachHostTimings, clearRetries, finishJob, settle, stopActive],
   );
 
   // Drain the queue one render at a time.
@@ -405,6 +431,16 @@ export function VideoRenderHost() {
   }, [stopActive]);
 
   const handleMessage = useCallback((event: WebViewMessageEvent) => {
+    if (firstFrameMsRef.current === null) {
+      try {
+        const parsed = JSON.parse(event.nativeEvent.data) as { type?: unknown };
+        if (parsed && parsed.type === "mobileAgentVideoFrame") {
+          firstFrameMsRef.current = Date.now() - jobStartedAtRef.current;
+        }
+      } catch {
+        // Non-JSON posts cannot be frames; keep listening.
+      }
+    }
     void controllerRef.current?.handleMessage(event);
     // Any page post is proof of life; push the stall bound out again.
     const job = jobRef.current;
@@ -412,6 +448,9 @@ export function VideoRenderHost() {
   }, [armPageSilenceWatch]);
 
   const handleLoadEnd = useCallback(() => {
+    if (pageLoadMsRef.current === null) {
+      pageLoadMsRef.current = Date.now() - jobStartedAtRef.current;
+    }
     attemptStart(8);
     const job = jobRef.current;
     if (job) armPageSilenceWatch(job);

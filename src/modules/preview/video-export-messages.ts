@@ -49,10 +49,12 @@ export type VideoExportMessage =
   | { type: "mobileAgentVideoError"; message: string };
 
 /**
- * Per-stage wall-clock cost of the export, measured in the recording page for
- * one segment: page seek/render work per frame, JPEG capture, and how long the
- * native encoder took to acknowledge each frame. Instrumentation only — the
- * goal is to see which stage a slow export belongs to, never to gate on it.
+ * Per-stage wall-clock cost of the export for one segment. The per-frame
+ * stages (page seek/render, JPEG capture, native encoder ack) are measured in
+ * the recording page; the fixed-cost fields are measured by whichever layer
+ * owns them — the page for audio prep, the host for boot. Instrumentation
+ * only — the goal is to see which stage a slow export belongs to, never to
+ * gate on it.
  */
 export type VideoExportTimings = {
   frames: number;
@@ -62,6 +64,12 @@ export type VideoExportTimings = {
   captureMaxMs: number;
   bridgeAvgMs: number;
   bridgeMaxMs: number;
+  /** Page: soundtrack prep (fetch + decode + offline mix) before frame 1; 0 when silent. */
+  audioPrepMs?: number;
+  /** Host: job start → WebView load end (document prep + asset server + page parse). */
+  pageLoadMs?: number;
+  /** Host: job start → first frame message arrived at the bridge; includes page load. */
+  firstFrameMs?: number;
 };
 
 export type VideoExportResult = {

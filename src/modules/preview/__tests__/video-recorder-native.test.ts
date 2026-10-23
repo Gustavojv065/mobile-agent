@@ -202,6 +202,9 @@ describe("VIDEO_EXPORT_SCRIPT native encoding", () => {
     expect(createVideoEncoder).not.toHaveBeenCalled();
     expect(messages.filter((m) => m.type === "mobileAgentVideoFrame")).toHaveLength(5);
     expect(messages.some((m) => m.type === "mobileAgentVideoCsd")).toBe(false);
+    // Silent scenes run no soundtrack prep; the field is present and zero.
+    const done = messages.find((m) => m.type === "mobileAgentVideoDone");
+    expect((done?.timings as { audioPrepMs?: number } | undefined)?.audioPrepMs).toBe(0);
   }, 15000);
 
   it("works when WebCodecs is unavailable", async () => {

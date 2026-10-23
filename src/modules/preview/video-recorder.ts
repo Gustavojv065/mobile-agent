@@ -1061,6 +1061,13 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
     return next();
   }
 
+  // Wall-clock cost of soundtrack prep (fetch + whole-file decode + offline
+  // mix) for this page, reported in the done timings. The per-frame stats
+  // cannot see it: audio prep runs before frame 1 and repeats in full on
+  // every segment page, so it is exactly the fixed cost that must be visible
+  // when attributing a slow segmented render. 0 when the scene is silent.
+  var audioPrepMs = 0;
+
   function start(offsetSeconds, segmentSeconds) {
     if (running) return;
     var contract = readContract();
@@ -1121,8 +1128,10 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
       fail('The audio schedule has no usable tracks. Supply file or synth tracks, or set audio: false for an intentionally silent export.');
       return;
     }
+    var audioPrepStarted = Date.now();
     var audioReady = schedule ? prepareOfflineAudio(schedule, duration, segOffset, segLen) : Promise.resolve(null);
     audioReady.then(function (audio) {
+      if (schedule) audioPrepMs = Date.now() - audioPrepStarted;
       if (cancelled) {
         if (audio) releaseAudio(audio);
         return;
@@ -1366,7 +1375,8 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
         captureAvgMs: Math.round(timing.capture.sum / frames),
         captureMaxMs: Math.round(timing.capture.max),
         bridgeAvgMs: Math.round(timing.bridge.sum / frames),
-        bridgeMaxMs: Math.round(timing.bridge.max)
+        bridgeMaxMs: Math.round(timing.bridge.max),
+        audioPrepMs: audioPrepMs
       };
     }
 
