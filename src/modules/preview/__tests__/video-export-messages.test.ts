@@ -146,11 +146,39 @@ describe("VideoExportController — JPEG fallback path", () => {
     await controller.whenIdle();
 
     expect(module.beginFrames).toHaveBeenCalledTimes(1);
-    expect(module.beginFrames).toHaveBeenCalledWith("file:///cache/video.mp4", 640, 360, 24, 240);
+    expect(module.beginFrames).toHaveBeenCalledWith("file:///cache/video.mp4", 640, 360, 24, 240, null);
     expect(module.pushJpegFrame).toHaveBeenCalledTimes(2);
     expect(module.pushJpegFrame).toHaveBeenNthCalledWith(1, 0, "/9j/4AAQ==");
     expect(module.finish).toHaveBeenCalledTimes(1);
     expect(onError).not.toHaveBeenCalled();
+  });
+
+  it("forwards the run's pinned encoder into beginFrames", async () => {
+    const module = fakeModule();
+    const controller = new VideoExportController({
+      outputPath: "file:///cache/video.mp4",
+      module,
+      pinnedEncoder: "c2.android.avc.encoder",
+      onProgress: vi.fn(),
+      onFinishing: vi.fn(),
+      onResult: vi.fn(),
+      onError: vi.fn(),
+    });
+
+    post(controller, { type: "mobileAgentVideoConfig", width: 640, height: 360, fps: 24, frameCount: 1, duration: 1 });
+    post(controller, { type: "mobileAgentVideoFrame", index: 0, frameCount: 1, base64: "/9j/4AAQ==" });
+    await controller.whenIdle();
+
+    // Segment resume: the codec recorded by finished segments must survive
+    // into this segment's encoder so every segment shares one SPS/PPS.
+    expect(module.beginFrames).toHaveBeenCalledWith(
+      "file:///cache/video.mp4",
+      640,
+      360,
+      24,
+      1,
+      "c2.android.avc.encoder",
+    );
   });
 
   it("acknowledges a frame only after native consumes it", async () => {

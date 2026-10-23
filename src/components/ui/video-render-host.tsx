@@ -203,6 +203,9 @@ export function VideoRenderHost() {
       const controller = new VideoExportController({
         outputPath: file.uri,
         module,
+        // Segment resume: the encoder recorded by finished segments keeps the
+        // whole output on one set of H.264 parameters (see render-segments).
+        pinnedEncoder: job.pinnedEncoder,
         onConsumed: (id) => webViewRef.current?.injectJavaScript(
           `window.__mobileAgentExportConsumed?.(${id}); true;`,
         ),

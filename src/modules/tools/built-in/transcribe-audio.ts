@@ -200,10 +200,16 @@ async function transcribeNatively(
 /** Legacy lane: inline ≤15 MB through the WebAudio decode host. */
 async function transcribeInline(
   record: { displayName: string; mimeType: string | null | undefined },
-  file: { bytes: () => Promise<Uint8Array> },
+  file: { size?: number | null; bytes: () => Promise<Uint8Array> },
   options: { useSystem: boolean; language?: string },
   limits: { maxSeconds: number; signal?: AbortSignal },
 ) {
+  // Stat before reading: the data lane must reject an over-cap file on its
+  // stat, never on bytes already in the heap — FileSystemFile.bytes()
+  // materializes the whole file, so an oversized audio OOMs inside the read
+  // before the post-read assert could reject it.
+  const statSize = typeof file.size === "number" ? file.size : null;
+  assertAudioFileUsable(record.displayName, record.mimeType, statSize);
   const bytes = await file.bytes();
   const mimeType = assertAudioFileUsable(
     record.displayName,

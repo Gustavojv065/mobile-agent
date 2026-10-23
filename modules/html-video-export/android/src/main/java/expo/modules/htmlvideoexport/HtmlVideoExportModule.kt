@@ -13,9 +13,12 @@ class HtmlVideoExportModule : Module() {
   private var session: ExportSession? = null
 
   /**
-   * Codec name chosen by the run's first segment (see `beginFrames`). Kept
-   * across segments so resume-with-keep keeps one encoder; cleared at `concat`
-   * and `cancel` — the boundaries of one output video.
+   * Codec name chosen by this run's segments (see `beginFrames`). Kept across
+   * segments so resume-with-keep keeps one encoder; cleared at `concat` and
+   * `cancel` — the boundaries of one output video. This in-memory value only
+   * covers one process: the JS side persists the same identity in each
+   * segment's sidecar and passes it back through `beginFrames`'s
+   * `pinnedEncoder`, which wins after a process restart.
    */
   private var runEncoderName: String? = null
   private val audioLock = Any()
@@ -88,22 +91,29 @@ class HtmlVideoExportModule : Module() {
       }
     }
 
-    AsyncFunction("beginFrames") { outputPath: String, width: Int, height: Int, fps: Int, frameCount: Int ->
+    AsyncFunction("beginFrames") { outputPath: String, width: Int, height: Int, fps: Int, frameCount: Int, pinnedEncoder: String? ->
       synchronized(audioLock) {
         if (session != null) {
-          // An interrupted earlier run: its encoder pin is void.
+          // An interrupted earlier run's half-open session is torn down, but
+          // the encoder pin SURVIVES: the interrupted segment belongs to this
+          // run, and re-picking a codec here is exactly how a mid-run switch
+          // slipped through (cached segment from encoder A + new segment from
+          // encoder B → SegmentConcat refuses the mismatch). The JS side also
+          // passes the pin it persisted in the segment sidecars, which wins
+          // over this in-memory value after a process restart.
           session?.cancel()
           session = null
-          runEncoderName = null
         }
         val (audioSpec, buffered) = takePendingAudio()
         // Every segment of one output video must encode with the SAME codec:
         // SegmentConcat muxes all segments into one track described by the
         // first segment's SPS/PPS, so a codec switch mid-run corrupts the
         // output. Pin the first segment's choice for the whole run; a resumed
-        // run after a crash re-pins only if the cache happens to be empty, and
-        // concat verifies parameters regardless (fail loud, never corrupt).
-        val next = JpegFrameRecorder(outputPath, width, height, fps, audioSpec, buffered, runEncoderName)
+        // run re-pins from the sidecar record (via `pinnedEncoder`) even after
+        // the process died, and concat verifies parameters regardless (fail
+        // loud, never corrupt).
+        val pin = pinnedEncoder?.takeIf { it.isNotBlank() } ?: runEncoderName
+        val next = JpegFrameRecorder(outputPath, width, height, fps, audioSpec, buffered, pin)
         next.begin()
         runEncoderName = next.encoderName
         session = next

@@ -28,8 +28,15 @@ export type SegmentRenderResult = {
  * ordinary render jobs and concatenating the MP4s natively. Short videos
  * take the legacy single render (zero behavior change). Segment files live
  * in cache keyed by source so a failed run resumes by re-rendering only
- * the missing pieces — exports are deterministic, so resumed segments are
- * byte-identical to a clean run.
+ * the missing pieces.
+ *
+ * Resumed segments must share ONE encoder with the fresh ones: concat
+ * sample-copies every segment under the first segment's H.264 parameters
+ * (SPS/PPS), so each segment's sidecar records the codec that made it and
+ * the run pins every later render to it — across app restarts included. A
+ * concat that still refuses the set (mismatched parameters or a stale
+ * resolution) purges this document's segment cache and re-renders the whole
+ * timeline once; the second mismatch fails loud.
  *
  * This is the single render engine shared by both surfaces: the `renderVideo`
  * tool (hidden host, output moved into the workspace) and the preview
@@ -59,6 +66,7 @@ export async function renderSegments(options: {
   const runOne = (
     segment: { offset: number; length: number } | undefined,
     weight: { base: number; span: number },
+    pinnedEncoder?: string,
   ) => {
     return requestVideoRender(documentHtml, {
       signal: abortSignal,
@@ -66,6 +74,7 @@ export async function renderSegments(options: {
       segment: segment,
       progressBase: weight.base,
       progressSpan: weight.span,
+      pinnedEncoder,
     });
   };
 
@@ -85,85 +94,164 @@ export async function renderSegments(options: {
 
   const total = contractDuration;
   const count = Math.ceil(total / SEGMENT_SECONDS);
-  const uris: string[] = [];
-  const audioWarnings: string[] = [];
-  const perfWarnings: string[] = [];
-  const visualWarnings = new Set<string>();
-  let hasAudio = false;
-  let encoder: string | undefined;
-  let slowest: { timings?: VideoExportTimings; cost: number } | null = null;
   const sidecar = (index: number) =>
     new File(Paths.cache, `render-${sourceFileId}-seg-${index}.json`);
-  for (let i = 0; i < count; i += 1) {
-    const offset = i * SEGMENT_SECONDS;
-    const length = Math.min(SEGMENT_SECONDS, total - offset);
-    const segFile = new File(Paths.cache, `render-${sourceFileId}-seg-${i}.mp4`);
-    if (segFile.exists) {
-      uris.push(segFile.uri);
-      try {
-        const meta = JSON.parse(await sidecar(i).text()) as {
+
+  /**
+   * One full pass over the timeline: render every segment the cache does not
+   * already have — each pinned to the run's encoder — then concat. The pin is
+   * the first known encoder of the run (a cached segment's sidecar record, or
+   * the first fresh render's result) and is passed to every later
+   * `requestVideoRender`, because `SegmentConcat` sample-copies all segments
+   * under segment 1's SPS/PPS: segments from a different encoder corrupt the
+   * output instead of failing at playback time. The pin also survives process
+   * restarts through the sidecars, so resume-after-kill stays on one codec.
+   */
+  const renderAll = async () => {
+    const uris: string[] = [];
+    const audioWarnings: string[] = [];
+    const perfWarnings: string[] = [];
+    const visualWarnings = new Set<string>();
+    let hasAudio = false;
+    let runEncoder: string | undefined;
+    let slowest: { timings?: VideoExportTimings; cost: number } | null = null;
+    for (let i = 0; i < count; i += 1) {
+      const offset = i * SEGMENT_SECONDS;
+      const length = Math.min(SEGMENT_SECONDS, total - offset);
+      const segFile = new File(Paths.cache, `render-${sourceFileId}-seg-${i}.mp4`);
+      if (segFile.exists) {
+        let meta: {
           hasAudio?: boolean;
           audioWarnings?: string[];
           perfWarnings?: string[];
           visualWarnings?: string[];
-        };
-        hasAudio = hasAudio || meta.hasAudio === true;
-        if (Array.isArray(meta.audioWarnings)) audioWarnings.push(...meta.audioWarnings);
-        if (Array.isArray(meta.perfWarnings)) perfWarnings.push(...meta.perfWarnings);
-        if (Array.isArray(meta.visualWarnings)) {
-          for (const note of meta.visualWarnings) visualWarnings.add(note);
+          encoder?: string;
+        } | null = null;
+        try {
+          meta = JSON.parse(await sidecar(i).text());
+        } catch {
+          // Unreadable sidecar: keep the footage, audio flags stay
+          // conservative and the encoder stays unknown (concat still verifies
+          // parameters, and a mismatch self-heals below).
+          meta = null;
         }
-      } catch {
-        // Unreadable sidecar: keep the footage, audio flags stay conservative.
+        const cachedEncoder =
+          meta && typeof meta.encoder === "string" && meta.encoder ? meta.encoder : undefined;
+        // Keep the cached segment unless it is known to have been made by a
+        // *different* encoder than this run — feeding concat a known-bad mix
+        // would only fail after every other segment finished.
+        if (!runEncoder || !cachedEncoder || cachedEncoder === runEncoder) {
+          if (cachedEncoder) runEncoder = cachedEncoder;
+          uris.push(segFile.uri);
+          hasAudio = hasAudio || meta?.hasAudio === true;
+          if (Array.isArray(meta?.audioWarnings)) audioWarnings.push(...meta.audioWarnings);
+          if (Array.isArray(meta?.perfWarnings)) perfWarnings.push(...meta.perfWarnings);
+          if (Array.isArray(meta?.visualWarnings)) {
+            for (const note of meta.visualWarnings) visualWarnings.add(note);
+          }
+          continue;
+        }
+        // Made by another encoder: drop just this segment and re-render it
+        // under the run's pin.
+        try {
+          await segFile.delete();
+          await sidecar(i).delete();
+        } catch {
+          // Best-effort; a leftover file would fail the move below loudly.
+        }
       }
-      continue;
+      let result;
+      try {
+        // Each segment's weight matches its share of the video length, so the
+        // reported fraction is monotonic across segment boundaries: the bar
+        // never resets to 0 mid-movie.
+        result = await runOne(
+          { offset, length },
+          { base: offset / total, span: length / total },
+          runEncoder,
+        );
+      } catch (error) {
+        throw new Error(
+          `Segment ${i + 1}/${count} (t=${offset}-${Math.round((offset + length) * 100) / 100}s) failed: ${error instanceof Error ? error.message : String(error)}. Re-run to resume — finished segments are kept.`,
+        );
+      }
+      hasAudio = hasAudio || result.hasAudio;
+      if (result.encoder && !runEncoder) runEncoder = result.encoder;
+      audioWarnings.push(...result.audioWarnings);
+      perfWarnings.push(...(result.perfWarnings ?? []));
+      for (const note of result.visualWarnings ?? []) visualWarnings.add(note);
+      const timings = result.timings;
+      if (timings) {
+        const cost = timings.prepareAvgMs + timings.captureAvgMs + timings.bridgeAvgMs;
+        if (!slowest || cost > slowest.cost) slowest = { timings, cost };
+      }
+      await new File(result.uri).move(segFile, { overwrite: true });
+      try {
+        await sidecar(i).write(
+          JSON.stringify({
+            hasAudio: result.hasAudio,
+            audioWarnings: result.audioWarnings,
+            perfWarnings: result.perfWarnings ?? [],
+            visualWarnings: [...visualWarnings],
+            // The run's pin, recorded so any later resume stays on this codec.
+            encoder: result.encoder,
+          }),
+        );
+      } catch {
+        // Sidecar is resume metadata only; footage is already safe.
+      }
+      uris.push(segFile.uri);
     }
-    let result;
-    try {
-      // Each segment's weight matches its share of the video length, so the
-      // reported fraction is monotonic across segment boundaries: the bar
-      // never resets to 0 mid-movie.
-      result = await runOne({ offset, length }, { base: offset / total, span: length / total });
-    } catch (error) {
-      throw new Error(
-        `Segment ${i + 1}/${count} (t=${offset}-${Math.round((offset + length) * 100) / 100}s) failed: ${error instanceof Error ? error.message : String(error)}. Re-run to resume — finished segments are kept.`,
-      );
-    }
-    hasAudio = hasAudio || result.hasAudio;
-    if (result.encoder) encoder = result.encoder;
-    audioWarnings.push(...result.audioWarnings);
-    perfWarnings.push(...(result.perfWarnings ?? []));
-    for (const note of result.visualWarnings ?? []) visualWarnings.add(note);
-    const timings = result.timings;
-    if (timings) {
-      const cost = timings.prepareAvgMs + timings.captureAvgMs + timings.bridgeAvgMs;
-      if (!slowest || cost > slowest.cost) slowest = { timings, cost };
-    }
-    await new File(result.uri).move(segFile, { overwrite: true });
-    try {
-      await sidecar(i).write(
-        JSON.stringify({
-          hasAudio: result.hasAudio,
-          audioWarnings: result.audioWarnings,
-          perfWarnings: result.perfWarnings ?? [],
-          visualWarnings: [...visualWarnings],
-        }),
-      );
-    } catch {
-      // Sidecar is resume metadata only; footage is already safe.
-    }
-    uris.push(segFile.uri);
-  }
 
-  const stripScheme = (uri: string) => (uri.startsWith("file://") ? uri.slice("file://".length) : uri);
-  const outFile = new File(Paths.cache, `render-${sourceFileId}-full.mp4`);
-  const { getHtmlVideoExportModule } = await import("html-video-export");
-  const module = getHtmlVideoExportModule();
-  if (!module || typeof module.concatSegments !== "function") {
-    throw new Error("Segmented rendering needs the video export module (concatSegments).");
+    const stripScheme = (uri: string) => (uri.startsWith("file://") ? uri.slice("file://".length) : uri);
+    const outFile = new File(Paths.cache, `render-${sourceFileId}-full.mp4`);
+    const { getHtmlVideoExportModule } = await import("html-video-export");
+    const module = getHtmlVideoExportModule();
+    if (!module || typeof module.concatSegments !== "function") {
+      throw new Error("Segmented rendering needs the video export module (concatSegments).");
+    }
+    await module.concatSegments(uris.map(stripScheme), stripScheme(outFile.uri));
+    return {
+      uris,
+      outFile,
+      hasAudio,
+      audioWarnings,
+      perfWarnings,
+      visualWarnings: [...visualWarnings],
+      encoder: runEncoder,
+      timings: slowest?.timings,
+    };
+  };
+
+  let merged: Awaited<ReturnType<typeof renderAll>>;
+  try {
+    merged = await renderAll();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    // Concat refused the segment set (mismatched H.264 parameters or a stale
+    // resolution — the fail-loud gate inside SegmentConcat). The cache is the
+    // only source of such a mix, so purge this document's segments and re-run
+    // the whole timeline once in a single fresh encoder; a second mismatch
+    // fails loud rather than loop.
+    if (!/different H\.264 parameters|resolution .* differs from segment 1/.test(message)) {
+      throw error;
+    }
+    for (let i = 0; i < count; i += 1) {
+      try {
+        await new File(Paths.cache, `render-${sourceFileId}-seg-${i}.mp4`).delete();
+        await sidecar(i).delete();
+      } catch {
+        // Best-effort purge; leftovers would fail again loudly on re-render.
+      }
+    }
+    try {
+      await new File(Paths.cache, `render-${sourceFileId}-full.mp4`).delete();
+    } catch {
+      // Best-effort; concat overwrites its output anyway.
+    }
+    merged = await renderAll();
   }
-  await module.concatSegments(uris.map(stripScheme), stripScheme(outFile.uri));
-  for (const uri of uris) {
+  for (const uri of merged.uris) {
     try {
       await new File(uri).delete();
     } catch {
@@ -171,13 +259,13 @@ export async function renderSegments(options: {
     }
   }
   return {
-    uri: outFile.uri,
-    hasAudio,
-    audioWarnings,
-    timings: slowest?.timings,
-    perfWarnings,
-    visualWarnings: [...visualWarnings],
-    encoder,
+    uri: merged.outFile.uri,
+    hasAudio: merged.hasAudio,
+    audioWarnings: merged.audioWarnings,
+    timings: merged.timings,
+    perfWarnings: merged.perfWarnings,
+    visualWarnings: merged.visualWarnings,
+    encoder: merged.encoder,
     warnings: [
       `Rendered in ${count} segments and concatenated; per-segment audio fades up to 50 ms at seams.`,
     ],

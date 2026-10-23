@@ -15,8 +15,10 @@ type FakeVideo = {
   videoWidth: number;
   currentSrc: string;
   seeks: number[];
+  loadCalls: number;
   pause(): void;
   play(): void;
+  load(): void;
   addEventListener(type: string, listener: ClipListener): void;
   removeEventListener(type: string, listener: ClipListener): void;
   fire(type: string): void;
@@ -62,11 +64,19 @@ function makeVideo(overrides: Partial<FakeVideo> = {}): FakeVideo {
     videoWidth: 640,
     currentSrc: "http://localhost/clip-a.mp4",
     seeks: [] as number[],
+    loadCalls: 0,
     pause(this: FakeVideo) {
       this.paused = true;
     },
     play(this: FakeVideo) {
       this.paused = false;
+    },
+    // Follows the spec: load() aborts the current resource (readyState back
+    // to HAVE_NOTHING) and re-runs resource selection — the decoder instance
+    // the element held is returned to the device pool.
+    load(this: FakeVideo) {
+      this.loadCalls += 1;
+      this.readyState = 0;
     },
     addEventListener(type: string, listener: ClipListener) {
       const list = listeners.get(type) ?? [];
@@ -229,7 +239,7 @@ describe("clip timeline prepareFrame", () => {
     expect(el.seeks).toEqual([]); // fast path: already exactly at t
   });
 
-  it("fails loud naming the clip when the frame never decodes", async () => {
+  it("reloads a stalled clip once, then fails loud naming it", async () => {
     vi.useFakeTimers();
     const { api, register } = install();
     const el = makeVideo({ readyState: 1 });
@@ -239,9 +249,111 @@ describe("clip timeline prepareFrame", () => {
       clips: [{ el: "#a", start: 0, end: 10 }],
     });
     const pending = timeline!.prepareFrame(5);
+    let settled = false;
+    void pending.then(
+      () => { settled = true; },
+      () => { settled = true; },
+    );
+
+    // First watchdog: instead of dying, the element is reloaded — both
+    // researched stall modes (stuck readyState-1 seek, refused decoder
+    // allocation) clear when resource selection re-runs.
+    await vi.advanceTimersByTimeAsync(16_000);
+    expect(settled).toBe(false);
+    expect(el.loadCalls).toBe(1);
+
+    // Second watchdog: the reload did not help — the loud, clip-named
+    // failure survives so the export can never hang silently.
     const expectation = expect(pending).rejects.toThrow(/did not decode/);
     await vi.advanceTimersByTimeAsync(16_000);
     await expectation;
+    await expect(
+      pending.catch((error: Error) => error.message),
+    ).resolves.toMatch(/Reloaded once and it still stalled/);
+    expect(el.loadCalls).toBe(1);
+  });
+
+  it("recovers a stalled clip by reloading it", async () => {
+    vi.useFakeTimers();
+    const { api, register } = install();
+    const el = makeVideo({ readyState: 1 });
+    register("#a", el);
+    const timeline = api.attach({
+      fps: 30,
+      clips: [{ el: "#a", start: 0, end: 10 }],
+    });
+    const pending = timeline!.prepareFrame(5);
+    await vi.advanceTimersByTimeAsync(16_000);
+    expect(el.loadCalls).toBe(1);
+
+    // The reload re-runs resource selection: metadata arrives, the mapped
+    // seek runs, decode completes — the export continues.
+    el.readyState = 2;
+    el.fire("loadedmetadata");
+    await pending;
+    expect(el.seeks).toEqual([5]);
+    expect(api.issues().some((note) => note.includes("reloaded"))).toBe(true);
+  });
+
+  it("unloads clips whose window is over before preparing active ones", async () => {
+    const { api, register } = install();
+    const finished = makeVideo(); // decoded during its [0, 4) window
+    const next = makeVideo({ readyState: 1 });
+    register("#a", finished);
+    register("#b", next);
+    const timeline = api.attach({
+      fps: 30,
+      clips: [
+        { el: "#a", start: 0, end: 4 },
+        { el: "#b", start: 4, end: 8 },
+      ],
+    });
+
+    const pending = timeline!.prepareFrame(5);
+    await tick();
+    // The finished clip returns its device decoder instead of holding it
+    // for the rest of the export...
+    expect(finished.loadCalls).toBe(1);
+    expect(finished.readyState).toBe(0);
+    // ...while the active clip still gets prepared (its local offset: 5 - 4).
+    expect(next.seeks).toEqual([1]);
+    next.readyState = 2;
+    next.fire("loadeddata");
+    await pending;
+
+    // A released clip stays released: no reload loop on later frames.
+    await timeline!.prepareFrame(5);
+    expect(finished.loadCalls).toBe(1);
+  });
+
+  it("prepares active clips one at a time instead of bursting decoder inits", async () => {
+    const { api, register } = install();
+    const first = makeVideo({ readyState: 1 });
+    const second = makeVideo({ readyState: 1 });
+    register("#a", first);
+    register("#b", second);
+    const timeline = api.attach({
+      fps: 30,
+      clips: [
+        { el: "#a", start: 0, end: 10 },
+        { el: "#b", start: 0, end: 10 },
+      ],
+    });
+
+    const pending = timeline!.prepareFrame(5);
+    await tick();
+    expect(first.seeks).toEqual([5]);
+    // The second clip's decoder init does not start while the first is
+    // still acquiring — a parallel burst is what races the codec cap.
+    expect(second.seeks).toEqual([]);
+
+    first.readyState = 2;
+    first.fire("loadeddata");
+    await tick();
+    expect(second.seeks).toEqual([5]);
+    second.readyState = 2;
+    second.fire("loadeddata");
+    await pending;
   });
 });
 

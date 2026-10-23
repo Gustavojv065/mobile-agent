@@ -86,6 +86,11 @@ export function createAnalyzeAudioTool({
           );
           src = workspaceFileUrl(baseUrl, record.relativePath);
         } else {
+          // Stat before reading: the data lane must reject an over-cap file
+          // on its stat, never on bytes already in the heap (the same guard
+          // inlineAudioAssets has — a big soundtrack OOMs inside bytes()).
+          const statSize = typeof file.size === "number" ? file.size : null;
+          assertAudioFileUsable(record.displayName, record.mimeType, statSize);
           const bytes = await file.bytes();
           const mimeType = assertAudioFileUsable(
             record.displayName,

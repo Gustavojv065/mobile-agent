@@ -136,6 +136,13 @@ export type VideoExportControllerOptions = {
   onConfig?: (config: VideoExportConfigMessage) => void;
   /** Releases the page's bounded producer only after native consumed the data. */
   onConsumed?: (requestId: number) => void;
+  /**
+   * Codec that the segments of this output video were already encoded with
+   * (from the resume sidecars). Passed to `beginFrames` so a resumed run
+   * never switches encoders mid-video — SegmentConcat sample-copies every
+   * segment under segment 1's SPS/PPS, so a switch corrupts the output.
+   */
+  pinnedEncoder?: string;
 };
 
 type VideoExportSession = "idle" | "recording" | "finishing" | "done" | "failed";
@@ -169,6 +176,7 @@ export class VideoExportController {
   private readonly onError: VideoExportControllerOptions["onError"];
   private readonly onConfig?: (config: VideoExportConfigMessage) => void;
   private readonly onConsumed?: (requestId: number) => void;
+  private readonly pinnedEncoder?: string;
 
   constructor(options: VideoExportControllerOptions) {
     this.module = options.module;
@@ -179,6 +187,7 @@ export class VideoExportController {
     this.onError = options.onError;
     this.onConfig = options.onConfig;
     this.onConsumed = options.onConsumed;
+    this.pinnedEncoder = options.pinnedEncoder;
   }
 
   /** True once the page posted its export config (recorder started). */
@@ -284,6 +293,9 @@ export class VideoExportController {
             config.height,
             config.fps,
             config.frameCount,
+            // Resumed segments recorded their encoder; staying on it keeps one
+            // SPS/PPS across every segment of this output video.
+            this.pinnedEncoder ?? null,
           );
           this.session = "recording";
         }

@@ -65,4 +65,26 @@ describe("ensureAssetServer", () => {
     mocks.startAssetServer.mockRejectedValueOnce(new Error("nope"));
     expect(await ensureAssetServer()).toBeNull();
   });
+
+  it("retries after a failed start instead of caching the failure", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    mocks.startAssetServer.mockRejectedValueOnce(new Error("not ready yet"));
+    expect(await ensureAssetServer()).toBeNull();
+
+    // The next caller gets a fresh attempt — a permanently cached failure
+    // would strand the whole process on the data-URI fallback lane.
+    expect(await ensureAssetServer()).toBe("http://127.0.0.1:4321");
+    expect(mocks.startAssetServer).toHaveBeenCalledTimes(2);
+    warn.mockRestore();
+  });
+
+  it("shares one in-flight start across concurrent callers", async () => {
+    const [a, b] = await Promise.all([
+      ensureAssetServer(),
+      ensureAssetServer(),
+    ]);
+    expect(a).toBe("http://127.0.0.1:4321");
+    expect(b).toBe("http://127.0.0.1:4321");
+    expect(mocks.startAssetServer).toHaveBeenCalledTimes(1);
+  });
 });

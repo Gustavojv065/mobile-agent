@@ -1206,16 +1206,44 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
   function seekSourceVideo(video, t, fps) {
     return new Promise(function (resolve, reject) {
       var target = null;
-      var timer = setTimeout(function () { finish(new Error('Timed out decoding a source video frame.')); }, 15000);
-      function finish(error) {
-        clearTimeout(timer);
+      var retried = false;
+      var finished = false;
+      var timer = null;
+      function detach() {
         video.removeEventListener('loadedmetadata', seek);
         video.removeEventListener('seeked', ready);
         video.removeEventListener('loadeddata', ready);
         video.removeEventListener('error', failed);
+      }
+      function finish(error) {
+        if (finished) return;
+        finished = true;
+        clearTimeout(timer);
+        detach();
         if (error) reject(error); else resolve();
       }
-      function failed() { finish(new Error('A source video could not be decoded.')); }
+      // One bounded recovery before failing loud: a source video whose
+      // readyState is stuck at 1 ('seeked' never fires) or whose decoder
+      // allocation was refused under the device codec cap both clear when
+      // resource selection re-runs. A second stall keeps the loud failure.
+      function recoverOrFail(finalMessage) {
+        if (retried || typeof video.load !== 'function') {
+          finish(new Error(finalMessage + (retried ? ' Reloaded once and it still stalled.' : '')));
+          return;
+        }
+        retried = true;
+        clearTimeout(timer);
+        detach();
+        try {
+          video.load();
+        } catch (error) {
+          finish(new Error(finalMessage + ' (reload failed: ' + String((error && error.message) || error) + ')'));
+          return;
+        }
+        start();
+      }
+      function failed() { recoverOrFail('A source video could not be decoded.'); }
+      function timedOut() { recoverOrFail('Timed out decoding a source video frame.'); }
       function ready() {
         if (cancelled) { finish(new Error('Video export cancelled.')); return; }
         if (!video.seeking && video.readyState >= 2) finish();
@@ -1230,11 +1258,15 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
           ready();
         } catch (error) { finish(error); }
       }
-      video.addEventListener('loadedmetadata', seek);
-      video.addEventListener('seeked', ready);
-      video.addEventListener('loadeddata', ready);
-      video.addEventListener('error', failed);
-      if (video.readyState >= 1) seek();
+      function start() {
+        timer = setTimeout(timedOut, 15000);
+        video.addEventListener('loadedmetadata', seek);
+        video.addEventListener('seeked', ready);
+        video.addEventListener('loadeddata', ready);
+        video.addEventListener('error', failed);
+        if (video.readyState >= 1) seek();
+      }
+      start();
     });
   }
 

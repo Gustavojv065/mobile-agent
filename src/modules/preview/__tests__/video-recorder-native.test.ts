@@ -117,6 +117,7 @@ afterEach(() => {
   delete g.VideoEncoder;
   delete g.VideoFrame;
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 describe("VIDEO_EXPORT_SCRIPT native encoding", () => {
@@ -242,6 +243,37 @@ describe("VIDEO_EXPORT_SCRIPT native encoding", () => {
     await vi.waitFor(() => expect(messages.filter((m) => m.type === "mobileAgentVideoFrame")).toHaveLength(1));
     cancel();
     finishSeek?.(); // Release any second-frame seek started before cancellation.
+  });
+
+  it("reloads a source video stalled at readyState 1 instead of dying", async () => {
+    vi.useFakeTimers();
+    const events = new Map<string, () => void>();
+    let time = 0.5;
+    let loadCalls = 0;
+    // Metadata loaded (readyState 1) but no data ever arrives: the frame
+    // stays un-decodable — the exact stall that used to kill the export at
+    // the 15 s watchdog.
+    const video = {
+      duration: 1, readyState: 1, seeking: false, loop: false,
+      pause() {},
+      load() { loadCalls += 1; video.readyState = 2; },
+      get currentTime() { return time; },
+      set currentTime(value: number) { time = value; },
+      addEventListener(name: string, listener: () => void) { events.set(name, listener); },
+      removeEventListener(name: string) { events.delete(name); },
+    };
+    const { messages, start, cancel } = installStubs({ video });
+    start();
+    await vi.advanceTimersByTimeAsync(0);
+
+    // First watchdog fires: the element re-runs resource selection.
+    await vi.advanceTimersByTimeAsync(15_100);
+    expect(loadCalls).toBe(1);
+
+    // The reload decoded the frame — the export continues and posts.
+    await vi.advanceTimersByTimeAsync(0);
+    expect(messages.filter((m) => m.type === "mobileAgentVideoFrame").length).toBeGreaterThan(0);
+    cancel();
   });
 
   function fakeImage(init: { complete: boolean; naturalWidth?: number; src?: string }) {

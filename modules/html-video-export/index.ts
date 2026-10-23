@@ -37,13 +37,20 @@ export type HtmlVideoExportNativeModule = {
   pushAudioChunk(timestampMicros: number, base64: string): Promise<void>;
   /** Raw signed 16-bit little-endian interleaved PCM with microsecond timestamps. */
   pushPcmChunk(timestampMicros: number, base64: string): Promise<void>;
-  /** Starts native AVC encoding of sequential JPEG frames. */
+  /**
+   * Starts native AVC encoding of sequential JPEG frames. `pinnedEncoder`
+   * (optional) forces the run onto a specific codec name — segment resume
+   * passes the encoder recorded by the segments' sidecars so every segment of
+   * one output video shares one set of H.264 parameters (SPS/PPS) even across
+   * app restarts. Omitted on a fresh run's first segment: the device picks.
+   */
   beginFrames(
     outputPath: string,
     width: number,
     height: number,
     fps: number,
     frameCount: number,
+    pinnedEncoder?: string | null,
   ): Promise<{ ok: boolean }>;
   pushJpegFrame(index: number, base64: string): Promise<void>;
   /**

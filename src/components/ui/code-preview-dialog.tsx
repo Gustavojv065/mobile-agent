@@ -989,10 +989,8 @@ export function CodePreviewContent({
                             {videoExport ? (
                                 <SceneExportOverlay
                                     finishing={videoExport.status === "finishing"}
-                                    height={fittedFrame.height}
                                     progress={videoExport.progress}
                                     strokeColor={theme.accent}
-                                    width={fittedFrame.width}
                                 />
                             ) : null}
                         </View>
@@ -1349,67 +1347,93 @@ function ViewportToggle({
  * border. Hides the canvas hijack flicker the recorder causes on any page it
  * records (the manual path renders in the hidden host, so this is mostly a
  * visual affordance for the running pipeline).
+ *
+ * Geometry rules, so nothing can drift again:
+ * - The NUMBER sits at the box's true center: it is the only flow child of
+ *   the centered layer, with the caption pinned below it (absolute, full
+ *   width, text-centered) instead of being a flow sibling — centering the
+ *   pair used to pull the number above the box's center.
+ * - The stroke draws in the overlay's OWN laid-out box (onLayout), never in
+ *   caller-supplied dimensions: the card's 1px border shifts absolute
+ *   children inward, so outer dimensions used to push the stroke off the
+ *   border by a pixel on every edge.
+ * - The stroke's corner radius is concentric with the card's real
+ *   `rounded-card` radius (Spacing.four = 24px, minus the 1px border, minus
+ *   the stroke inset) instead of a hard-coded value that matched no corner.
  */
 function SceneExportOverlay({
     finishing,
-    height,
     progress,
     strokeColor,
-    width,
 }: {
     finishing: boolean;
-    height: number;
     progress: number;
     strokeColor: string;
-    width: number;
 }) {
     const inset = 3;
-    const borderRadius = 14;
-    const w = Math.max(0, width - inset * 2);
-    const h = Math.max(0, height - inset * 2);
-    // Perimeter of a rounded rect stroke path, minus the squared corners.
-    const perimeter = 2 * (w + h) - 8 * borderRadius + 2 * Math.PI * borderRadius;
+    const strokeWidth = 4;
+    // tailwind: rounded-card = Spacing.four (24px); card `border` = 1px, so
+    // the box this overlay lives in carries a 23px corner radius.
+    const rx = 24 - 1 - inset;
+    const [box, setBox] = useState<{ width: number; height: number } | null>(null);
     const percent = Math.round(progress * 100);
+    const w = box ? Math.max(0, box.width - inset * 2) : 0;
+    const h = box ? Math.max(0, box.height - inset * 2) : 0;
+    // Perimeter of a rounded rect stroke path, minus the squared corners.
+    const perimeter = 2 * (w + h) - 8 * rx + 2 * Math.PI * rx;
 
     return (
         <View
             accessibilityLabel={`Exporting video, ${percent} percent`}
             accessibilityLiveRegion="polite"
             className="absolute inset-0 items-center justify-center"
+            onLayout={(event) =>
+                setBox({
+                    width: event.nativeEvent.layout.width,
+                    height: event.nativeEvent.layout.height,
+                })
+            }
             pointerEvents="auto"
         >
             <BlurView className="absolute inset-0" intensity={45} tint="dark" />
             <View className="absolute inset-0 bg-black/40" />
-            <Svg
-                className="absolute inset-0"
-                height={height}
-                pointerEvents="none"
-                width={width}
-            >
-                <Defs>
-                    <LinearGradient id="sceneExportStroke" x1="0" y1="0" x2="1" y2="1">
-                        <Stop offset="0" stopColor={strokeColor} stopOpacity={0.95} />
-                        <Stop offset="1" stopColor={strokeColor} stopOpacity={0.45} />
-                    </LinearGradient>
-                </Defs>
-                <Rect
-                    fill="none"
-                    height={h}
-                    rx={borderRadius}
-                    stroke="url(#sceneExportStroke)"
-                    strokeDasharray={`${perimeter} ${perimeter}`}
-                    strokeDashoffset={perimeter * (1 - progress)}
-                    strokeWidth={4}
-                    width={w}
-                    x={inset}
-                    y={inset}
-                />
-            </Svg>
-            <View className="items-center gap-1">
+            {box ? (
+                <Svg
+                    className="absolute inset-0"
+                    height={box.height}
+                    pointerEvents="none"
+                    width={box.width}
+                >
+                    <Defs>
+                        <LinearGradient id="sceneExportStroke" x1="0" y1="0" x2="1" y2="1">
+                            <Stop offset="0" stopColor={strokeColor} stopOpacity={0.95} />
+                            <Stop offset="1" stopColor={strokeColor} stopOpacity={0.45} />
+                        </LinearGradient>
+                    </Defs>
+                    <Rect
+                        fill="none"
+                        height={h}
+                        rx={rx}
+                        stroke="url(#sceneExportStroke)"
+                        strokeDasharray={`${perimeter} ${perimeter}`}
+                        strokeDashoffset={perimeter * (1 - progress)}
+                        strokeWidth={strokeWidth}
+                        width={w}
+                        x={inset}
+                        y={inset}
+                    />
+                </Svg>
+            ) : null}
+            {/* Number dead-center of the box; the caption hangs below it on a
+                full-width absolute line, so it can never shift the number. */}
+            <View className="absolute inset-0 items-center justify-center">
                 <Text className="font-sans text-3xl font-semibold text-white">
                     {percent}%
                 </Text>
-                <Text className="font-sans text-xs text-white/70">
+                <Text
+                    className="absolute inset-x-0 text-center font-sans text-xs text-white/70"
+                    style={{ top: "50%", marginTop: 22 }}
+                >
                     {finishing ? "Finalizing…" : "Exporting"}
                 </Text>
             </View>

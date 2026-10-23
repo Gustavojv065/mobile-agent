@@ -34,9 +34,15 @@
  *
  * `prepareFrame(t)` awaits, per clip that is ACTIVE at t only: metadata
  * (readyState >= 1), the assigned `currentTime` (`seeked`), and decode
- * (readyState >= 2), with a 15 s watchdog that fails loud and names the clip.
- * Inactive clips are skipped, so a many-overlay scene pays seeks only for
- * what is on screen. Clips are muted on declare (the render mix owns audio)
+ * (readyState >= 2), with a 15 s watchdog that fails loud and names the clip
+ * — but only after ONE `el.load()` recovery attempt: both stall modes seen
+ * in the field (Chromium's readyState stuck at 1 with `seeked` never firing,
+ * and a refused decoder allocation under the device codec cap) clear when
+ * resource selection re-runs. Before preparing, clips whose window is
+ * already over are unloaded so their hardware decoder instances return to
+ * the shared, heavily limited pool, and active clips prepare one at a time
+ * instead of racing that pool together. Clips are muted on declare (the
+ * render mix owns audio)
  * — that also removes the autoplay-policy trap where an unmuted clip could
  * never be advanced programmatically.
  *
@@ -215,19 +221,52 @@ export const VIDEO_CLIP_TIMELINE_SCRIPT = `(function () {
 
     function prepareClip(clip, t) {
       return new Promise(function (resolve, reject) {
-        var timer = setTimeout(function () {
-          finish(new Error('Clip "' + clip.label + '" did not decode its frame at t=' + Math.round(t * 10) / 10 + 's in 15s (stuck at readyState ' + clip.el.readyState + ').'));
-        }, 15000);
-        function finish(error) {
-          clearTimeout(timer);
+        var atScene = Math.round(t * 10) / 10;
+        var retried = false;
+        var finished = false;
+        var timer = null;
+        function detach() {
           clip.el.removeEventListener('loadedmetadata', assign);
           clip.el.removeEventListener('seeked', ready);
           clip.el.removeEventListener('loadeddata', ready);
           clip.el.removeEventListener('error', failed);
+        }
+        function finish(error) {
+          if (finished) return;
+          finished = true;
+          clearTimeout(timer);
+          detach();
           if (error) reject(error); else resolve();
         }
+        // One bounded recovery before failing loud: both stall modes clear
+        // when the element re-runs resource selection — Chromium's stuck
+        // readyState 1 ('seeked' never fires), and a decoder-allocation
+        // refusal under the device codec cap (prepareFrame has just
+        // unloaded the finished clips' decoders, so the reload has a slot
+        // to acquire). A second stall keeps the loud, clip-named failure.
+        function recoverOrFail(finalMessage) {
+          if (retried || typeof clip.el.load !== 'function') {
+            finish(new Error(finalMessage + (retried ? ' Reloaded once and it still stalled.' : '')));
+            return;
+          }
+          retried = true;
+          var stuckReadyState = clip.el.readyState;
+          clearTimeout(timer);
+          detach();
+          try {
+            clip.el.load();
+          } catch (error) {
+            finish(new Error(finalMessage + ' (reload failed: ' + String((error && error.message) || error) + ')'));
+            return;
+          }
+          issue('reload-' + clip.label, 'Clip "' + clip.label + '" stalled decoding at t=' + atScene + 's (readyState ' + stuckReadyState + ') and was reloaded to continue.');
+          start();
+        }
         function failed() {
-          finish(new Error('Clip "' + clip.label + '" video failed to decode.'));
+          recoverOrFail('Clip "' + clip.label + '" video failed to decode.');
+        }
+        function timedOut() {
+          recoverOrFail('Clip "' + clip.label + '" did not decode its frame at t=' + atScene + 's in 15s (stuck at readyState ' + clip.el.readyState + ').');
         }
         function currentTarget() {
           var local = clip.from + (t - clip.start);
@@ -253,21 +292,43 @@ export const VIDEO_CLIP_TIMELINE_SCRIPT = `(function () {
         function ready() {
           if (!clip.el.seeking && clip.el.readyState >= 2) finish();
         }
-        clip.el.addEventListener('loadedmetadata', assign);
-        clip.el.addEventListener('seeked', ready);
-        clip.el.addEventListener('loadeddata', ready);
-        clip.el.addEventListener('error', failed);
-        if (clip.el.readyState >= 1) assign();
+        function start() {
+          timer = setTimeout(timedOut, 15000);
+          clip.el.addEventListener('loadedmetadata', assign);
+          clip.el.addEventListener('seeked', ready);
+          clip.el.addEventListener('loadeddata', ready);
+          clip.el.addEventListener('error', failed);
+          if (clip.el.readyState >= 1) assign();
+        }
+        start();
       });
     }
 
     function prepareFrame(t) {
       var states = stateAt(t);
-      var waits = [];
-      for (var i = 0; i < states.length; i += 1) {
-        if (states[i].active) waits.push(prepareClip(clips[i], t));
+      // A clip whose window is over keeps its decoded frame — and with it a
+      // device hardware decoder instance. Those are a shared, heavily
+      // limited resource (Android grants fewer concurrent instances than a
+      // timeline often has clips), and an accumulating timeline starves
+      // later clips into a permanent readyState-1 stall. load() re-runs
+      // resource selection (decoder returned to the pool); the clip
+      // re-fetches when its window comes around again.
+      for (var r = 0; r < clips.length; r += 1) {
+        if (t >= clips[r].start && t < clips[r].end) continue;
+        if (!(clips[r].el.readyState >= 2)) continue;
+        if (typeof clips[r].el.load !== 'function') continue;
+        try { clips[r].el.load(); } catch (_) {}
       }
-      return Promise.all(waits);
+      // One clip at a time: decoder inits are acquired in order instead of
+      // all racing the codec cap together on a segment's first frame.
+      var chain = Promise.resolve();
+      for (var i = 0; i < states.length; i += 1) {
+        if (!states[i].active) continue;
+        (function (clip) {
+          chain = chain.then(function () { return prepareClip(clip, t); });
+        })(clips[i]);
+      }
+      return chain;
     }
 
     function draw(ctx, t) {

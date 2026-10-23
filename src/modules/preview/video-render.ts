@@ -48,6 +48,13 @@ export type VideoRenderJob = {
    */
   progressBase?: number;
   progressSpan?: number;
+  /**
+   * Codec recorded by already-rendered segments of this output video (their
+   * sidecars). The host passes it through to `beginFrames` so a resumed
+   * segmented export never mixes encoders — concat refuses segments with
+   * different H.264 parameters. Omitted on fresh runs.
+   */
+  pinnedEncoder?: string;
   resolve: (result: VideoRenderResult) => void;
   reject: (error: Error) => void;
 };
@@ -119,6 +126,8 @@ export function requestVideoRender(
     progressBase?: number;
     /** See {@link VideoRenderJob.progressSpan}. */
     progressSpan?: number;
+    /** See {@link VideoRenderJob.pinnedEncoder}. */
+    pinnedEncoder?: string;
   } = {},
 ): Promise<VideoRenderResult> {
   return new Promise<VideoRenderResult>((resolve, reject) => {
@@ -153,6 +162,7 @@ export function requestVideoRender(
       segment: options.segment,
       progressBase: options.progressBase,
       progressSpan: options.progressSpan,
+      pinnedEncoder: options.pinnedEncoder,
       resolve,
       reject,
     };

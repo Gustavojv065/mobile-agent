@@ -473,10 +473,18 @@ describe("inlineAudioAssets", () => {
       inlineAudioAssets(schedule("huge"), repository()),
     ).rejects.toThrow(/too large/);
 
-    // Data-URI fallback keeps the strict 15 MB budget.
+    // Data-URI fallback rejects on the stat as well: a ~120 MB track must
+    // never be materialized by bytes() (that read is what OOM'd the app —
+    // the budget check has to run before the heap ever sees the file).
     serverMocks.baseUrl = null;
     workspaceFile("huge.mp3", "audio/mpeg");
-    mocks.bytes = new Uint8Array(16 * 1024 * 1024);
+    mocks.resolveWorkspaceFile.mockReturnValue({
+      exists: true,
+      size: 119 * 1024 * 1024,
+      bytes: async () => {
+        throw new Error("bytes() must not be called for oversize audio");
+      },
+    });
     await expect(
       inlineAudioAssets(schedule("huge"), repository()),
     ).rejects.toThrow(/Keep audio files under 15\.0 MB/);
@@ -502,8 +510,6 @@ describe("hasWorkspaceRefs", () => {
 });
 
 describe("inlineVideoAssets served URLs", () => {
-  const FIFTY_MB = 50 * 1024 * 1024;
-
   beforeEach(() => {
     serverMocks.baseUrl = "http://127.0.0.1:9999";
     nativeMocks.transcodeClip.mockReset();

@@ -202,10 +202,15 @@ export function assertImageFileUsable(
   return resolved;
 }
 
+/**
+ * Validates format and (when the size is known) budget. `sizeBytes` is null
+ * when the file stat was unavailable — format is still enforced, and the
+ * caller falls back to checking the bytes it had to read anyway.
+ */
 export function assertVideoFileUsable(
   displayName: string,
   mimeType: string | null | undefined,
-  sizeBytes: number,
+  sizeBytes: number | null,
 ): string {
   const resolved = resolveVideoMimeType(mimeType, displayName);
   if (!resolved) {
@@ -219,6 +224,9 @@ export function assertVideoFileUsable(
     throw new Error(
       `File "${displayName}" needs conversion before use as a scene clip.`,
     );
+  }
+  if (sizeBytes == null) {
+    return resolved;
   }
   if (!Number.isFinite(sizeBytes) || sizeBytes <= 0) {
     throw new Error(`File "${displayName}" appears to be empty.`);
@@ -239,7 +247,7 @@ async function inlineAssetUris(
   assertUsable: (
     displayName: string,
     mimeType: string | null | undefined,
-    sizeBytes: number,
+    sizeBytes: number | null,
   ) => string,
   warnings?: string[],
 ): Promise<{ html: string; files: string[] }> {
@@ -283,6 +291,17 @@ async function inlineAssetUris(
         .join(buildAudioDataUri(prepared.mimeType, prepared.bytes));
       if (prepared.warning && warnings) warnings.push(prepared.warning);
       continue;
+    }
+    // Stat before reading: the data-URI lane must reject an over-cap file on
+    // its stat, never on bytes already loaded — `FileSystemFile.bytes()`
+    // materializes the whole file in one native array (and again in JS), so a
+    // ~120 MB soundtrack OOMs the ~256 MB Android heap inside the read itself
+    // before the post-read size check could run. Unknown stat keeps the
+    // post-read check below as the budget gate.
+    if (statSize != null) {
+      assertUsable(record.displayName, record.mimeType, statSize);
+    } else if (kind !== "clip") {
+      assertUsable(record.displayName, record.mimeType, null);
     }
     const bytes = await file.bytes();
     const mimeType = assertUsable(record.displayName, record.mimeType, bytes.length);
