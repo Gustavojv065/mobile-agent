@@ -13,6 +13,7 @@ import {
   summarizeValue,
 } from "@/modules/tools/built-in/shared";
 import type { WorkspaceToolFactoryParams } from "@/modules/tools/built-in/types";
+import { saveMediaResult } from "@/modules/tools/built-in/media-result";
 import { transcribePcm16 } from "@/modules/voice/transcribe";
 import { transcribePcm16WithSystem } from "@/modules/voice/system-transcribe";
 import type { WhisperLanguage } from "@/modules/voice/models";
@@ -133,11 +134,17 @@ export function createTranscribeAudioTool({
             'The system recognizer did not report word timings on this device, so there are no timed `segments` (captions cannot be placed from this result). Re-run with engine "whisper" if you need timings.';
         }
 
+        const mediaResult = await saveMediaResult(repository, record, "transcript", output);
+        if (mediaResult) {
+          output.resultFileId = mediaResult.resultFileId;
+          output.resultLink = `workspace://${mediaResult.resultFileId}`;
+        }
         onRecord?.(
           createRecord({
             toolName: "transcribeAudio",
             status: "completed",
             inputSummary,
+            mediaResult,
             preview: { title: record.displayName, text: transcript.text.slice(0, 20000), truncated: transcript.text.length > 20000 },
             outputSummary: summarizeValue(output),
           }),

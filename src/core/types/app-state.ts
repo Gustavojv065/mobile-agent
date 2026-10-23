@@ -261,6 +261,12 @@ export type GeneratedVideoAttachment = {
 };
 
 export type ToolExecutionRecord = {
+  /** Full reusable media result lives in the workspace, not a truncated trace. */
+  mediaResult?: {
+    sourceFileId: string;
+    sourceUpdatedAt: string;
+    resultFileId: string;
+  };
   /** Stable event order within this assistant turn (including reasoning). */
   traceOrder?: number;
   preview?: {

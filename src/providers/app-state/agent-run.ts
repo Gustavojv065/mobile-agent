@@ -37,6 +37,7 @@ import {
   partitionSelectedFiles,
 } from "@/modules/runtime/message-conversion";
 import { modelRuntime } from "@/modules/runtime/model-runtime";
+import { attachmentInspectionContext, loadedSkillNames } from "@/modules/runtime/conversation-evidence";
 import { NON_RETRYABLE_CHATGPT_SHARING_CODES } from "@/modules/providers/openai-chatgpt-oauth";
 import {
   buildModelPromptArtifact,
@@ -705,17 +706,9 @@ export async function executeClaimedAgentRun(
     // Media the model can't ingest directly are rerouted through tools
     // instead of failing the run: tell the model what arrived and which tool
     // reads it, then let it proceed with the user's request.
-    const lines = reroutable.map(
-      (file) =>
-        `- "${shortName(file.displayName)}" (${(file.mimeType ?? "file").split("/")[0]}, fileId: ${file.id})`,
-    );
     appendContextToLatestUserMessage(
       runtimeMessageResult.messages,
-      [
-        "These attachments were not included as direct media (unsupported format or mobile memory limit):",
-        ...lines,
-        "Say briefly that these files have not been inspected yet, then inspect them individually with tools — viewFile for images, transcribeAudio for speech (including a video's soundtrack), analyzeAudio for music, getVideoFrame for video stills — using the fileId above. Do not claim to have seen files you have not opened. Then proceed with the request.",
-      ].join("\n"),
+      attachmentInspectionContext(reroutable),
     );
   }
 
@@ -1743,6 +1736,7 @@ export async function executeClaimedAgentRun(
       (skill) => skill.enabled,
     );
     const skillsRuntimeSystem = buildSkillsSystemPrompt({
+      loadedSkillNames: loadedSkillNames(persistedMessages),
       builtInToolSettings: snapshotRef.current.settings.builtInToolSettings,
       mcpServers: runMcpServers,
       skills: skillsForPrompt,

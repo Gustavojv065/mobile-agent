@@ -13,6 +13,7 @@ import {
   summarizeValue,
 } from "@/modules/tools/built-in/shared";
 import type { WorkspaceToolFactoryParams } from "@/modules/tools/built-in/types";
+import { saveMediaResult } from "@/modules/tools/built-in/media-result";
 
 /**
  * Analyzes an audio file already in the workspace and returns a compact,
@@ -107,17 +108,23 @@ export function createAnalyzeAudioTool({
           signal: abortSignal,
         });
 
-        const output = {
+        const output: Record<string, unknown> = {
           fileId: record.id,
           displayName: record.displayName,
           ...summary,
         };
 
+        const mediaResult = await saveMediaResult(repository, record, "audio-analysis", output);
+        if (mediaResult) {
+          output.resultFileId = mediaResult.resultFileId;
+          output.resultLink = `workspace://${mediaResult.resultFileId}`;
+        }
         onRecord?.(
           createRecord({
             toolName: "analyzeAudio",
             status: "completed",
             inputSummary,
+            mediaResult,
             outputSummary: summarizeValue(output),
           }),
         );

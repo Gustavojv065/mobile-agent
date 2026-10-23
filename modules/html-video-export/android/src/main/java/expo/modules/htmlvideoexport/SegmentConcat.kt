@@ -50,14 +50,7 @@ object SegmentConcat {
         fun csdOf(source: MediaFormat): Triple<Int, Int, ByteArray> {
           val w = source.getInteger(MediaFormat.KEY_WIDTH)
           val h = source.getInteger(MediaFormat.KEY_HEIGHT)
-          val csd0 = source.getByteBuffer("csd-0")
-          val csd1 = source.getByteBuffer("csd-1")
-          val csd0Len = csd0?.remaining() ?: 0
-          val csd1Len = csd1?.remaining() ?: 0
-          val bytes = ByteArray(csd0Len + csd1Len)
-          var at = 0
-          if (csd0 != null) { csd0.get(bytes, at, csd0Len); at += csd0Len }
-          if (csd1 != null) { csd1.get(bytes, at, csd1Len) }
+          val bytes = copyCodecSpecificData(source.getByteBuffer("csd-0"), source.getByteBuffer("csd-1"))
           return Triple(w, h, bytes)
         }
         val refV = csdOf(ref)

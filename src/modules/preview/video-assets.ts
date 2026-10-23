@@ -5,6 +5,7 @@ import {
   buildAudioDataUri,
   extractWorkspaceAudioIds,
   MAX_SERVED_AUDIO_FILE_BYTES,
+  replaceWorkspaceAudioRef,
 } from "@/modules/preview/video-audio";
 import type { File } from "expo-file-system";
 
@@ -306,9 +307,10 @@ async function inlineAssetUris(
     const bytes = await file.bytes();
     const mimeType = assertUsable(record.displayName, record.mimeType, bytes.length);
     files.push(record.displayName);
-    next = next
-      .split(`workspace://${id}`)
-      .join(buildAudioDataUri(mimeType, bytes));
+    const uri = buildAudioDataUri(mimeType, bytes);
+    next = kind === "audio"
+      ? replaceWorkspaceAudioRef(next, id, uri)
+      : next.split(`workspace://${id}`).join(uri);
   }
   return { html: next, files };
 }
@@ -688,9 +690,7 @@ export async function inlineAudioAssets(
       MAX_SERVED_AUDIO_FILE_BYTES,
     );
     files.push(record.displayName);
-    next = next
-      .split(`workspace://${id}`)
-      .join(workspaceFileUrl(baseUrl, record.relativePath));
+    next = replaceWorkspaceAudioRef(next, id, workspaceFileUrl(baseUrl, record.relativePath));
   }
   return { html: next, audioFiles: files };
 }

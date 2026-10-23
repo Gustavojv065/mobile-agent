@@ -8,9 +8,11 @@ const mocks = vi.hoisted(() => ({
   bytes: new Uint8Array([0x49, 0x44, 0x33, 0x03, 0x00]),
   getById: vi.fn(),
   resolveWorkspaceFile: vi.fn(),
+  createTextFile: vi.fn(async (_input: { content: string }) => ({ id: "saved-analysis" })),
 }));
 
 vi.mock("@/core/services/workspace-file-service", () => ({
+  createWorkspaceFileService: () => ({ createTextFile: mocks.createTextFile }),
   resolveWorkspaceFile: mocks.resolveWorkspaceFile,
 }));
 
@@ -151,7 +153,10 @@ describe("analyzeAudio tool", () => {
     expect(records.at(-1)).toMatchObject({
       toolName: "analyzeAudio",
       status: "completed",
+      mediaResult: { sourceFileId: "file-1", resultFileId: "saved-analysis" },
     });
+    expect(out).toMatchObject({ resultFileId: "saved-analysis" });
+    expect(JSON.parse(mocks.createTextFile.mock.calls.at(-1)![0].content)).toMatchObject({ beats: SUMMARY.beats });
   });
 
   it("records a failure and rejects when analysis fails", async () => {

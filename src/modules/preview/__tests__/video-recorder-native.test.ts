@@ -10,6 +10,10 @@ function installStubs(options: {
   autoConsume?: boolean;
   withAudio?: boolean;
   video?: object;
+  videos?: object[];
+  audio?: false | object;
+  render?: () => void;
+  clipApi?: object;
   image?: object;
   duration?: number;
 } = {}) {
@@ -64,7 +68,8 @@ function installStubs(options: {
       fps: 5,
       width: 320,
       height: 240,
-      render: () => {},
+      render: options.render ?? (() => {}),
+      audio: options.audio ?? false,
       ...(options.withAudio ? { audio: { tracks: [{ file: "data:audio/wav;base64,AAAA" }] } } : {}),
     },
     ReactNativeWebView: {
@@ -78,12 +83,13 @@ function installStubs(options: {
     },
     ...(options.withWebCodecs !== false ? { VideoEncoder: createVideoEncoder, VideoFrame: class {} } : {}),
     OfflineAudioContext: FakeOfflineAudioContext,
+    __mobileAgentClips: options.clipApi,
   };
   g.document = {
     getElementById: () => null,
     querySelectorAll: (selector: string) =>
       selector === "video"
-        ? (options.video ? [options.video] : [])
+         ? (options.videos ?? (options.video ? [options.video] : []))
         : selector === "img[data-mobile-agent-asset]"
           ? (options.image ? [options.image] : [])
           : [canvas],
@@ -121,6 +127,66 @@ afterEach(() => {
 });
 
 describe("VIDEO_EXPORT_SCRIPT native encoding", () => {
+  it("rejects accidental silent composites before capturing any frames", async () => {
+    const { messages, start } = installStubs({ video: {} });
+    delete (globalThis as unknown as { window: { MOBILE_AGENT_VIDEO: { audio?: unknown } } }).window.MOBILE_AGENT_VIDEO.audio;
+    start();
+    await vi.waitFor(() => expect(messages.some((m) => m.type === "mobileAgentVideoError")).toBe(true));
+    expect(messages.find((m) => m.type === "mobileAgentVideoError")?.message).toMatch(/main video soundtrack/);
+    expect(messages.some((m) => m.type === "mobileAgentVideoFrame")).toBe(false);
+  });
+
+  it("allows explicitly silent video scenes", async () => {
+    const { messages, start } = installStubs({ video: {}, audio: false });
+    start();
+    await vi.waitFor(() => expect(messages.some((m) => m.type === "mobileAgentVideoDone")).toBe(true));
+    expect(messages.some((m) => m.type === "mobileAgentVideoAudioConfig")).toBe(false);
+  });
+
+  it("rejects empty audio schedules rather than exporting silence", async () => {
+    const { messages, start } = installStubs({ audio: { tracks: [] } });
+    start();
+    await vi.waitFor(() => expect(messages.some((m) => m.type === "mobileAgentVideoError")).toBe(true));
+    expect(messages.find((m) => m.type === "mobileAgentVideoError")?.message).toMatch(/no usable tracks/);
+  });
+
+  it("fails before capture when render starts a second async seek", async () => {
+    const video = {
+      duration: 30.421, readyState: 2, seeking: false, currentTime: 0, loop: false,
+      pause() {}, addEventListener() {}, removeEventListener() {},
+    };
+    const { messages, start } = installStubs({ video, render: () => {
+      video.currentTime = 0.5;
+      video.seeking = true;
+      video.readyState = 1;
+    } });
+    start();
+    await vi.waitFor(() => expect(messages.some((m) => m.type === "mobileAgentVideoError")).toBe(true));
+    expect(messages.find((m) => m.type === "mobileAgentVideoError")?.message).toMatch(/render\(\).*changed.*source video frame/);
+    expect(messages.some((m) => m.type === "mobileAgentVideoFrame")).toBe(false);
+  });
+
+  it("still seeks an undeclared video when another video is timeline-owned", async () => {
+    const makeVideo = () => ({
+      duration: 2, readyState: 2, seeking: false, currentTime: 0, loop: false,
+      pause() {}, addEventListener() {}, removeEventListener() {},
+      toString: () => "[object HTMLVideoElement]",
+    });
+    const owned = makeVideo();
+    const unowned = makeVideo();
+    const prepareFrame = vi.fn(async () => {});
+    const { messages, start } = installStubs({
+      videos: [owned, unowned],
+      clipApi: { attach: () => ({ prepareFrame, ownedElements: () => [owned] }) },
+    });
+    start();
+    await vi.waitFor(() => expect(messages.some((m) => m.type === "mobileAgentVideoDone")).toBe(true));
+    expect(owned.currentTime).toBe(0);
+    expect(unowned.currentTime).toBeCloseTo(0.8);
+    expect(messages.find((m) => m.type === "mobileAgentVideoDone")?.visualWarnings).toEqual([
+      expect.stringContaining("1 of 2 video elements are not declared"),
+    ]);
+  });
   it("uses native frames even when WebCodecs is available", async () => {
     const { messages, createVideoEncoder, start } = installStubs();
     start();

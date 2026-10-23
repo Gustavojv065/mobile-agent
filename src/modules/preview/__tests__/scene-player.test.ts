@@ -168,6 +168,30 @@ describe("scene player script", () => {
     expect(player.state().playing).toBe(true);
   });
 
+  it("does not pause an active reused clip because another appearance is inactive", () => {
+    const harness = makeHarness({ duration: 90 });
+    const el = { paused: true, readyState: 2, currentTime: 0,
+      play: vi.fn(function () { el.paused = false; }),
+      pause: vi.fn(function () { el.paused = true; }),
+    };
+    Object.assign(harness.sandbox.window as object, {
+      __mobileAgentClips: { attach: () => ({ stateAt: () => [
+        { el, active: false, target: 0 },
+        { el, active: true, target: 7 },
+        { el, active: false, target: 0 },
+      ] }) },
+    });
+    const player = harness.run(buildScenePlayerScript());
+    player.seek(70);
+    player.play();
+    harness.step(1000);
+    harness.step(1200);
+    expect(el.currentTime).toBe(7);
+    expect(el.paused).toBe(false);
+    expect(el.pause).not.toHaveBeenCalled();
+    player.pause();
+  });
+
   it("stops and reports a throwing render instead of dying silently", () => {
     const harness = makeHarness({
       render: () => {

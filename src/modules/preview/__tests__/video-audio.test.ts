@@ -8,9 +8,22 @@ import {
   readContractAspect,
   readContractDuration,
   resolveAudioMimeType,
+  replaceWorkspaceAudioRef,
 } from "@/modules/preview/video-audio";
 
 describe("extractWorkspaceAudioIds", () => {
+  it("rewrites only exact audio-file keys, not the same video's DOM source or prefixed keys", () => {
+    const html = `<video src="workspace://main"></video><script>var x={
+      file: 'workspace://main', profile: 'workspace://main', sourceFile: 'workspace://main',
+      other: { file: "workspace://main-long" }
+    };</script>`;
+    const out = replaceWorkspaceAudioRef(html, "main", "http://127.0.0.1/audio");
+    expect(out).toContain("file: 'http://127.0.0.1/audio'");
+    expect(out).toContain('<video src="workspace://main">');
+    expect(out).toContain("profile: 'workspace://main'");
+    expect(out).toContain("sourceFile: 'workspace://main'");
+    expect(out).toContain('file: "workspace://main-long"');
+  });
   it("finds workspace file ids referenced by an audio schedule", () => {
     const html = `<script>window.MOBILE_AGENT_VIDEO = { audio: { tracks: [
       { file: "workspace://abc-123", start: 0 },

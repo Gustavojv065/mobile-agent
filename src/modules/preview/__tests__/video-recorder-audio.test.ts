@@ -111,7 +111,7 @@ function installBrowserStubs(options: {
   };
   g.document = {
     getElementById: () => null,
-    querySelectorAll: (selector: string) => (selector === "img[data-mobile-agent-asset]" ? [] : [canvas]),
+    querySelectorAll: (selector: string) => (selector === "canvas" ? [canvas] : []),
     createElement: () => ({ setAttribute: () => {}, appendChild: () => {} }),
     body: { appendChild: () => {} },
   };

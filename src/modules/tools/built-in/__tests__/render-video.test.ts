@@ -165,4 +165,19 @@ describe("renderVideo asset inlining", () => {
       videoFiles: ["clip.mp4"],
     });
   });
+
+  it("accepts the original MP4 as both the visual source and the soundtrack", async () => {
+    const { resolveWorkspaceFile } = await import("@/core/services/workspace-file-service");
+    vi.mocked(resolveWorkspaceFile).mockReturnValue({ exists: true, size: 4,
+      bytes: async () => new Uint8Array([1, 2, 3, 4]),
+    } as never);
+    makeTool();
+    const tool = createRenderVideoTool({ repository: {
+      getById: async () => ({ id: "main-1", displayName: "original.mp4", mimeType: "video/mp4", relativePath: "original.mp4" }),
+    } as never });
+    const output = await execute(tool, { html: `<html><video muted src="workspace://main-1"></video>
+      <script>window.MOBILE_AGENT_VIDEO={duration:6,render:function(){},audio:{master:1,tracks:[{file:"workspace://main-1",volume:1}]}};</script></html>` });
+    expect(output).toMatchObject({ audioFiles: ["original.mp4"], videoFiles: ["original.mp4"], hasAudio: true });
+    expect(mocks.requestVideoRender.mock.calls[0][0]).not.toContain("workspace://");
+  });
 });

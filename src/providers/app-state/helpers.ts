@@ -2,6 +2,7 @@ import type { ModelMessage } from "ai";
 
 import { BUILT_IN_FILE_TOOL_CONTROLS } from "@/modules/config/built-in-tools";
 import { summarizeValue } from "@/modules/tools/built-in/shared";
+import { withVideoRuntimeGuidance } from "@/modules/preview/video-runtime-guidance";
 import type {
   AgentRun,
   BuiltInToolSettings,
@@ -383,6 +384,7 @@ export function resolveAppliedSkills(input: {
 }
 
 export function buildSkillsSystemPrompt(input: {
+  loadedSkillNames?: string[];
   builtInToolSettings: BuiltInToolSettings;
   mcpServers: McpServerConfig[];
   skills: SkillConfig[];
@@ -439,11 +441,15 @@ export function buildSkillsSystemPrompt(input: {
     ].join("\n");
   });
 
+  const loaded = input.skills.filter((skill) =>
+    input.loadedSkillNames?.some((name) => name.trim().toLowerCase() === skill.title.trim().toLowerCase()),
+  );
   return [
     "<available_skills>",
     ...catalog,
     "</available_skills>",
-    "When the current task matches one of these skills, call the skill tool with the exact skill name to load its full instructions before continuing. You may load more than one skill when needed. If a loaded skill lists supporting files, use the skillReadFile tool to read one of them when you need its contents.",
+    "When the current task matches a skill not already loaded below, call the skill tool with the exact name. Skills already loaded in this conversation are restored below with their CURRENT instructions; do not call skill again just because the user sent a follow-up. Reuse prior media inspections and saved transcripts for unchanged files. If supporting-file contents are missing and needed, use skillReadFile.",
+    ...loaded.map((skill) => `<loaded_skill name=${JSON.stringify(skill.title)}>\n${withVideoRuntimeGuidance(skill)}\n</loaded_skill>`),
   ].join("\n");
 }
 

@@ -134,6 +134,7 @@ export const VIDEO_CLIP_TIMELINE_SCRIPT = `(function () {
   function buildTimeline(entries, fps) {
     if (!(fps > 0) || !isFinite(fps)) fps = 30;
     var clips = [];
+    var resources = [];
     for (var i = 0; i < entries.length; i += 1) {
       (function (entry, index) {
         if (!entry || typeof entry !== 'object') {
@@ -179,6 +180,14 @@ export const VIDEO_CLIP_TIMELINE_SCRIPT = `(function () {
           rect: rect,
           alpha: alpha
         };
+        for (var c = 0; c < clips.length; c += 1) {
+          if (clips[c].el === el && start < clips[c].end && end > clips[c].start) {
+            throw new Error('clips[' + index + ']: overlapping windows share a video element. Use separate elements for simultaneous clips.');
+          }
+        }
+        if (!resources.some(function (resource) { return resource.el === el; })) {
+          resources.push({ el: el, suspended: false, sources: [], preload: null });
+        }
         clips.push(clip);
       })(entries[i], i);
     }
@@ -200,7 +209,7 @@ export const VIDEO_CLIP_TIMELINE_SCRIPT = `(function () {
           if (clip.loop) {
             target = local % dur;
             wrapped = local >= dur;
-          } else if (local > dur) {
+          } else if (local >= dur) {
             target = Math.max(0, dur - 1 / fps);
             held = true;
           }
@@ -274,7 +283,7 @@ export const VIDEO_CLIP_TIMELINE_SCRIPT = `(function () {
           try { dur = clip.el.duration; } catch (_) { dur = 0; }
           if (dur > 0 && isFinite(dur)) {
             if (clip.loop) return local % dur;
-            if (local > dur) return Math.max(0, dur - 1 / fps);
+            if (local >= dur) return Math.max(0, dur - 1 / fps);
           }
           return local;
         }
@@ -304,20 +313,49 @@ export const VIDEO_CLIP_TIMELINE_SCRIPT = `(function () {
       });
     }
 
+    // load() alone immediately reloads a preload=auto source. Remove source
+    // attributes while idle, and restore them only when this element is active
+    // again. Track elements, not windows: eight appearances may share one video.
+    function suspend(resource) {
+      var el = resource.el;
+      resource.sources = [];
+      if (el.getAttribute && el.removeAttribute) {
+        resource.preload = el.getAttribute('preload');
+        var nodes = [el];
+        var children = el.querySelectorAll ? el.querySelectorAll('source') : [];
+        for (var n = 0; n < children.length; n += 1) nodes.push(children[n]);
+        for (var i = 0; i < nodes.length; i += 1) {
+          var src = nodes[i].getAttribute('src');
+          if (src !== null) {
+            resource.sources.push({ node: nodes[i], src: src });
+            nodes[i].removeAttribute('src');
+          }
+        }
+        if (el.setAttribute) el.setAttribute('preload', 'none');
+      }
+      resource.suspended = true;
+      if (typeof el.load === 'function') el.load();
+    }
+
+    function resume(resource) {
+      if (!resource.suspended) return;
+      resource.suspended = false;
+      for (var i = 0; i < resource.sources.length; i += 1) {
+        resource.sources[i].node.setAttribute('src', resource.sources[i].src);
+      }
+      if (resource.el.setAttribute) {
+        if (resource.preload === null) resource.el.removeAttribute('preload');
+        else resource.el.setAttribute('preload', resource.preload);
+      }
+      if (typeof resource.el.load === 'function') resource.el.load();
+    }
+
     function prepareFrame(t) {
       var states = stateAt(t);
-      // A clip whose window is over keeps its decoded frame — and with it a
-      // device hardware decoder instance. Those are a shared, heavily
-      // limited resource (Android grants fewer concurrent instances than a
-      // timeline often has clips), and an accumulating timeline starves
-      // later clips into a permanent readyState-1 stall. load() re-runs
-      // resource selection (decoder returned to the pool); the clip
-      // re-fetches when its window comes around again.
-      for (var r = 0; r < clips.length; r += 1) {
-        if (t >= clips[r].start && t < clips[r].end) continue;
-        if (!(clips[r].el.readyState >= 2)) continue;
-        if (typeof clips[r].el.load !== 'function') continue;
-        try { clips[r].el.load(); } catch (_) {}
+      var active = states.filter(function (state) { return state.active; }).map(function (state) { return state.el; });
+      for (var r = 0; r < resources.length; r += 1) {
+        if (active.indexOf(resources[r].el) >= 0 || resources[r].suspended) continue;
+        suspend(resources[r]);
       }
       // One clip at a time: decoder inits are acquired in order instead of
       // all racing the codec cap together on a segment's first frame.
@@ -325,7 +363,12 @@ export const VIDEO_CLIP_TIMELINE_SCRIPT = `(function () {
       for (var i = 0; i < states.length; i += 1) {
         if (!states[i].active) continue;
         (function (clip) {
-          chain = chain.then(function () { return prepareClip(clip, t); });
+          chain = chain.then(function () {
+            for (var r = 0; r < resources.length; r += 1) {
+              if (resources[r].el === clip.el) resume(resources[r]);
+            }
+            return prepareClip(clip, t);
+          });
         })(clips[i]);
       }
       return chain;
@@ -358,7 +401,7 @@ export const VIDEO_CLIP_TIMELINE_SCRIPT = `(function () {
       draw: draw,
       ownedElements: function () {
         var out = [];
-        for (var i = 0; i < clips.length; i += 1) out.push(clips[i].el);
+        for (var i = 0; i < resources.length; i += 1) out.push(resources[i].el);
         return out;
       }
     };

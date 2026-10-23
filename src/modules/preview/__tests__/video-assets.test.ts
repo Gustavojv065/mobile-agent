@@ -510,6 +510,18 @@ describe("hasWorkspaceRefs", () => {
 });
 
 describe("inlineVideoAssets served URLs", () => {
+  it("preserves video CORS setup when the same MP4 is also scheduled as audio", async () => {
+    serverMocks.baseUrl = "http://127.0.0.1:9999";
+    workspaceFile("original.mp4", "video/mp4");
+    const source = `<video src="workspace://main"></video><script>var x={audio:{tracks:[{file:"workspace://main"}]}};</script>`;
+    const audio = await inlineAudioAssets(source, repository());
+    expect(audio.html).toContain('<video src="workspace://main">');
+    const video = await inlineVideoAssets(audio.html, repository());
+    expect(audio.audioFiles).toEqual(["original.mp4"]);
+    expect(video.videoFiles).toEqual(["original.mp4"]);
+    expect(video.html).toContain('crossorigin="anonymous"');
+    expect(video.html).not.toContain("workspace://");
+  });
   beforeEach(() => {
     serverMocks.baseUrl = "http://127.0.0.1:9999";
     nativeMocks.transcodeClip.mockReset();

@@ -14,6 +14,7 @@ export function summarizeValue(value: unknown) {
 export const TOOL_PREVIEW_TEXT_LIMIT = 20000;
 
 export function createRecord(input: {
+  mediaResult?: ToolExecutionRecord["mediaResult"];
   preview?: ToolExecutionRecord["preview"];
   id?: string;
   /** Optional captured line-diff (added/removed hunks), e.g. for the edit tool. */
@@ -39,5 +40,6 @@ export function createRecord(input: {
     ...(input.diff ? { diff: input.diff } : {}),
     ...(input.diffStat ? { diffStat: input.diffStat } : {}),
     ...(input.preview ? { preview: input.preview } : {}),
+    ...(input.mediaResult ? { mediaResult: input.mediaResult } : {}),
   } satisfies ToolExecutionRecord;
 }

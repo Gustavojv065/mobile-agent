@@ -25,13 +25,11 @@ import {
     View,
     type ViewProps,
 } from "react-native";
-import { BlurView } from "expo-blur";
 import { File } from "expo-file-system";
 import * as ScreenOrientation from "expo-screen-orientation";
 import { StatusBar } from "expo-status-bar";
 import { useSQLiteContext } from "expo-sqlite";
-import { captureViewToTmpFile } from "@/modules/preview/view-shot";
-import Svg, { Defs, LinearGradient, Rect, Stop } from "react-native-svg";
+import { captureViewToTmpFile, isBlankCapture } from "@/modules/preview/view-shot";
 import { WebView, type WebViewMessageEvent } from "react-native-webview";
 
 import {
@@ -43,6 +41,8 @@ import {
 } from "@/components/ui/drawer";
 import { Button } from "@/components/ui/button";
 import { ScenePlayerChrome } from "@/components/ui/scene-player-chrome";
+import { SceneExportOverlay } from "@/components/ui/scene-export-overlay";
+import { sceneExportPresentation, type SceneExportPhase } from "@/modules/preview/scene-export-layout";
 import { createDrizzleDb } from "@/core/db/repositories/shared";
 import { createWorkspaceRepository } from "@/core/db/repositories/workspace-repository";
 import {
@@ -98,7 +98,7 @@ const MIN_CAPTURE_FEEDBACK_MS = 350;
 
 type Viewport = "desktop" | "mobile";
 type ViewMode = "code" | "preview";
-type SceneExportState = { progress: number; status: "recording" | "finishing" };
+type SceneExportState = { progress: number; status: SceneExportPhase; posterUri?: string | null; canCancel?: boolean };
 
 /**
  * Module-scoped singleton for the manual Export. It beats the component
@@ -109,27 +109,38 @@ type SceneExportState = { progress: number; status: "recording" | "finishing" };
  * instead of queuing a duplicate render. That also gives the manual path the
  * same "only one render at a time" guarantee the tool path already had.
  */
-let activeExport: {
+type ActiveSceneExport = {
     controller: AbortController;
     state: SceneExportState;
     resultFile: File | null;
-} | null = null;
-const exportListeners = new Set<() => void>();
+};
+type SceneExportRuntime = { active: ActiveSceneExport | null; listeners: Set<() => void> };
+// Fast Refresh must not lose ownership/progress of a long native export while
+// polishing its UI. A module-local variable is reset when this file refreshes.
+const exportGlobal = globalThis as typeof globalThis & { __mobileAgentSceneExportRuntime?: SceneExportRuntime };
+const exportRuntime = exportGlobal.__mobileAgentSceneExportRuntime ??= {
+    active: null,
+    listeners: new Set(),
+};
 
 function notifyExport() {
-    for (const listener of [...exportListeners]) listener();
+    for (const listener of [...exportRuntime.listeners]) listener();
 }
 
 function setExportState(state: SceneExportState) {
-    if (activeExport) activeExport.state = state;
+    if (exportRuntime.active) exportRuntime.active.state = { ...exportRuntime.active.state, ...state };
     notifyExport();
 }
 
 /** Drops the singleton, clearing the Export button back to idle. */
 function releaseSceneExport(deleteResultFile: boolean) {
-    const file = activeExport?.resultFile ?? null;
-    activeExport = null;
+    const file = exportRuntime.active?.resultFile ?? null;
+    const poster = exportRuntime.active?.state.posterUri;
+    exportRuntime.active = null;
     notifyExport();
+    if (poster) {
+        try { new File(poster).delete(); } catch { /* Cache cleanup is best-effort. */ }
+    }
     if (deleteResultFile && file) {
         try {
             file.delete();
@@ -141,11 +152,14 @@ function releaseSceneExport(deleteResultFile: boolean) {
 
 /** Abort in flight and drop the temp/finished file. */
 function cancelSceneExport() {
-    const active = activeExport;
+    const active = exportRuntime.active;
     if (!active) return;
-    activeExport = null;
+    exportRuntime.active = null;
     notifyExport();
     active.controller.abort();
+    if (active.state.posterUri) {
+        try { new File(active.state.posterUri).delete(); } catch { /* Cache cleanup is best-effort. */ }
+    }
     if (active.resultFile) {
         try {
             active.resultFile.delete();
@@ -156,17 +170,26 @@ function cancelSceneExport() {
 }
 
 function useSceneExportState(): SceneExportState | null {
+    const readState = (): SceneExportState | null => {
+        if (exportRuntime.active) return exportRuntime.active.state;
+        // Reattach visually to an export started before this UI update, without
+        // claiming ownership of an AbortController this module does not have.
+        const native = getVideoRenderStatus();
+        return native ? { progress: native.progress, status: "recording", canCancel: false } : null;
+    };
     const [state, setState] = useState<SceneExportState | null>(
-        activeExport ? activeExport.state : null,
+        readState,
     );
     useEffect(() => {
-        const sync = () => setState(activeExport ? activeExport.state : null);
+        const sync = () => setState(readState());
         // Reattach immediately: a mounted dialog adopts an export started before
         // this dialog (or before a minimize) even if it is already done.
         sync();
-        exportListeners.add(sync);
+        exportRuntime.listeners.add(sync);
+        const unsubscribe = subscribeVideoRenderStatus(sync);
         return () => {
-            exportListeners.delete(sync);
+            exportRuntime.listeners.delete(sync);
+            unsubscribe();
         };
     }, []);
     return state;
@@ -264,6 +287,8 @@ export function CodePreviewContent({
     const [saving, setSaving] = useState(false);
     // Capture only the page frame, without the drawer controls.
     const frameRef = useRef<View>(null);
+    // Capture the scene only — transport controls are siblings, never baked in.
+    const sceneViewRef = useRef<View>(null);
     const desktop = viewport === "desktop";
     // Fall back to unscaled until the first layout pass reports the real frame.
     const scale =
@@ -275,6 +300,7 @@ export function CodePreviewContent({
         [code, language, mode, theme],
     );
     const videoExport = useSceneExportState();
+    const isExporting = videoExport !== null;
     const anyRenderBusy = useAnyRenderBusy();
     // Completed export: hand the MP4 to the real player drawer (the same
     // VideoPlayerDialog the chat uses) instead of duplicating a player here.
@@ -435,6 +461,14 @@ export function CodePreviewContent({
     // CodecException, often error -12/ENOMEM on Samsung). Blanking the page
     // releases them; restoring the source reloads and reinstallPlayer re-anchors.
     const [previewSuspended, setPreviewSuspended] = useState(false);
+    const presentation = sceneExportPresentation(videoExport?.status ?? null, previewSuspended, audioLoading);
+    useEffect(() => {
+        if (isExporting || previewSuspended) {
+            setAudioLoading(false);
+            setAudioError(null);
+            setPlaying(false);
+        }
+    }, [isExporting, previewSuspended]);
     useEffect(() => {
         if (mode !== "preview" || !canPreview || sceneAssetsPending) {
             return;
@@ -548,8 +582,9 @@ export function CodePreviewContent({
     );
 
     const installPlayer = useCallback(() => {
+        if (exportRuntime.active || previewSuspended) return;
         webViewRef.current?.injectJavaScript(`${buildScenePlayerScript()}\ntrue;`);
-    }, []);
+    }, [previewSuspended]);
     // The fullscreen layer mounts its own WebView, so on load it installs the
     // player and snap-jumps to the timeline position the drawer card is at —
     // the two WebViews never share a page, only the shared t state.
@@ -586,7 +621,7 @@ export function CodePreviewContent({
     // minimizing or closing this drawer never cancels the render — when it
     // completes the file lands in Downloads either way.
     const handleExportVideo = useCallback(() => {
-        if (videoExport || anyRenderBusy || mode !== "preview") return;
+        if (exportRuntime.active || videoExport || anyRenderBusy || mode !== "preview") return;
         if (hasWorkspaceRefs(exportHtml)) {
             Alert.alert(
                 "Video export unavailable",
@@ -599,8 +634,6 @@ export function CodePreviewContent({
         // The hidden host owns the canvas while rendering; stop the visible
         // player loop first so the two never fight over the page.
         pausePlayer();
-        // And free the preview page's hardware clip decoders for the encoder.
-        setPreviewSuspended(true);
         // Drop a previously exported copy so its cache file goes with its drawer.
         if (exportedUriRef.current) {
             try {
@@ -615,14 +648,38 @@ export function CodePreviewContent({
         const controller = new AbortController();
         const entry = {
             controller,
-            state: { progress: 0, status: "recording" } as SceneExportState,
+            state: { progress: 0, status: "preparing", posterUri: null } as SceneExportState,
             resultFile: null as File | null,
         };
-        activeExport = entry;
+        exportRuntime.active = entry;
         notifyExport();
 
         void (async () => {
             try {
+                let posterUri: string | null = null;
+                try {
+                    posterUri = await captureViewToTmpFile(sceneViewRef, {
+                        format: "jpg", quality: 0.8, result: "tmpfile",
+                    }, "Export thumbnail");
+                    if (isBlankCapture(posterUri)) {
+                        try { new File(posterUri).delete(); } catch { /* Best-effort. */ }
+                        posterUri = null;
+                    }
+                } catch {
+                    // A clean dark fallback is preferable to a blank/white WebView.
+                }
+                if (controller.signal.aborted || exportRuntime.active !== entry) {
+                    if (posterUri) {
+                        try { new File(posterUri).delete(); } catch { /* Best-effort. */ }
+                    }
+                    return;
+                }
+                // The poster is now independent of the page. Unmount the preview
+                // before encoding to return its hardware decoders to the pool.
+                setPreviewSuspended(true);
+                setAudioLoading(false);
+                setAudioError(null);
+                setExportState({ progress: 0, status: "recording", posterUri });
                 const result = await renderSegments({
                     abortSignal: controller.signal,
                     contractDuration: sceneDuration,
@@ -674,7 +731,7 @@ export function CodePreviewContent({
             } finally {
                 // Back the button to idle once the work is over (or was cancelled —
                 // cancelSceneExport already dropped the singleton in that case).
-                if (activeExport === entry) releaseSceneExport(false);
+                if (exportRuntime.active === entry) releaseSceneExport(false);
                 // Reload the preview page now that the encoder no longer needs the
                 // codec slots (installPlayer re-runs on load end and re-anchors).
                 setPreviewSuspended(false);
@@ -707,6 +764,9 @@ export function CodePreviewContent({
                 typeof payload === "object" &&
                 payload.type === SCENE_PLAYER_MESSAGE_TYPE
             ) {
+                // Late preview readiness events are not render progress. A
+                // suspended page may never finish its audio decode at all.
+                if (exportRuntime.active || previewSuspended) return;
                 if (scrubbingRef.current) {
                     // Ignore the page's ticking clock while the user is dragging the
                     // timeline; the scrub handlers drive the value instead.
@@ -733,7 +793,7 @@ export function CodePreviewContent({
             // Not a player message: fall through to the other handlers.
         }
         void handlePreviewDownloadMessage(event);
-    }, []);
+    }, [previewSuspended]);
 
     // A new message replaces the preview document and the player page — but the
     // in-flight export is decoupled from this WebView (it renders a snapshot of
@@ -956,22 +1016,30 @@ export function CodePreviewContent({
                         />
                     ) : isVideoScene && fittedFrame && documentUri ? (
                         <View
-                            className="overflow-hidden rounded-card border border-border bg-black dark:border-border-dark"
+                            key={videoExport && videoExport.status !== "preparing" ? "export-card" : "preview-card"}
+                            className={videoExport
+                                ? "overflow-hidden rounded-card bg-black"
+                                : "overflow-hidden rounded-card border border-border bg-black dark:border-border-dark"}
                             style={{
                                 height: fittedFrame.height,
                                 width: fittedFrame.width,
                             }}
                         >
-                            <SceneWebViewContainer
-                                handleLoadEnd={installPlayer}
-                                handleMessage={handleMessage}
-                                innerRef={webViewRef}
-                                keyName={viewport}
-                                source={previewSuspended ? "about:blank" : documentUri}
-                                style={{ flex: 1 }}
-                            />
-                            <ScenePlayerChrome
-                                audioLoading={audioLoading}
+                            {presentation.showLivePreview ? (
+                                <View collapsable={false} ref={sceneViewRef} style={{ flex: 1 }}>
+                                    <SceneWebViewContainer
+                                        handleLoadEnd={installPlayer}
+                                        handleMessage={handleMessage}
+                                        innerRef={webViewRef}
+                                        keyName={viewport}
+                                        source={documentUri}
+                                        style={{ flex: 1 }}
+                                    />
+                                </View>
+                            ) : null}
+                            {presentation.showPlayerChrome ? (
+                              <ScenePlayerChrome
+                                audioLoading={presentation.showAudioLoading}
                                 duration={sceneDuration}
                                 fullscreen={false}
                                 onSeek={handleScrubValue}
@@ -985,12 +1053,13 @@ export function CodePreviewContent({
                                 onTogglePlay={togglePlay}
                                 playing={playing}
                                 time={playerTime}
-                            />
+                              />
+                            ) : null}
                             {videoExport ? (
                                 <SceneExportOverlay
-                                    finishing={videoExport.status === "finishing"}
+                                    phase={videoExport.status}
                                     progress={videoExport.progress}
-                                    strokeColor={theme.accent}
+                                    posterUri={videoExport.posterUri}
                                 />
                             ) : null}
                         </View>
@@ -1034,6 +1103,7 @@ export function CodePreviewContent({
                 }}
                 open={
                     fullscreen &&
+                    videoExport === null &&
                     isVideoScene &&
                     documentUri != null &&
                     sceneDuration != null
@@ -1098,7 +1168,7 @@ export function CodePreviewContent({
                     )}
                 </DrawerContent>
             </Drawer>
-            {mode === "preview" && isVideoScene && sceneDuration != null ? (
+            {mode === "preview" && isVideoScene && sceneDuration != null && presentation.showPlayerChrome ? (
                 <View className="gap-1">
                     {playerError ? (
                         <Text className="font-sans text-xs text-red-500">
@@ -1123,15 +1193,15 @@ export function CodePreviewContent({
                     <Button
                         className="w-full"
                         disabled={
-                            videoExport
-                                ? false
+                             videoExport
+                                 ? true
                                 : anyRenderBusy || sceneAssetsPending || !fittedFrame
                         }
-                        onPress={videoExport ? stopExport : handleExportVideo}
+                         onPress={handleExportVideo}
                     >
-                        {videoExport ? "Exporting…" : "Export"}
+                         {videoExport?.status === "preparing" ? "Preparing…" : videoExport?.status === "finishing" ? "Saving…" : videoExport ? "Exporting…" : "Export"}
                     </Button>
-                    {videoExport ? (
+                    {videoExport && videoExport.canCancel !== false ? (
                         <Pressable
                             accessibilityLabel="Cancel video export"
                             accessibilityRole="button"
@@ -1197,6 +1267,7 @@ function SceneWebViewContainer({
                 onLoadEnd={handleLoadEnd}
                 onMessage={handleMessage}
                 source={{ uri: source }}
+                style={{ flex: 1, backgroundColor: "#000000" }}
             />
         </View>
     );
@@ -1337,106 +1408,6 @@ function ViewportToggle({
                     </Pressable>
                 );
             })}
-        </View>
-    );
-}
-
-/**
- * Exporting state rendered over the scene card: blur + dim wash + big percent,
- * with a CapCut-style progress stroke running around the card's rounded
- * border. Hides the canvas hijack flicker the recorder causes on any page it
- * records (the manual path renders in the hidden host, so this is mostly a
- * visual affordance for the running pipeline).
- *
- * Geometry rules, so nothing can drift again:
- * - The NUMBER sits at the box's true center: it is the only flow child of
- *   the centered layer, with the caption pinned below it (absolute, full
- *   width, text-centered) instead of being a flow sibling — centering the
- *   pair used to pull the number above the box's center.
- * - The stroke draws in the overlay's OWN laid-out box (onLayout), never in
- *   caller-supplied dimensions: the card's 1px border shifts absolute
- *   children inward, so outer dimensions used to push the stroke off the
- *   border by a pixel on every edge.
- * - The stroke's corner radius is concentric with the card's real
- *   `rounded-card` radius (Spacing.four = 24px, minus the 1px border, minus
- *   the stroke inset) instead of a hard-coded value that matched no corner.
- */
-function SceneExportOverlay({
-    finishing,
-    progress,
-    strokeColor,
-}: {
-    finishing: boolean;
-    progress: number;
-    strokeColor: string;
-}) {
-    const inset = 3;
-    const strokeWidth = 4;
-    // tailwind: rounded-card = Spacing.four (24px); card `border` = 1px, so
-    // the box this overlay lives in carries a 23px corner radius.
-    const rx = 24 - 1 - inset;
-    const [box, setBox] = useState<{ width: number; height: number } | null>(null);
-    const percent = Math.round(progress * 100);
-    const w = box ? Math.max(0, box.width - inset * 2) : 0;
-    const h = box ? Math.max(0, box.height - inset * 2) : 0;
-    // Perimeter of a rounded rect stroke path, minus the squared corners.
-    const perimeter = 2 * (w + h) - 8 * rx + 2 * Math.PI * rx;
-
-    return (
-        <View
-            accessibilityLabel={`Exporting video, ${percent} percent`}
-            accessibilityLiveRegion="polite"
-            className="absolute inset-0 items-center justify-center"
-            onLayout={(event) =>
-                setBox({
-                    width: event.nativeEvent.layout.width,
-                    height: event.nativeEvent.layout.height,
-                })
-            }
-            pointerEvents="auto"
-        >
-            <BlurView className="absolute inset-0" intensity={45} tint="dark" />
-            <View className="absolute inset-0 bg-black/40" />
-            {box ? (
-                <Svg
-                    className="absolute inset-0"
-                    height={box.height}
-                    pointerEvents="none"
-                    width={box.width}
-                >
-                    <Defs>
-                        <LinearGradient id="sceneExportStroke" x1="0" y1="0" x2="1" y2="1">
-                            <Stop offset="0" stopColor={strokeColor} stopOpacity={0.95} />
-                            <Stop offset="1" stopColor={strokeColor} stopOpacity={0.45} />
-                        </LinearGradient>
-                    </Defs>
-                    <Rect
-                        fill="none"
-                        height={h}
-                        rx={rx}
-                        stroke="url(#sceneExportStroke)"
-                        strokeDasharray={`${perimeter} ${perimeter}`}
-                        strokeDashoffset={perimeter * (1 - progress)}
-                        strokeWidth={strokeWidth}
-                        width={w}
-                        x={inset}
-                        y={inset}
-                    />
-                </Svg>
-            ) : null}
-            {/* Number dead-center of the box; the caption hangs below it on a
-                full-width absolute line, so it can never shift the number. */}
-            <View className="absolute inset-0 items-center justify-center">
-                <Text className="font-sans text-3xl font-semibold text-white">
-                    {percent}%
-                </Text>
-                <Text
-                    className="absolute inset-x-0 text-center font-sans text-xs text-white/70"
-                    style={{ top: "50%", marginTop: 22 }}
-                >
-                    {finishing ? "Finalizing…" : "Exporting"}
-                </Text>
-            </View>
         </View>
     );
 }

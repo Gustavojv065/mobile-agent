@@ -184,7 +184,8 @@ describe("convertStoredMessagesToModelMessages media passthrough", () => {
     const result = await convert(files, { audio: true, video: true });
     expect(mocks.read).toHaveBeenCalledTimes(MAX_REQUEST_MEDIA_PARTS);
     expect(result.unsupportedAttachments).toHaveLength(261 - MAX_REQUEST_MEDIA_PARTS);
-    expect(JSON.stringify(result.messages)).toContain("Their contents have not been inspected");
+    expect(JSON.stringify(result.messages)).not.toContain("Their contents have not been inspected");
+    expect(JSON.stringify(result.messages)).toContain("reuse prior conversation evidence");
   });
 
   it("shares the byte budget across chat history", async () => {
@@ -206,5 +207,27 @@ describe("convertStoredMessagesToModelMessages media passthrough", () => {
     const result = await convert(files, { audio: true, video: true });
     expect(mocks.read).not.toHaveBeenCalled();
     expect(result.unsupportedAttachments).toEqual(files);
+  });
+
+  it("carries prior transcript evidence into a follow-up instead of declaring old attachments unseen", async () => {
+    const original = audio();
+    const result = await convertStoredMessagesToModelMessages({
+      messages: [userMessage([original.id]), {
+        ...userMessage([]), id: "assistant-1", role: "assistant", content: "Captioned the clip.",
+        metadata: { toolExecutions: [{
+          toolName: "transcribeAudio", status: "completed", inputSummary: '{"fileId":"file-1"}',
+          outputSummary: '{"duration":12}', error: null, createdAt: original.updatedAt,
+          mediaResult: { sourceFileId: original.id, sourceUpdatedAt: original.updatedAt, resultFileId: "transcript-1" },
+        }] },
+      }, { ...userMessage([]), id: "follow-up", content: "Make the text bigger." }],
+      supportsImageInput: true, supportsAudioInput: false, supportsVideoInput: false,
+      workspaceFilesById: new Map([[original.id, original]]),
+    });
+    const history = JSON.stringify(result.messages);
+    expect(history).toContain("workspace://transcript-1");
+    expect(history).toContain("do not re-transcribe");
+    expect(history).not.toContain("Their contents have not been inspected");
+    expect(result.messages.at(-1)).toMatchObject({ role: "user", content: "Make the text bigger." });
+    expect(mocks.read).not.toHaveBeenCalled();
   });
 });

@@ -97,6 +97,16 @@ export function extractWorkspaceAudioIds(html: string): string[] {
   return ids;
 }
 
+/** A main MP4 can be both a video and its soundtrack. Replacing ALL uses of
+ * its id here would bypass the video lane's CORS tagging/transcode policy. */
+export function replaceWorkspaceAudioRef(html: string, id: string, uri: string): string {
+  return html.replace(/file\s*:\s*(["'])workspace:\/\/([A-Za-z0-9][A-Za-z0-9_-]*)\1/g,
+    (match, quote: string, found: string, offset: number) => {
+      if (found !== id || /[A-Za-z0-9_$]/.test(offset > 0 ? html[offset - 1] : "")) return match;
+      return match.slice(0, match.indexOf(quote) + 1) + uri + quote;
+    });
+}
+
 export function resolveAudioMimeType(
   mimeType: string | null | undefined,
   displayName: string,

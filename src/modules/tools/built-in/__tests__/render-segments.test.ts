@@ -111,7 +111,7 @@ describe("renderSegments", () => {
       contractDuration: 65,
       documentHtml: DOC,
       sourceFileId: "src-2",
-      onProgress: (p) => progress.push(p.bytesWritten),
+      onProgress: (p) => progress.push(p.bytesWritten / p.totalBytes * 100),
     });
 
     expect(mocks.requestVideoRender).toHaveBeenCalledTimes(3);
@@ -128,6 +128,21 @@ describe("renderSegments", () => {
     expect(out.hasAudio).toBe(true);
     expect(progress[0]).toBeGreaterThanOrEqual(0);
     expect(progress[progress.length - 1]).toBeGreaterThan(progress[0]);
+  });
+
+  it("does not report 100 percent until joining has succeeded", async () => {
+    const progress: number[] = [];
+    mocks.concatSegments.mockImplementationOnce(async () => {
+      expect(Math.max(...progress)).toBe(99);
+      expect(progress).not.toContain(100);
+    });
+    await renderSegments({
+      contractDuration: 65, documentHtml: DOC, sourceFileId: "src-progress",
+      onProgress: (p) => progress.push(p.bytesWritten / p.totalBytes * 100),
+    });
+    expect(progress.at(-1)).toBe(100);
+    expect(progress.filter((p) => p === 100)).toHaveLength(1);
+    expect(progress).toEqual([...progress].sort((a, b) => a - b));
   });
 
   it("resumes by reusing finished segments and their audio flags", async () => {
@@ -244,7 +259,7 @@ describe("renderSegments", () => {
 
   it("keeps a cached segment whose sidecar has no encoder record", async () => {
     // Pre-pin builds recorded no encoder: reuse the footage and let concat's
-    // parameter check (and its one-shot self-heal) be the safety net.
+    // parameter check be the safety net (fail loud, never restart silently).
     mocks.files.set("/cache/render-src-pin-4-seg-0.mp4", { exists: true, content: "video" });
     mocks.files.set("/cache/render-src-pin-4-seg-0.json", {
       exists: true,
@@ -262,37 +277,47 @@ describe("renderSegments", () => {
     expect(pinsOf()).toEqual([undefined, "c2.samsung.avc.encoder"]);
   });
 
-  it("purges the segment cache and re-renders once when concat refuses the set", async () => {
+  it("keeps finished segments and never retries when concat rejects H.264 parameters", async () => {
     mocks.concatSegments.mockRejectedValueOnce(
       new Error(
         "Segment 3 was encoded with different H.264 parameters (SPS/PPS) than segment 1 (an encoder switch mid-run). Delete the render cache and re-run the export.",
       ),
     );
 
-    const out = await renderSegments({
+    const progress: number[] = [];
+    await expect(renderSegments({
       contractDuration: 65,
       documentHtml: DOC,
       sourceFileId: "src-heal",
-    });
+      onProgress: (p) => progress.push(p.bytesWritten / p.totalBytes * 100),
+    })).rejects.toThrow(/Completed segments were kept.*did not restart automatically/);
+    expect(mocks.requestVideoRender).toHaveBeenCalledTimes(3);
+    expect(mocks.concatSegments).toHaveBeenCalledTimes(1);
+    for (let i = 0; i < 3; i += 1) {
+      expect(mocks.files.has(`/cache/render-src-heal-seg-${i}.mp4`)).toBe(true);
+      expect(mocks.files.has(`/cache/render-src-heal-seg-${i}.json`)).toBe(true);
+    }
+    expect(Math.max(...progress)).toBe(99);
+    expect(progress).not.toContain(100);
 
-    // Every segment re-rendered in one fresh encoder, then concat succeeded.
-    expect(mocks.requestVideoRender).toHaveBeenCalledTimes(6);
+    // A USER-initiated retry can reuse every finished segment and only join.
+    mocks.requestVideoRender.mockClear();
+    await renderSegments({ contractDuration: 65, documentHtml: DOC, sourceFileId: "src-heal" });
+    expect(mocks.requestVideoRender).not.toHaveBeenCalled();
     expect(mocks.concatSegments).toHaveBeenCalledTimes(2);
-    expect(out.uri).toBe("file:///cache/render-src-heal-full.mp4");
-    expect(out.encoder).toBe("c2.samsung.avc.encoder");
   });
 
-  it("purges on a stale-resolution refusal too", async () => {
+  it("also keeps segments and fails without retry on a resolution mismatch", async () => {
     mocks.concatSegments.mockRejectedValueOnce(
       new Error(
         "Segment 2 resolution 1280x720 differs from segment 1 720x1280 (a stale render-cache file from a different scene size). Delete the render cache and re-run the export.",
       ),
     );
 
-    await renderSegments({ contractDuration: 65, documentHtml: DOC, sourceFileId: "src-heal-res" });
-
-    expect(mocks.requestVideoRender).toHaveBeenCalledTimes(6);
-    expect(mocks.concatSegments).toHaveBeenCalledTimes(2);
+    await expect(renderSegments({ contractDuration: 65, documentHtml: DOC, sourceFileId: "src-heal-res" })).rejects.toThrow(/resolution/);
+    expect(mocks.requestVideoRender).toHaveBeenCalledTimes(3);
+    expect(mocks.concatSegments).toHaveBeenCalledTimes(1);
+    expect(mocks.files.has("/cache/render-src-heal-res-seg-0.mp4")).toBe(true);
   });
 
   it("does not retry concat failures that are not cache mismatches", async () => {

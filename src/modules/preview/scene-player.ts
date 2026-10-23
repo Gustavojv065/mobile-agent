@@ -261,11 +261,13 @@ export function buildScenePlayerScript(): string {
     }
     if (!clips || typeof clips.stateAt !== 'function') return;
     var states = clips.stateAt(t);
+    var active = states.filter(function (s) { return s.active; }).map(function (s) { return s.el; });
     for (var i = 0; i < states.length; i += 1) {
       var s = states[i];
       var el = s.el;
       try {
         if (!s.active) {
+          if (active.indexOf(el) >= 0) continue;
           if (!el.paused) el.pause();
           continue;
         }

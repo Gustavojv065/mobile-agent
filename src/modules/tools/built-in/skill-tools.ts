@@ -15,6 +15,7 @@ import {
 import { fetchSkillMarkdownFromUrl } from "@/modules/skills/skill-github";
 import { fetchSkillFiles } from "@/modules/skills/skill-files";
 import { createRecord, summarizeValue } from "@/modules/tools/built-in/shared";
+import { withVideoRuntimeGuidance } from "@/modules/preview/video-runtime-guidance";
 
 const MAX_INSTRUCTIONS_LENGTH = 40_000;
 const MAX_DESCRIPTION_LENGTH = 1024;
@@ -96,14 +97,15 @@ export function createSkillTools(input: {
             };
           }
 
+          const instructions = withVideoRuntimeGuidance(skill);
           onRecord?.(
             createRecord({
               toolName: "skill",
               status: "completed",
               inputSummary: summarizeValue({ name: skill.title }),
-              preview: { title: skill.title, text: skill.instructions.slice(0, 20000), truncated: skill.instructions.length > 20000 },
+              preview: { title: skill.title, text: instructions.slice(0, 20000), truncated: instructions.length > 20000 },
               outputSummary: summarizeValue({
-                chars: skill.instructions.length,
+                chars: instructions.length,
                 title: skill.title,
               }),
             }),
@@ -117,7 +119,7 @@ export function createSkillTools(input: {
             matchKeywords: skill.matchKeywords,
             recommendedBuiltInToolKeys: skill.recommendedBuiltInToolKeys,
             recommendedMcpServerIds: skill.recommendedMcpServerIds,
-            instructions: skill.instructions,
+            instructions,
             files: skill.skillFiles.map((file) => ({
               path: file.path,
               size: file.size,

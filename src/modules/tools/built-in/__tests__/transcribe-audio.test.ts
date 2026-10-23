@@ -12,9 +12,11 @@ const mocks = vi.hoisted(() => ({
   hasNative: false,
   transcribeLongAudio: vi.fn(),
   deletedUris: [] as string[],
+  createTextFile: vi.fn(async (_input: { content: string }) => ({ id: "saved-transcript" })),
 }));
 
 vi.mock("@/core/services/workspace-file-service", () => ({
+  createWorkspaceFileService: () => ({ createTextFile: mocks.createTextFile }),
   resolveWorkspaceFile: () => ({
     get exists() {
       return mocks.exists;
@@ -209,6 +211,11 @@ describe("transcribeAudio tool", () => {
     expect(records.at(-1)).toMatchObject({
       toolName: "transcribeAudio",
       status: "completed",
+      mediaResult: { sourceFileId: "file-1", resultFileId: "saved-transcript" },
+    });
+    expect(out).toMatchObject({ resultFileId: "saved-transcript", resultLink: "workspace://saved-transcript" });
+    expect(JSON.parse(mocks.createTextFile.mock.calls.at(-1)![0].content)).toMatchObject({
+      text: "hello world", segments: TRANSCRIPT.segments,
     });
   });
 

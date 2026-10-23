@@ -6,6 +6,7 @@ import {
   resolveWorkspaceFile,
 } from "@/core/services/workspace-file-service";
 import type { MessageRole, StoredMessage, WorkspaceFile } from "@/core/types/app-state";
+import { mediaEvidenceForMessage } from "@/modules/runtime/conversation-evidence";
 
 const IMAGE_MIME_PREFIXES = ["image/"];
 const AUDIO_MIME_PREFIXES = ["audio/"];
@@ -109,13 +110,13 @@ export const MAX_REQUEST_MEDIA_PARTS = 20;
 
 function parseStoredContent(
   message: StoredMessage,
-): string | Array<Record<string, unknown>> {
+): string | Record<string, unknown>[] {
   if (message.content.startsWith("[")) {
     try {
       const parsed = JSON.parse(message.content);
 
       if (Array.isArray(parsed)) {
-        return parsed as Array<Record<string, unknown>>;
+        return parsed as Record<string, unknown>[];
       }
     } catch {}
   }
@@ -126,6 +127,7 @@ function parseStoredContent(
 function buildAssistantContent(
   message: StoredMessage,
   parsedContent: string | Record<string, unknown>[],
+  evidence: string,
 ) {
   const reasoningParts = (message.metadata?.reasoning ?? [])
     .filter((block) => block.text.trim())
@@ -134,7 +136,7 @@ function buildAssistantContent(
       text: block.text,
     }));
 
-  if (reasoningParts.length === 0) {
+  if (reasoningParts.length === 0 && !evidence) {
     return parsedContent;
   }
 
@@ -150,6 +152,7 @@ function buildAssistantContent(
   } else {
     content.push(...parsedContent);
   }
+  if (evidence) content.push({ type: "text", text: evidence });
 
   return content;
 }
@@ -179,7 +182,7 @@ export async function convertStoredMessagesToModelMessages(input: {
     if (message.role === "assistant") {
       converted.push({
         role: message.role,
-        content: buildAssistantContent(message, parsedContent),
+        content: buildAssistantContent(message, parsedContent, mediaEvidenceForMessage(message, input.workspaceFilesById)),
       } as ModelMessage);
       continue;
     }
@@ -215,7 +218,7 @@ export async function convertStoredMessagesToModelMessages(input: {
       continue;
     }
 
-    const parts: Array<Record<string, unknown>> = [];
+    const parts: Record<string, unknown>[] = [];
     const deferred: WorkspaceFile[] = [];
 
     if (typeof parsedContent === "string" && parsedContent.trim()) {
@@ -259,7 +262,7 @@ export async function convertStoredMessagesToModelMessages(input: {
       memoryLimitedAttachments.push(...deferred);
       parts.push({
         type: "text",
-        text: `${deferred.length} attachment(s) were not included as direct media because of the mobile memory limit. Their contents have not been inspected. Use available workspace file tools to inspect them individually, or ask the user to send a smaller batch.`,
+        text: `${deferred.length} attachment(s) were not included as direct media because of the mobile memory limit. Direct-media omission does not mean they have never been inspected: reuse prior conversation evidence and saved results, and inspect only missing information relevant to the current request.`,
       });
     }
 

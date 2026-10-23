@@ -43,6 +43,20 @@ Under the hood the recorder:
 
 ## Contract
 
+### Same-chat follow-ups: reuse work
+
+Load this skill once per conversation; the app restores its current instructions
+on subsequent turns. Do not call `skill` again just because a new prompt arrived.
+Reuse earlier media inspections, saved frame files, and the `resultFileId` JSON
+returned by `transcribeAudio` / `analyzeAudio` (it contains the full transcript
+with timings or analysis curves). Read that saved result if exact details are
+missing from chat context; do not re-run expensive media tools as a ritual.
+Inspect again only for changed/new files, new timestamps or missing coverage,
+different language/engine requirements, or an explicit recheck request.
+Preserving the source soundtrack or changing layout does **not** require
+transcription or musical analysis. A still frame only verifies that timestamp,
+not motion or sound.
+
 Define this before the body finishes loading:
 
 ```html
@@ -60,7 +74,7 @@ Define this before the body finishes loading:
       // visuals) and speech carries the transcript (see Speech sync and
       // captions). Both are always objects; check .ready first.
     },
-    audio: {           // optional: omit for a silent video (see Audio below)
+    audio: {           // video edits: preserve source audio, or audio: false for intentional silence
       master: 0.9,
       tracks: []
     },
@@ -105,12 +119,12 @@ The tool waits for the recording to finish and returns the saved MP4
 user interaction. Rendering is real time: a 10-second video takes ~10 seconds,
 so call it once with a finished scene and do not retry needlessly.
 
-One exception — retry **the same call** on a stalled render: if the tool
-fails with "Video render stalled: no page activity for …, finished segments
-resume on retry", the export page hung (not a scene bug — long render, heavy
-soundtrack, or device pressure). Re-running it re-encodes only the segments
-that had not already finished. Retry once or twice, then shorten the scene or
-reduce loud media.
+Do **not** automatically retry a failed or stalled export. Report the actual
+error and ask before restarting; never silently send a completed progress bar
+back to zero. Finished segments are retained when joining fails. If the user
+chooses to retry the unchanged source, completed segments can be reused rather
+than re-encoding the whole video. A stall alone does not establish whether the
+cause was scene code, media decoding, or device pressure.
 
 The result also returns `sourceFileId` / `sourceLink`: the exact HTML you
 rendered, saved as `<name>.source.html` in the workspace. You do not need to
@@ -184,7 +198,23 @@ tool until the scene is ready.
 
 ## Audio (optional)
 
-Omit `audio` for a silent video. To add sound, attach a schedule:
+For scenes without video clips, omitting `audio` makes a silent video.
+Scenes containing `<video>` clips must explicitly choose a soundtrack schedule
+or `audio: false` for intentional silence; missing/empty schedules fail fast.
+When editing an existing video, preserve the **main video's** soundtrack unless
+the user explicitly requests silence or replacement. Do not include overlay
+audio unless requested. Use the original MP4 directly (no separate extraction
+or transcription needed):
+
+```js
+audio: {
+  master: 1,
+  tracks: [{ file: "workspace://<actual-main-video-id>", start: 0,
+             offset: 0, duration: 351.016, volume: 1 }]
+}
+```
+
+Set the track duration to the actual scene length. To add other sound, attach a schedule:
 
 ```html
 <script>
@@ -211,8 +241,8 @@ Track fields (both kinds): `start` (seconds into the video, default 0),
 
 File tracks:
 
-- Must reference an audio file **already in the workspace**: MP3, WAV, M4A,
-  AAC, OGG, or WebM. Tracks load from the device over loopback HTTP — no size
+- Must reference a file **already in the workspace**: MP3, WAV, M4A,
+  AAC, OGG, WebM, or an MP4/MOV video whose audio is decoded. Tracks load from the device over loopback HTTP — no size
   inflation — up to 200 MB; only on builds without the loopback server does a
   data-URI fallback apply the strict 15 MB cap. Ask the user to attach it, or
   use one they already gave you — never invent a `workspace://` id.
@@ -328,8 +358,13 @@ Images and video clips in scenes (user-provided visuals):
      `window.MOBILE_AGENT_VIDEO.clips = [{ el: '#presenter', start: 4,
      end: 165, from: 0, loop: false, hold: true }, { el: 'video.overlay-a',
      start: 30, end: 45, from: 0, x: 700, y: 40, w: 480, h: 270 }]`.
-     - Windows are half-open `[start, end)`, so a segment seam at a clip's
-       `end` paints it on exactly one side — never both, never neither.
+      - Windows are half-open `[start, end)`, so a segment seam at a clip's
+        `end` paints it on exactly one side — never both, never neither.
+      - Repeated appearances may reuse one element in non-overlapping windows:
+        `{ el: '#person', start: 18, end: 33, from: 0 }`, then
+        `{ el: '#person', start: 63, end: 78, from: 0 }`. Each restarts the
+        source from zero. Do not use global `t % sourceDuration` in `render`.
+        Overlapping windows require separate video elements.
      - `from` is the source position mapped to `start`; `hold: true`
        (default) parks the clip on its last decoded frame when the source
        runs out inside its window, `loop: true` repeats it instead — both
@@ -630,7 +665,9 @@ Rules:
    `window.MOBILE_AGENT_VIDEO_RECORDING` and pause when it is `true`.
 5. **Self-contained file.** Inline all CSS/JS. Avoid CDNs (the device may be
    offline). Three.js is allowed if you inline it.
-6. **Silent by default.** Omit `audio` for a silent video; add the schedule
+6. **Audio must be intentional.** Video edits preserve the main source's
+   soundtrack through an explicit schedule; use `audio: false` only for
+   requested silence. Scenes without clips may omit `audio`; add the schedule
    from the Audio section when the video should have sound.
 
 ## Patterns

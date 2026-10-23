@@ -220,14 +220,18 @@ export function VideoRenderHost() {
             job.progressBase != null
               ? job.progressBase + progress * (job.progressSpan ?? 1)
               : progress;
-          const percent = Math.round(visible * 100);
+          const cappedVisible = Math.min(0.99, visible);
+          const percent = Math.floor(cappedVisible * 1000) / 10;
           if (percent !== lastPercentRef.current) {
             lastPercentRef.current = percent;
-            setVideoRenderStatus({ finishing: false, progress: visible });
+            setVideoRenderStatus({ finishing: false, progress: cappedVisible });
           }
         },
         onFinishing: () =>
-          setVideoRenderStatus({ finishing: true, progress: 1 }),
+          setVideoRenderStatus({
+            finishing: true,
+            progress: Math.min(0.99, (job.progressBase ?? 0) + (job.progressSpan ?? 1)),
+          }),
         onResult: (result) => {
           // Ownership of the finished file moves to the caller (the renderVideo
           // tool persists it and deletes the cache copy), so do not clean it up

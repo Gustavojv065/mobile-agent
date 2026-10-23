@@ -122,6 +122,7 @@ export function createVideoFrameTool({
             toolName: "getVideoFrame",
             status: "completed",
             inputSummary,
+            mediaResult: { sourceFileId: record.id, sourceUpdatedAt: record.updatedAt, resultFileId: saved.id },
             preview: { title: `${record.displayName} · ${time}s`, uri: resolveWorkspaceFile(saved.relativePath).uri, mimeType: "image/jpeg" },
             outputSummary: summarizeValue({
               fileId: saved.id,

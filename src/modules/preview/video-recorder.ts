@@ -399,7 +399,15 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
 
   function renderFrame(contract, canvas, ctx, t) {
     try {
+      var videos = document.querySelectorAll('video');
+      var times = [];
+      for (var i = 0; i < videos.length; i += 1) times.push(videos[i].currentTime);
       contract.render(t, canvas, ctx || null, activeAudioApi || null, activeSpeechApi || null);
+      for (var v = 0; v < videos.length; v += 1) {
+        if (videos[v].seeking || Math.abs(videos[v].currentTime - times[v]) > 0.0001) {
+          throw new Error('render() changed a source video frame at t=' + t.toFixed(3) + 's. Do not seek or play videos inside render(); declare MOBILE_AGENT_VIDEO.clips (one window per appearance, from: 0 to restart), or seek and await decoding in prepareFrame().');
+        }
+      }
       return true;
     } catch (error) {
       fail(String((error && error.message) || error));
@@ -1105,6 +1113,14 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
     try { window.MOBILE_AGENT_VIDEO_RECORDING = true; } catch (_) {}
 
     var schedule = readAudioSchedule(contract, duration);
+    if (!schedule && contract.audio !== false && document.querySelectorAll('video').length > 0) {
+      fail('This scene contains video clips but no audio schedule. Preserve the main video soundtrack with audio: { tracks: [{ file: "workspace://<main-video-id>", start: 0, offset: 0, volume: 1 }] }, or set audio: false for an intentionally silent export. Muted video elements do not export their sound.');
+      return;
+    }
+    if (!schedule && contract.audio && typeof contract.audio === 'object') {
+      fail('The audio schedule has no usable tracks. Supply file or synth tracks, or set audio: false for an intentionally silent export.');
+      return;
+    }
     var audioReady = schedule ? prepareOfflineAudio(schedule, duration, segOffset, segLen) : Promise.resolve(null);
     audioReady.then(function (audio) {
       if (cancelled) {
@@ -1176,12 +1192,10 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
     var timeline = clipTimelineFor(contract);
     if (timeline) {
       waits.push(timeline.prepareFrame(t));
-      var owned = {};
       var elements = timeline.ownedElements();
-      for (var o = 0; o < elements.length; o += 1) owned[elements[o]] = true;
       var undeclared = 0;
       for (var u = 0; u < videos.length; u += 1) {
-        if (owned[videos[u]]) continue;
+        if (elements.indexOf(videos[u]) >= 0) continue;
         if (typeof videos[u].pause !== 'function') continue;
         undeclared += 1;
         waits.push(seekSourceVideo(videos[u], t, fps));

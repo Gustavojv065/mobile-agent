@@ -239,6 +239,73 @@ describe("clip timeline prepareFrame", () => {
     expect(el.seeks).toEqual([]); // fast path: already exactly at t
   });
 
+  it("restarts a reused person element in every appearance without unloading an active window", async () => {
+    const { api, register } = install();
+    const person = makeVideo({ duration: 30.421 });
+    register("#person", person);
+    const starts = [18, 63, 108, 153, 198, 243, 288, 328];
+    const timeline = api.attach({
+      fps: 30,
+      clips: starts.map((start) => ({ el: "#person", start, end: start + 15, from: 0 })),
+    })!;
+    for (const start of starts) {
+      await timeline.prepareFrame(start + 7);
+      expect(person.currentTime).toBe(7);
+      expect(person.readyState).toBe(2);
+    }
+    expect(person.loadCalls).toBe(0);
+    expect(timeline.ownedElements()).toEqual([person]);
+  });
+
+  it("suspends idle source attributes once and restores them before a later appearance or backward seek", async () => {
+    const { api, register } = install();
+    const attrs = new Map<string, string>([["preload", "auto"]]);
+    const sourceAttrs = new Map([["src", "http://localhost/person.mp4"]]);
+    const source = {
+      getAttribute: (key: string) => sourceAttrs.get(key) ?? null,
+      setAttribute: (key: string, value: string) => { sourceAttrs.set(key, value); },
+      removeAttribute: (key: string) => { sourceAttrs.delete(key); },
+    };
+    const person = Object.assign(makeVideo(), {
+      getAttribute: (key: string) => attrs.get(key) ?? null,
+      setAttribute: (key: string, value: string) => { attrs.set(key, value); },
+      removeAttribute: (key: string) => { attrs.delete(key); },
+      querySelectorAll: () => [source],
+    });
+    register("#person", person);
+    const timeline = api.attach({ clips: [
+      { el: "#person", start: 18, end: 33 },
+      { el: "#person", start: 63, end: 78 },
+    ] })!;
+
+    await timeline.prepareFrame(40);
+    await timeline.prepareFrame(41);
+    expect(person.loadCalls).toBe(1);
+    expect(sourceAttrs.has("src")).toBe(false);
+    expect(attrs.get("preload")).toBe("none");
+
+    const pending = timeline.prepareFrame(70);
+    await tick();
+    expect(person.loadCalls).toBe(2);
+    expect(sourceAttrs.get("src")).toBe("http://localhost/person.mp4");
+    expect(attrs.get("preload")).toBe("auto");
+    person.readyState = 2;
+    person.fire("loadedmetadata");
+    await pending;
+    expect(person.currentTime).toBe(7);
+
+    await timeline.prepareFrame(25);
+    expect(person.currentTime).toBe(7);
+    expect(person.loadCalls).toBe(2);
+  });
+
+  it("holds the last decodable frame at the exact source endpoint", () => {
+    const { api, register } = install();
+    register("#a", makeVideo({ duration: 3 }));
+    const timeline = api.attach({ fps: 30, clips: [{ el: "#a", start: 0, end: 10 }] })!;
+    expect(timeline.stateAt(3)[0].target).toBeCloseTo(3 - 1 / 30);
+  });
+
   it("reloads a stalled clip once, then fails loud naming it", async () => {
     vi.useFakeTimers();
     const { api, register } = install();
@@ -358,6 +425,16 @@ describe("clip timeline prepareFrame", () => {
 });
 
 describe("clip timeline validation and attach", () => {
+  it("rejects overlapping windows sharing an element but permits touching seams", () => {
+    const { api, register } = install();
+    register("#a", makeVideo());
+    expect(() => api.attach({ clips: [
+      { el: "#a", start: 0, end: 4 }, { el: "#a", start: 3, end: 8 },
+    ] })).toThrow(/overlapping windows/);
+    expect(() => api.attach({ clips: [
+      { el: "#a", start: 0, end: 4 }, { el: "#a", start: 4, end: 8 },
+    ] })).not.toThrow();
+  });
   it("rejects a window with end not after start", () => {
     const { api, register } = install();
     register("#a", makeVideo());

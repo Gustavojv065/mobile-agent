@@ -34,9 +34,8 @@ export type SegmentRenderResult = {
  * sample-copies every segment under the first segment's H.264 parameters
  * (SPS/PPS), so each segment's sidecar records the codec that made it and
  * the run pins every later render to it — across app restarts included. A
- * concat that still refuses the set (mismatched parameters or a stale
- * resolution) purges this document's segment cache and re-renders the whole
- * timeline once; the second mismatch fails loud.
+ * concat that refuses the set reports the error and keeps completed segments.
+ * Never silently restart a finished render or discard its completed footage.
  *
  * This is the single render engine shared by both surfaces: the `renderVideo`
  * tool (hidden host, output moved into the workspace) and the preview
@@ -61,7 +60,9 @@ export async function renderSegments(options: {
   const { abortSignal, contractDuration, documentHtml, onProgress, sourceFileId } = options;
   const reportProgress = (base: number, span: number, segProgress: number) => {
     const overall = span <= 0 ? 0 : Math.max(0, Math.min(1, base + segProgress * span));
-    onProgress?.({ bytesWritten: Math.round(overall * 100), totalBytes: 100 });
+    // Keep 100% for successful completion, not merely the last encoded frame.
+    // Basis-point units preserve sub-percent progress for the decimal UI.
+    onProgress?.({ bytesWritten: Math.min(9900, Math.floor(overall * 9900)), totalBytes: 10000 });
   };
   const runOne = (
     segment: { offset: number; length: number } | undefined,
@@ -80,6 +81,7 @@ export async function renderSegments(options: {
 
   if (contractDuration == null || contractDuration <= SEGMENT_SECONDS) {
     const result = await runOne(undefined, { base: 0, span: 1 });
+    onProgress?.({ bytesWritten: 10000, totalBytes: 10000 });
     return {
       uri: result.uri,
       hasAudio: result.hasAudio,
@@ -210,7 +212,14 @@ export async function renderSegments(options: {
     if (!module || typeof module.concatSegments !== "function") {
       throw new Error("Segmented rendering needs the video export module (concatSegments).");
     }
-    await module.concatSegments(uris.map(stripScheme), stripScheme(outFile.uri));
+    reportProgress(0, 1, 1);
+    try {
+      await module.concatSegments(uris.map(stripScheme), stripScheme(outFile.uri));
+    } catch (error) {
+      throw new Error(
+        `Video segments finished, but joining failed. Completed segments were kept; the export did not restart automatically. ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
     return {
       uris,
       outFile,
@@ -223,34 +232,7 @@ export async function renderSegments(options: {
     };
   };
 
-  let merged: Awaited<ReturnType<typeof renderAll>>;
-  try {
-    merged = await renderAll();
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    // Concat refused the segment set (mismatched H.264 parameters or a stale
-    // resolution — the fail-loud gate inside SegmentConcat). The cache is the
-    // only source of such a mix, so purge this document's segments and re-run
-    // the whole timeline once in a single fresh encoder; a second mismatch
-    // fails loud rather than loop.
-    if (!/different H\.264 parameters|resolution .* differs from segment 1/.test(message)) {
-      throw error;
-    }
-    for (let i = 0; i < count; i += 1) {
-      try {
-        await new File(Paths.cache, `render-${sourceFileId}-seg-${i}.mp4`).delete();
-        await sidecar(i).delete();
-      } catch {
-        // Best-effort purge; leftovers would fail again loudly on re-render.
-      }
-    }
-    try {
-      await new File(Paths.cache, `render-${sourceFileId}-full.mp4`).delete();
-    } catch {
-      // Best-effort; concat overwrites its output anyway.
-    }
-    merged = await renderAll();
-  }
+  const merged = await renderAll();
   for (const uri of merged.uris) {
     try {
       await new File(uri).delete();
@@ -258,6 +240,7 @@ export async function renderSegments(options: {
       // Best-effort cache cleanup; segments are small and bounded.
     }
   }
+  onProgress?.({ bytesWritten: 10000, totalBytes: 10000 });
   return {
     uri: merged.outFile.uri,
     hasAudio: merged.hasAudio,
