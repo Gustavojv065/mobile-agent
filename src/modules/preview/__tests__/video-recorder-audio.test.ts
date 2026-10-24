@@ -247,6 +247,7 @@ function installBrowserStubs(options: {
         }
         return {
           length,
+          duration: length / rate,
           sampleRate: rate,
           numberOfChannels: channels,
           getChannelData: (ch: number) => channelData[ch],
@@ -403,6 +404,7 @@ function installBrowserStubs(options: {
         }
         return {
           length,
+          duration: length / rate,
           sampleRate: rate,
           numberOfChannels: channels,
           getChannelData: (ch: number) => channelData[ch],
@@ -1836,7 +1838,10 @@ describe("VIDEO_EXPORT_SCRIPT segmented export", () => {
       { timeout: 8000 },
     );
     // Two overlapping cues decoded; the pre-segment cue never fetched.
-    expect(fetchCalls).toHaveLength(2);
+    // Each cue first probes the URL for a windowable WAV head (a miss on
+    // these 8-byte fixtures), then falls back to the whole-file fetch —
+    // two calls per cue.
+    expect(fetchCalls).toHaveLength(4);
     // Offline context spans the segment only.
     expect(contexts).toHaveLength(1);
     expect(contexts[0]).toMatchObject({ length: 5 * 48000, sampleRate: 48000 });
@@ -1866,5 +1871,183 @@ describe("VIDEO_EXPORT_SCRIPT segmented export", () => {
     // Seam fade-in pulls the opening samples below full scale; mid-segment is untouched.
     expect(first.readInt16LE(0)).toBeLessThan(32767);
     expect(mid.readInt16LE(0)).toBe(32767);
+  }, 15000);
+});
+
+describe("VIDEO_EXPORT_SCRIPT windowed soundtrack", () => {
+  /** Minimal PCM16 WAV: [frames] frames of constant +0.5 (int16 16384). */
+  function buildTestWav(frames: number, sampleRate = 48000, channels = 1): Uint8Array {
+    const dataBytes = frames * channels * 2;
+    const out = new Uint8Array(44 + dataBytes);
+    const view = new DataView(out.buffer);
+    view.setUint32(0, 0x46464952, true); // "RIFF"
+    view.setUint32(4, 36 + dataBytes, true);
+    view.setUint32(8, 0x45564157, true); // "WAVE"
+    view.setUint32(12, 0x20746d66, true); // "fmt "
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true); // PCM
+    view.setUint16(22, channels, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * channels * 2, true);
+    view.setUint16(32, channels * 2, true);
+    view.setUint16(34, 16, true);
+    view.setUint32(36, 0x61746164, true); // "data"
+    view.setUint32(40, dataBytes, true);
+    for (let i = 0; i < frames * channels; i += 1) {
+      out[44 + i * 2] = 0x00;
+      out[45 + i * 2] = 0x40;
+    }
+    return out;
+  }
+
+  /** Range-aware fetch over a fixed file; records every Range header seen. */
+  function wavFetch(file: Uint8Array, ranges: string[]) {
+    return ((url: string, init?: { headers?: Record<string, string> }) => {
+      const range = init?.headers?.Range ?? "";
+      ranges.push(range);
+      if (!range) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          arrayBuffer: () => Promise.resolve(file.slice().buffer),
+        });
+      }
+      const match = /^bytes=(\d+)-(\d+)$/.exec(range);
+      const start = match ? Number(match[1]) : -1;
+      const endInclusive = match ? Number(match[2]) : -1;
+      if (start < 0 || start >= file.length || endInclusive < start) {
+        return Promise.resolve({
+          ok: false,
+          status: 416,
+          arrayBuffer: () => Promise.resolve(new ArrayBuffer(0)),
+        });
+      }
+      const end = Math.min(endInclusive + 1, file.length);
+      return Promise.resolve({
+        ok: true,
+        status: 206,
+        arrayBuffer: () => Promise.resolve(file.slice(start, end).buffer),
+      });
+    }) as unknown as typeof fetch;
+  }
+
+  it("Range-fetches only the samples the cue plays and rebases offsets onto the window", async () => {
+    // 0.25 s mono @48k: 12000 frames, 24000 data bytes, 24044 total.
+    const wav = buildTestWav(12000);
+    const ranges: string[] = [];
+    const { messages, sources } = installBrowserStubs({
+      audio: "full",
+      fetchImpl: wavFetch(wav, ranges),
+    });
+    setContract({
+      duration: 1,
+      fps: 5,
+      render: () => {},
+      audio: {
+        tracks: [
+          // Plays file seconds [0.1, 0.3) of a 0.25 s file: only
+          // [0.1, 0.25) exists, so the window clamps to the file end.
+          { file: "http://127.0.0.1:9/song.wav", start: 0, duration: 0.2, offset: 0.1 },
+        ],
+      },
+    });
+    const w = runScript();
+    (w.__startMobileAgentVideoExport as () => void)();
+    await vi.waitFor(
+      () => expect(messages.some((m) => m.type === "mobileAgentVideoDone")).toBe(true),
+      { timeout: 8000 },
+    );
+    expect(messages.some((m) => m.type === "mobileAgentVideoError")).toBe(false);
+
+    // Head probe (0-4095) + exactly the window bytes — never the whole file.
+    expect(ranges).toEqual(["bytes=0-4095", "bytes=9644-24043"]);
+    expect(sources).toHaveLength(1);
+    const source = sources[0];
+    // 7200 frames = the 0.15 s window, not the fake decoder's 1 s buffer:
+    // proof the whole-file decodeAudioData path was skipped.
+    expect(source.buffer).toMatchObject({ length: 7200, sampleRate: 48000 });
+    // int16 16384 -> 0.5, the same mapping WebAudio's decoder applies.
+    const data = (source.buffer as { getChannelData: (ch: number) => Float32Array }).getChannelData(0);
+    expect(data[0]).toBeCloseTo(0.5, 5);
+    expect(data[data.length - 1]).toBeCloseTo(0.5, 5);
+    // windowStart 0.1 rebases cue.offset 0.1 to window position 0, and the
+    // window's 0.15 s caps playback exactly at its end.
+    expect(source.startCalls[0]).toEqual([0, 0, 0.15]);
+  }, 15000);
+
+  it("windows a looping cue across the whole file so wraps stay exact", async () => {
+    const wav = buildTestWav(12000); // 0.25 s
+    const ranges: string[] = [];
+    const { messages, sources } = installBrowserStubs({
+      audio: "full",
+      fetchImpl: wavFetch(wav, ranges),
+    });
+    setContract({
+      duration: 1,
+      fps: 5,
+      render: () => {},
+      audio: {
+        tracks: [
+          { file: "http://127.0.0.1:9/song.wav", start: 0, duration: 1, offset: 0.1, loop: true },
+        ],
+      },
+    });
+    const w = runScript();
+    (w.__startMobileAgentVideoExport as () => void)();
+    await vi.waitFor(
+      () => expect(messages.some((m) => m.type === "mobileAgentVideoDone")).toBe(true),
+      { timeout: 8000 },
+    );
+    expect(messages.some((m) => m.type === "mobileAgentVideoError")).toBe(false);
+
+    // The loop window is the entire data chunk, from byte 44.
+    expect(ranges).toEqual(["bytes=0-4095", "bytes=44-24043"]);
+    expect(sources).toHaveLength(1);
+    // Whole-file buffer (windowStart 0): the loop modulo sees the original
+    // file duration, so 0.1 % 0.25 stays 0.1 instead of wrapping a window.
+    expect(sources[0].buffer).toMatchObject({ length: 12000 });
+    expect(sources[0].startCalls[0]).toEqual([0, 0.1]);
+  }, 15000);
+
+  it("falls back to the whole-file decode when the soundtrack is not a windowable WAV", async () => {
+    const ranges: string[] = [];
+    const { messages, sources } = installBrowserStubs({
+      audio: "full",
+      fetchImpl: ((url: string, init?: { headers?: Record<string, string> }) => {
+        ranges.push(init?.headers?.Range ?? "");
+        // Every response is 8 inert bytes: the probe finds no RIFF header.
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          arrayBuffer: () => Promise.resolve(new ArrayBuffer(8)),
+        });
+      }) as unknown as typeof fetch,
+    });
+    setContract({
+      duration: 1,
+      fps: 5,
+      render: () => {},
+      audio: {
+        tracks: [
+          { file: "http://127.0.0.1:9/song.mp3", start: 0, duration: 0.2, offset: 0.1 },
+        ],
+      },
+    });
+    const w = runScript();
+    (w.__startMobileAgentVideoExport as () => void)();
+    await vi.waitFor(
+      () => expect(messages.some((m) => m.type === "mobileAgentVideoDone")).toBe(true),
+      { timeout: 8000 },
+    );
+    expect(messages.some((m) => m.type === "mobileAgentVideoError")).toBe(false);
+
+    // Probe (miss) + whole-file fetch — the pre-existing path, unchanged.
+    expect(ranges).toEqual(["bytes=0-4095", ""]);
+    expect(sources).toHaveLength(1);
+    // The fake decoder's 1 s buffer at windowStart 0: cue.offset indexes it
+    // exactly as before the windowing lane existed (a windowed buffer would
+    // report 0.15 s here instead).
+    expect(sources[0].buffer).toMatchObject({ duration: 1 });
+    expect(sources[0].startCalls[0]).toEqual([0, 0.1, 0.2]);
   }, 15000);
 });

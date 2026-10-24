@@ -9,6 +9,7 @@ import java.io.File
 import java.io.FileOutputStream
 import java.io.RandomAccessFile
 import java.nio.ByteBuffer
+import java.nio.ByteOrder
 
 /**
  * Extracts the audio track of an audio (or video) file into whisper-ready
@@ -32,6 +33,7 @@ object AudioPcmDecoder {
   private const val MAX_DECODE_SECONDS = 36_000.0
   private const val IO_BUFFER_BYTES = 512 * 1024
   private const val DEQUEUE_TIMEOUT_US = 5_000L
+  private const val WAV_HEADER_BYTES = 44
 
   data class DecodeResult(
     val path: String,
@@ -51,7 +53,29 @@ object AudioPcmDecoder {
    * Decodes at most [maxSeconds] seconds of the audio track into a raw PCM
    * file. Plain filesystem paths (no file:// scheme).
    */
-  fun decode(inputPath: String, outputPath: String, maxSeconds: Double): DecodeResult {
+  fun decode(inputPath: String, outputPath: String, maxSeconds: Double): DecodeResult =
+    decodeInternal(inputPath, outputPath, maxSeconds, wavHeader = false)
+
+  /**
+   * The same decode wrapped in a minimal RIFF/WAVE header (16-bit PCM at the
+   * decoder's native rate and channel count). The container keeps the result
+   * playable by `decodeAudioData` (preview players, fallback paths) while
+   * staying byte-sliceable: the export Range-fetches only the samples each
+   * segment plays instead of re-decoding the whole soundtrack before every
+   * segment. The 44 header bytes start as zeros and are patched with the
+   * final sizes only after a complete decode, so an interrupted run can never
+   * leave a file that parses as a plausible short WAV (callers additionally
+   * rename from a `.part` name after success).
+   */
+  fun decodeWav(inputPath: String, outputPath: String, maxSeconds: Double): DecodeResult =
+    decodeInternal(inputPath, outputPath, maxSeconds, wavHeader = true)
+
+  private fun decodeInternal(
+    inputPath: String,
+    outputPath: String,
+    maxSeconds: Double,
+    wavHeader: Boolean,
+  ): DecodeResult {
     val cap = maxSeconds.coerceIn(MIN_DECODE_SECONDS, MAX_DECODE_SECONDS)
     val maxOutputUs = (cap * 1_000_000.0).toLong()
     val out = File(outputPath)
@@ -77,6 +101,8 @@ object AudioPcmDecoder {
 
         val writer = BufferedOutputStream(FileOutputStream(out), IO_BUFFER_BYTES)
         sink = writer
+        // Placeholder for the WAV header; patched only after a full decode.
+        if (wavHeader) writer.write(ByteArray(WAV_HEADER_BYTES))
         var bytesWritten = 0L
         var outRate = -1
         var outChannels = -1
@@ -156,6 +182,9 @@ object AudioPcmDecoder {
         if (outRate <= 0 || outChannels <= 0) {
           throw IllegalStateException("The decoder never reported its output format.")
         }
+        if (wavHeader) {
+          writeWavHeader(outputPath, outRate, outChannels, bytesWritten)
+        }
         return DecodeResult(
           path = outputPath,
           bytes = bytesWritten,
@@ -203,6 +232,30 @@ object AudioPcmDecoder {
         base64 = android.util.Base64.encodeToString(payload, android.util.Base64.NO_WRAP),
         bytes = payload.size,
       )
+    }
+  }
+
+  /** Seeks back over the placeholder and writes the final 44-byte PCM header. */
+  private fun writeWavHeader(path: String, sampleRate: Int, channels: Int, dataBytes: Long) {
+    val byteRate = sampleRate * channels * 2
+    val blockAlign = channels * 2
+    val header = ByteBuffer.allocate(WAV_HEADER_BYTES).order(ByteOrder.LITTLE_ENDIAN)
+    header.put("RIFF".toByteArray(Charsets.US_ASCII))
+    header.putInt((36L + dataBytes).toInt())
+    header.put("WAVE".toByteArray(Charsets.US_ASCII))
+    header.put("fmt ".toByteArray(Charsets.US_ASCII))
+    header.putInt(16)
+    header.putShort(1.toShort()) // PCM, integer samples
+    header.putShort(channels.toShort())
+    header.putInt(sampleRate)
+    header.putInt(byteRate)
+    header.putShort(blockAlign.toShort())
+    header.putShort(16.toShort()) // bits per sample
+    header.put("data".toByteArray(Charsets.US_ASCII))
+    header.putInt(dataBytes.toInt())
+    RandomAccessFile(path, "rw").use { raf ->
+      raf.seek(0)
+      raf.write(header.array())
     }
   }
 

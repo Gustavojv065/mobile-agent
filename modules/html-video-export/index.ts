@@ -120,6 +120,26 @@ export type HtmlVideoExportNativeModule = {
     durationSeconds: number;
   }>;
   /**
+   * Same decode as `decodeAudioPcm`, but wrapped in a RIFF/WAVE container
+   * (16-bit PCM, native rate/channels) so the file is both playable by
+   * `decodeAudioData` and byte-sliceable by Range requests — the export
+   * fetches only the samples each segment plays instead of re-decoding the
+   * whole soundtrack before every segment. Plain filesystem paths. Throws
+   * like `decodeAudioPcm`; the header is patched only after a full decode,
+   * so a killed run never yields a plausible short WAV.
+   */
+  decodeAudioWav(
+    inputPath: string,
+    outputPath: string,
+    maxSeconds: number,
+  ): Promise<{
+    wavPath: string;
+    bytes: number;
+    sampleRate: number;
+    channels: number;
+    durationSeconds: number;
+  }>;
+  /**
    * Reads up to `byteCount` bytes at `byteOffset` from a decoder-produced PCM
    * file, base64-encoded. Empty on EOF; short reads are normal for the last
    * window.

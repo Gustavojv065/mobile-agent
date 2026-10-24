@@ -5,6 +5,7 @@ import {
   buildAudioDataUri,
   extractWorkspaceAudioIds,
   MAX_SERVED_AUDIO_FILE_BYTES,
+  readContractDuration,
   readContractSize,
   replaceWorkspaceAudioRef,
 } from "@/modules/preview/video-audio";
@@ -561,6 +562,102 @@ function seekProxyMaxDimension(html: string): number {
 }
 
 /**
+ * Builds (or reuses) a RIFF/WAVE decode of a served soundtrack so the
+ * export can Range-fetch just the samples each segment plays. Without it
+ * every segment re-fetches and `decodeAudioData`-decodes the WHOLE file
+ * before frame 1 — O(segments) decodes of the same bytes, the dominant
+ * fixed cost of long soundtracks. Returns the cache URL to serve in place
+ * of the original, or null to serve the original unchanged (native op
+ * missing on older builds, decode failure, unknown size or contract
+ * duration): every case is today's correct behavior, never a render
+ * failure. The WAV container keeps preview players working — they decode
+ * it with `decodeAudioData` exactly like the original file.
+ *
+ * Written to a `.part` name and renamed only after the native decode
+ * reports success, so a kill mid-decode can never leave a truncated WAV
+ * under a trusted name for a later run to serve.
+ */
+async function audioPcmUrl(
+  baseUrl: string,
+  record: { id: string; displayName: string },
+  file: File,
+  statSize: number | null,
+  maxSeconds: number,
+): Promise<string | null> {
+  if (statSize == null || statSize <= 0) return null;
+  if (!(maxSeconds > 0)) return null;
+  const inputUri = (file as { uri?: unknown }).uri;
+  if (typeof inputUri !== "string" || inputUri.length === 0) return null;
+  type DecodeWavFn = (
+    inputPath: string,
+    outputPath: string,
+    maxSeconds: number,
+  ) => Promise<{ bytes?: number }>;
+  let decodeAudioWav: DecodeWavFn | null = null;
+  let cacheFileUrl: ((urlBase: string, name: string) => string) | null = null;
+  let cacheFileFor:
+    | ((name: string) => {
+        uri: string;
+        exists: boolean;
+        delete: () => void;
+        move: (dest: unknown, options?: { overwrite?: boolean }) => Promise<void>;
+      })
+    | null = null;
+  try {
+    const [fs, native, server] = await Promise.all([
+      import("expo-file-system"),
+      import("html-video-export"),
+      import("@/modules/preview/asset-server"),
+    ]);
+    const module = native.getHtmlVideoExportModule();
+    if (module && typeof module.decodeAudioWav === "function") {
+      decodeAudioWav = module.decodeAudioWav.bind(module);
+      cacheFileUrl = server.cacheFileUrl;
+      cacheFileFor = (name: string) =>
+        new fs.File(fs.Paths.cache, name) as unknown as {
+          uri: string;
+          exists: boolean;
+          delete: () => void;
+          move: (dest: unknown, options?: { overwrite?: boolean }) => Promise<void>;
+        };
+    }
+  } catch {
+    return null;
+  }
+  if (!decodeAudioWav || !cacheFileFor || !cacheFileUrl) return null;
+  const safeId = record.id.replace(/[^a-zA-Z0-9_-]/g, "_");
+  // The bound rides the name: a longer contract re-decodes, never reuses a
+  // shorter file whose tail is missing.
+  const cacheName = `audio-pcm-${safeId}-${statSize}-${Math.round(maxSeconds)}.wav`;
+  const partName = `${cacheName}.part`;
+  const outFile = cacheFileFor(cacheName);
+  try {
+    if (!outFile.exists) {
+      const partFile = cacheFileFor(partName);
+      if (partFile.exists) {
+        // Stale partial from an interrupted run; overwrite below anyway.
+        try { partFile.delete(); } catch { /* best effort */ }
+      }
+      const strip = (uri: string) => (uri.startsWith("file://") ? uri.slice("file://".length) : uri);
+      const done = await decodeAudioWav(strip(inputUri), strip(partFile.uri), maxSeconds);
+      if (!done || typeof done.bytes !== "number" || done.bytes <= 0) {
+        try { partFile.delete(); } catch { /* best effort */ }
+        return null;
+      }
+      await partFile.move(outFile, { overwrite: true });
+    }
+    return cacheFileUrl(baseUrl, cacheName);
+  } catch {
+    // Optimization only: any failure serves the original soundtrack.
+    try {
+      const partFile = cacheFileFor(partName);
+      if (partFile.exists) partFile.delete();
+    } catch { /* best effort */ }
+    return null;
+  }
+}
+
+/**
  * Builds (or reuses) an all-keyframe seek proxy for a served clip, so the
  * export's frame-accurate seeks decode ONE source frame instead of a whole
  * GOP: Chromium resets the demuxer and decoder to the previous keyframe on
@@ -781,6 +878,10 @@ export async function inlineAudioAssets(
 
   const files: string[] = [];
   let next = html;
+  // Soundtracks decode natively to a cacheable WAV once (see audioPcmUrl);
+  // without a contract duration there is no sane decode bound, so those
+  // documents keep today's whole-file lane.
+  const audioBound = readContractDuration(html);
   for (const id of ids) {
     const record = await repository.getById(id);
     if (!record) {
@@ -804,7 +905,15 @@ export async function inlineAudioAssets(
       MAX_SERVED_AUDIO_FILE_BYTES,
     );
     files.push(record.displayName);
-    next = replaceWorkspaceAudioRef(next, id, workspaceFileUrl(baseUrl, record.relativePath));
+    const pcmUrl =
+      audioBound != null
+        ? await audioPcmUrl(baseUrl, record, file, statSize, audioBound)
+        : null;
+    next = replaceWorkspaceAudioRef(
+      next,
+      id,
+      pcmUrl ?? workspaceFileUrl(baseUrl, record.relativePath),
+    );
   }
   return { html: next, audioFiles: files };
 }

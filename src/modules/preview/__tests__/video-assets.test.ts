@@ -17,6 +17,8 @@ const nativeMocks = vi.hoisted(() => ({
   // predate seek proxies and every served clip keeps its original URL.
   // Proxy tests assign a mock per test.
   makeSeekProxy: undefined as (() => Promise<unknown>) | undefined,
+  // Same gate for the WAV soundtrack decode lane.
+  decodeAudioWav: undefined as (() => Promise<unknown>) | undefined,
   outExists: true,
   outBytes: new Uint8Array([0x00, 0x00, 0x00, 0x18]),
   deleted: [] as string[],
@@ -30,6 +32,9 @@ vi.mock("html-video-export", () => ({
     };
     if (nativeMocks.makeSeekProxy) {
       module.makeSeekProxy = nativeMocks.makeSeekProxy;
+    }
+    if (nativeMocks.decodeAudioWav) {
+      module.decodeAudioWav = nativeMocks.decodeAudioWav;
     }
     return module;
   },
@@ -112,6 +117,7 @@ beforeEach(() => {
   mocks.bytes = new Uint8Array([0xff, 0xd8, 0xff, 0x00]);
   serverMocks.baseUrl = null;
   nativeMocks.makeSeekProxy = undefined;
+  nativeMocks.decodeAudioWav = undefined;
   nativeMocks.moved = [];
   nativeMocks.deleted = [];
 });
@@ -507,6 +513,132 @@ describe("inlineAudioAssets", () => {
     await expect(
       inlineAudioAssets(schedule("huge"), repository()),
     ).rejects.toThrow(/Keep audio files under 15\.0 MB/);
+  });
+
+  /** Contract with a duration — the bound the WAV decode needs. */
+  const scheduleWithDuration = (id: string, duration = 300) =>
+    `<script>window.MOBILE_AGENT_VIDEO = { duration: ${duration}, audio: { tracks: [{ file: "workspace://${id}" }] } };</script>`;
+
+  /** Served soundtrack carrying the uri the WAV lane reads. */
+  function servedAudioFile() {
+    mocks.getById.mockImplementation(async (id: string) => ({
+      id,
+      displayName: "song.mp3",
+      mimeType: "audio/mpeg",
+      relativePath: `${id}/song.mp3`,
+    }));
+    mocks.resolveWorkspaceFile.mockReturnValue({
+      get exists() {
+        return true;
+      },
+      size: 4 * 1024 * 1024,
+      uri: "file:///workspace/song.mp3",
+      bytes: async () => {
+        throw new Error("bytes() must not be called on the served lane");
+      },
+    });
+  }
+
+  it("serves a cacheable WAV decode so segments can window it", async () => {
+    serverMocks.baseUrl = "http://127.0.0.1:9999";
+    servedAudioFile();
+    nativeMocks.outExists = false;
+    const decode = vi.fn(async () => ({ bytes: 1024 }));
+    nativeMocks.decodeAudioWav = decode;
+
+    const { html: out } = await inlineAudioAssets(
+      scheduleWithDuration("song-1", 300),
+      repository(),
+    );
+
+    expect(decode).toHaveBeenCalledTimes(1);
+    const [inPath, outPath, maxSeconds] = decode.mock.calls[0] as unknown as [
+      string,
+      string,
+      number,
+    ];
+    expect(inPath).toBe("/workspace/song.mp3");
+    // Written partial, renamed only after the decode reports success.
+    expect(outPath.endsWith(".wav.part")).toBe(true);
+    expect(maxSeconds).toBe(300);
+    expect(nativeMocks.moved).toEqual([
+      "audio-pcm-song-1-4194304-300.wav",
+    ]);
+    expect(out).toContain(
+      "http://127.0.0.1:9999/cache/audio-pcm-song-1-4194304-300.wav",
+    );
+    expect(out).not.toContain("/files/");
+    expect(out).not.toContain("data:audio");
+  });
+
+  it("reuses a cached WAV without re-running the decode", async () => {
+    serverMocks.baseUrl = "http://127.0.0.1:9999";
+    servedAudioFile();
+    const decode = vi.fn(async () => ({ bytes: 1024 }));
+    nativeMocks.decodeAudioWav = decode;
+    nativeMocks.outExists = true;
+
+    const { html: out } = await inlineAudioAssets(
+      scheduleWithDuration("song-1", 300),
+      repository(),
+    );
+
+    expect(decode).not.toHaveBeenCalled();
+    expect(nativeMocks.moved).toEqual([]);
+    expect(out).toContain(
+      "http://127.0.0.1:9999/cache/audio-pcm-song-1-4194304-300.wav",
+    );
+  });
+
+  it("keeps the original soundtrack when the build predates the WAV op", async () => {
+    serverMocks.baseUrl = "http://127.0.0.1:9999";
+    servedAudioFile();
+    nativeMocks.outExists = false;
+    // nativeMocks.decodeAudioWav stays undefined: no op, no WAV lane.
+
+    const { html: out } = await inlineAudioAssets(
+      scheduleWithDuration("song-1", 300),
+      repository(),
+    );
+
+    expect(out).toContain("http://127.0.0.1:9999/files/song-1/song.mp3");
+    expect(out).not.toContain("/cache/audio-pcm-");
+  });
+
+  it("keeps the original soundtrack when the contract has no duration", async () => {
+    serverMocks.baseUrl = "http://127.0.0.1:9999";
+    servedAudioFile();
+    nativeMocks.outExists = false;
+    const decode = vi.fn(async () => ({ bytes: 1024 }));
+    nativeMocks.decodeAudioWav = decode;
+
+    // No duration means no sane decode bound: never decode, never cache.
+    const { html: out } = await inlineAudioAssets(
+      schedule("song-1"),
+      repository(),
+    );
+
+    expect(decode).not.toHaveBeenCalled();
+    expect(out).toContain("http://127.0.0.1:9999/files/song-1/song.mp3");
+    expect(out).not.toContain("/cache/audio-pcm-");
+  });
+
+  it("serves the original soundtrack when the native decode fails", async () => {
+    serverMocks.baseUrl = "http://127.0.0.1:9999";
+    servedAudioFile();
+    nativeMocks.outExists = false;
+    nativeMocks.decodeAudioWav = vi.fn(async () => {
+      throw new Error("The file has no audio track to decode.");
+    });
+
+    const { html: out } = await inlineAudioAssets(
+      scheduleWithDuration("song-1", 300),
+      repository(),
+    );
+
+    expect(out).toContain("http://127.0.0.1:9999/files/song-1/song.mp3");
+    expect(out).not.toContain("/cache/audio-pcm-");
+    expect(out).not.toContain("data:audio");
   });
 });
 

@@ -862,14 +862,20 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
       src.loop = cue.loop === true;
       src.connect(gain);
       if (cue.loop) {
+        // Loop windows always span the whole file (windowStart 0), so this
+        // modulo indexes the original file positions exactly.
         var loopOffset = cue.offset % entry.buffer.duration;
         src.start(startAt, loopOffset < 0 ? 0 : loopOffset);
         try { src.stop(endAt + 0.05); } catch (_) {}
       } else {
-        var avail = Math.max(0, entry.buffer.duration - cue.offset);
+        // The window may start partway into the file; rebase the file
+        // position onto the window. A negative result means the window and
+        // the cue disagree — src.start throws rather than play shifted audio.
+        var bufOffset = cue.offset - (entry.windowStart || 0);
+        var avail = Math.max(0, entry.buffer.duration - bufOffset);
         var playDur = Math.min(cue.duration, avail);
         if (playDur <= 0) return;
-        src.start(startAt, cue.offset, playDur);
+        src.start(startAt, bufOffset, playDur);
         try { src.stop(startAt + playDur + 0.05); } catch (_) {}
       }
       return;
@@ -927,6 +933,138 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
     return buses;
   }
 
+  // --- windowed soundtrack loading ----------------------------------------
+  // Every segment used to re-fetch and decodeAudioData-decode the WHOLE
+  // soundtrack before frame 1 — O(segments) decodes of the same bytes, the
+  // dominant fixed cost of long renders. A WAV (the native decode the asset
+  // lane serves, or a PCM16 workspace .wav) can be sliced by byte range
+  // instead: read the header, work out which samples this segment's cues
+  // actually play, fetch only those bytes and convert them here. Anything
+  // unexpected — not RIFF, not PCM16, no Range support, a fetch failure —
+  // resolves to null or rejects into loadFileEntry, which falls back to
+  // the whole-file path: the pre-existing behavior, slow but never wrong.
+
+  function parseWavHead(head) {
+    if (!head || head.byteLength < 44) return null;
+    var view = new DataView(head);
+    if (view.getUint32(0, true) !== 0x46464952) return null; // "RIFF"
+    if (view.getUint32(8, true) !== 0x45564157) return null; // "WAVE"
+    var pos = 12;
+    var fmt = null;
+    var data = null;
+    while (pos + 8 <= head.byteLength) {
+      var id = view.getUint32(pos, true);
+      var size = view.getUint32(pos + 4, true);
+      var body = pos + 8;
+      if (id === 0x20746d66) { // "fmt "
+        if (body + 16 > head.byteLength) return null;
+        fmt = {
+          format: view.getUint16(body, true),
+          channels: view.getUint16(body + 2, true),
+          sampleRate: view.getUint32(body + 4, true),
+          blockAlign: view.getUint16(body + 12, true),
+          bits: view.getUint16(body + 14, true)
+        };
+      } else if (id === 0x61746164) { // "data"
+        data = { offset: body, size: size };
+      }
+      // size 0 advances one chunk header; a runaway size leaves the loop.
+      pos = body + size + (size & 1);
+    }
+    if (!fmt || !data) return null;
+    // Only plain 16-bit PCM can be converted sample-accurately here; every
+    // other encoding falls back to decodeAudioData.
+    if (fmt.format !== 1 || fmt.bits !== 16) return null;
+    if (fmt.channels < 1 || fmt.sampleRate < 1) return null;
+    if (fmt.blockAlign !== fmt.channels * 2) return null;
+    return { fmt: fmt, data: data };
+  }
+
+  function fetchAudioRange(url, byte0, byte1) {
+    return fetch(url, { headers: { Range: 'bytes=' + byte0 + '-' + (byte1 - 1) } }).then(function (res) {
+      if (!res.ok) throw new Error('Could not load an audio asset.');
+      if (res.status === 206) {
+        return res.arrayBuffer().then(function (body) {
+          // A short or overshooting window would shift every later sample.
+          if (body.byteLength !== byte1 - byte0) throw new Error('Short audio range.');
+          return body;
+        });
+      }
+      // The server answered with the whole file; slice it here.
+      return res.arrayBuffer().then(function (body) {
+        if (body.byteLength < byte1) throw new Error('Audio range past end of file.');
+        return body.slice(byte0, byte1);
+      });
+    });
+  }
+
+  function windowedAudioEntry(cue, context, segOffset, segEnd) {
+    // Loop cues wrap inside the source buffer: correct modulo playback
+    // needs the whole file (windowStart 0), so loops never window below it.
+    var wholeFile = cue.loop === true;
+    return fetch(cue.src, { headers: { Range: 'bytes=0-4095' } }).then(function (res) {
+      if (!res.ok) throw new Error('Could not load an audio asset.');
+      return res.arrayBuffer();
+    }).then(function (head) {
+      var parsed = parseWavHead(head);
+      if (!parsed) return null;
+      var derived = deriveSegmentCue(cue, segOffset, segEnd);
+      if (!derived) return null;
+      var fmt = parsed.fmt;
+      var data = parsed.data;
+      var totalFrames = Math.floor(data.size / fmt.blockAlign);
+      var from;
+      var to;
+      if (wholeFile) {
+        from = 0;
+        to = totalFrames;
+      } else {
+        from = Math.max(0, Math.floor(derived.offset * fmt.sampleRate));
+        to = Math.min(
+          totalFrames,
+          Math.ceil((derived.offset + derived.duration) * fmt.sampleRate),
+        );
+      }
+      if (to <= from) return null;
+      var byte0 = data.offset + from * fmt.blockAlign;
+      var byte1 = data.offset + to * fmt.blockAlign;
+      return fetchAudioRange(cue.src, byte0, byte1).then(function (body) {
+        var frames = Math.floor(body.byteLength / fmt.blockAlign);
+        if (frames <= 0) return null;
+        var buffer = context.createBuffer(fmt.channels, frames, fmt.sampleRate);
+        var view = new DataView(body);
+        var channels = [];
+        for (var c = 0; c < fmt.channels; c += 1) channels.push(buffer.getChannelData(c));
+        // Interleaved int16 -> float32, the same v/32768 mapping WebAudio's
+        // decoder applies, so a window and a full decode sound identical.
+        for (var i = 0; i < frames; i += 1) {
+          var base = i * fmt.blockAlign;
+          for (var ch = 0; ch < fmt.channels; ch += 1) {
+            channels[ch][i] = view.getInt16(base + ch * 2, true) / 32768;
+          }
+        }
+        return { cue: cue, buffer: buffer, windowStart: from / fmt.sampleRate };
+      });
+    });
+  }
+
+  function decodeWholeAudioEntry(cue, context) {
+    return fetch(cue.src).then(function (response) {
+      if (!response.ok) throw new Error('Could not load an audio asset.');
+      return response.arrayBuffer();
+    }).then(function (bytes) { return context.decodeAudioData(bytes); })
+      .then(function (buffer) { return { cue: cue, buffer: buffer, windowStart: 0 }; });
+  }
+
+  function loadFileEntry(cue, context, segOffset, segEnd) {
+    return windowedAudioEntry(cue, context, segOffset, segEnd).then(function (entry) {
+      return entry || decodeWholeAudioEntry(cue, context);
+    }, function () {
+      // Probe or window fetch failed: keep the pre-existing whole-file path.
+      return decodeWholeAudioEntry(cue, context);
+    });
+  }
+
   // Export sound in sample time, not wall time. Rendering a frame may take
   // seconds without dropping an audio callback or stretching AAC timestamps.
   function prepareOfflineAudio(schedule, duration, segOffset, segLen) {
@@ -953,11 +1091,9 @@ export const VIDEO_EXPORT_SCRIPT = `(function () {
       if (cue.kind !== 'file' || !overlaps(cue)) return;
       chain = chain.then(function () {
         if (cancelled) throw new Error('Video export cancelled.');
-        return fetch(cue.src).then(function (response) {
-          if (!response.ok) throw new Error('Could not load an audio asset.');
-          return response.arrayBuffer();
-        }).then(function (bytes) { return context.decodeAudioData(bytes); })
-          .then(function (buffer) { handle.decoded.push({ cue: cue, buffer: buffer }); });
+        return loadFileEntry(cue, context, offset, segEnd).then(function (entry) {
+          handle.decoded.push(entry);
+        });
       });
     });
     return chain.then(function () {

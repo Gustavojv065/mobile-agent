@@ -217,6 +217,17 @@ class HtmlVideoExportModule : Module() {
       )
     }
 
+    AsyncFunction("decodeAudioWav") { inputPath: String, outputPath: String, maxSeconds: Double ->
+      val result = AudioPcmDecoder.decodeWav(inputPath, outputPath, maxSeconds)
+      mapOf(
+        "wavPath" to result.path,
+        "bytes" to result.bytes,
+        "sampleRate" to result.sampleRate,
+        "channels" to result.channels,
+        "durationSeconds" to result.durationSeconds,
+      )
+    }
+
     AsyncFunction("readPcmSegment") { pcmPath: String, byteOffset: Long, byteCount: Int ->
       val segment = AudioPcmDecoder.readSegment(pcmPath, byteOffset, byteCount)
       mapOf("base64" to segment.base64, "bytes" to segment.bytes)

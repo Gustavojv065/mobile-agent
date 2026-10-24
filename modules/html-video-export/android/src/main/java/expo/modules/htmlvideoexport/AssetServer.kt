@@ -83,6 +83,13 @@ class AssetServer(private val roots: Map<String, java.io.File>) {
       val out = client.getOutputStream()
       val requestLine = reader.readLine() ?: run { client.close(); return }
       val parts = requestLine.split(" ")
+      if (parts.size >= 2 && parts[0] == "OPTIONS") {
+        // CORS preflight: a page whose origin is not this server (file://
+        // documents) must ask before sending a `Range` request header.
+        writeCorsPreflight(out)
+        client.close()
+        return
+      }
       if (parts.size < 2 || parts[0] != "GET") {
         writeStatus(out, 405, "Method Not Allowed", "text/plain", 0)
         client.close()
@@ -174,6 +181,7 @@ class AssetServer(private val roots: Map<String, java.io.File>) {
     if (partial) head.append("Content-Range: bytes $start-$end/$total\r\n")
     head.append("Accept-Ranges: bytes\r\n")
     head.append("Access-Control-Allow-Origin: *\r\n")
+    head.append("Access-Control-Expose-Headers: Content-Range, Accept-Ranges\r\n")
     head.append("Cache-Control: no-store\r\n")
     head.append("Connection: close\r\n\r\n")
     out.write(head.toString().toByteArray(Charsets.UTF_8))
@@ -195,6 +203,18 @@ class AssetServer(private val roots: Map<String, java.io.File>) {
 
   private fun writeStatus(out: OutputStream, code: Int, message: String, mime: String, length: Long) {
     val head = "HTTP/1.1 $code $message\r\nContent-Type: $mime\r\nContent-Length: $length\r\nConnection: close\r\n\r\n"
+    out.write(head.toByteArray(Charsets.UTF_8))
+    out.flush()
+  }
+
+  private fun writeCorsPreflight(out: OutputStream) {
+    val head = "HTTP/1.1 204 No Content\r\n" +
+      "Access-Control-Allow-Origin: *\r\n" +
+      "Access-Control-Allow-Methods: GET, OPTIONS\r\n" +
+      "Access-Control-Allow-Headers: Range\r\n" +
+      "Access-Control-Max-Age: 86400\r\n" +
+      "Content-Length: 0\r\n" +
+      "Connection: close\r\n\r\n"
     out.write(head.toByteArray(Charsets.UTF_8))
     out.flush()
   }
