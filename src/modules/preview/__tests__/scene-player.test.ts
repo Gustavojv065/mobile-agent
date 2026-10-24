@@ -12,6 +12,7 @@ const SCENE = `window.MOBILE_AGENT_VIDEO = { duration: 21, fps: 30 };`;
 function makeHarness(options?: {
   render?: (t: number, canvas: unknown, ctx: unknown, audio: never, speech: never) => void;
   duration?: number;
+  prepareFrame?: (t: number) => void | Promise<void>;
 }) {
   const posts: unknown[] = [];
   const render = vi.fn(
@@ -29,6 +30,7 @@ function makeHarness(options?: {
         fps: 30,
         canvasId: "scene",
         render,
+        prepareFrame: options?.prepareFrame,
       },
       ReactNativeWebView: {
         postMessage: (payload: string) => {
@@ -103,6 +105,53 @@ describe("getSceneDuration", () => {
 });
 
 describe("scene player script", () => {
+  const flushFrames = async () => {
+    for (let i = 0; i < 12; i += 1) await Promise.resolve();
+  };
+
+  it("awaits prepareFrame before painting the requested video time", async () => {
+    let finish!: () => void;
+    const prepareFrame = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const harness = makeHarness({ prepareFrame });
+    const player = harness.run(buildScenePlayerScript());
+    player.seek(12);
+    await flushFrames();
+    expect(prepareFrame).toHaveBeenCalledWith(12);
+    expect(harness.render).not.toHaveBeenCalled();
+    finish();
+    await flushFrames();
+    expect(harness.render.mock.calls[0][0]).toBe(12);
+  });
+
+  it("serializes preparation and paints only the latest scrub request", async () => {
+    const finishes: (() => void)[] = [];
+    const prepareFrame = vi.fn((_t: number) => new Promise<void>((resolve) => finishes.push(resolve)));
+    const harness = makeHarness({ prepareFrame });
+    const player = harness.run(buildScenePlayerScript());
+    player.seek(2);
+    await flushFrames();
+    player.seek(6);
+    player.seek(10);
+    expect(prepareFrame).toHaveBeenCalledTimes(1);
+    finishes[0]();
+    await flushFrames();
+    expect(harness.render).not.toHaveBeenCalled();
+    expect(prepareFrame.mock.calls.map((call) => call[0])).toEqual([2, 10]);
+    finishes[1]();
+    await flushFrames();
+    expect(harness.render.mock.calls[0][0]).toBe(10);
+  });
+
+  it("reports failed frame preparation and stops playback", async () => {
+    const harness = makeHarness({ prepareFrame: async () => { throw new Error("seek failed"); } });
+    const player = harness.run(buildScenePlayerScript());
+    player.play();
+    player.seek(4);
+    await flushFrames();
+    expect(player.state().playing).toBe(false);
+    expect(harness.render).not.toHaveBeenCalled();
+    expect(harness.posts).toContainEqual(expect.objectContaining({ error: "seek failed" }));
+  });
   it("is safe to inject (no backticks or interpolation leftovers)", () => {
     const script = buildScenePlayerScript();
     expect(script).not.toContain("`");

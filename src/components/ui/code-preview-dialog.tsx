@@ -458,6 +458,7 @@ export function CodePreviewContent({
         null,
     );
     const [documentUri, setDocumentUri] = useState<string | null>(null);
+    const [loadedPreviewUri, setLoadedPreviewUri] = useState<string | null>(null);
     // While the hidden host renders, the visible preview page is blanked: its
     // clip <video> elements each hold a hardware decoder instance, and devices
     // cap concurrent codec instances per process — the encoder the render needs
@@ -1041,7 +1042,7 @@ export function CodePreviewContent({
                             source={{ html: codeHtml }}
                             style={{ backgroundColor: theme.backgroundElement, flex: 1 }}
                         />
-                    ) : isVideoScene && fittedFrame && documentUri ? (
+                    ) : isVideoScene && fittedFrame ? (
                         <View
                             key={videoExport && videoExport.status !== "preparing" ? "export-card" : "preview-card"}
                             className={videoExport
@@ -1052,10 +1053,13 @@ export function CodePreviewContent({
                                 width: fittedFrame.width,
                             }}
                         >
-                            {presentation.showLivePreview ? (
+                            {presentation.showLivePreview && documentUri ? (
                                 <View collapsable={false} ref={sceneViewRef} style={{ flex: 1 }}>
                                     <SceneWebViewContainer
-                                        handleLoadEnd={installPlayer}
+                                        handleLoadEnd={() => {
+                                            setLoadedPreviewUri(documentUri);
+                                            installPlayer();
+                                        }}
                                         handleMessage={handleMessage}
                                         innerRef={webViewRef}
                                         keyName={viewport}
@@ -1064,7 +1068,10 @@ export function CodePreviewContent({
                                     />
                                 </View>
                             ) : null}
-                            {presentation.showPlayerChrome ? (
+                            {!videoExport && (!documentUri || sceneAssetsPending || loadedPreviewUri !== documentUri) ? (
+                                <ScenePreviewLoading error={sceneAssetsError} />
+                            ) : null}
+                            {presentation.showPlayerChrome && documentUri && !sceneAssetsPending && loadedPreviewUri === documentUri ? (
                               <ScenePlayerChrome
                                 audioLoading={presentation.showAudioLoading}
                                 duration={sceneDuration}
@@ -1109,6 +1116,10 @@ export function CodePreviewContent({
                             />
                         </View>
                     )
+                ) : mode === "preview" && isVideoScene ? (
+                    <View style={{ width: "100%", aspectRatio: sceneAspect, borderRadius: 24, overflow: "hidden", backgroundColor: "#101217" }}>
+                        <ScenePreviewLoading error={sceneAssetsError} />
+                    </View>
                 ) : null}
             </View>
             {/*
@@ -1264,6 +1275,21 @@ export function CodePreviewContent({
  * fullscreen layer both use exactly this (same flags, same hooks), keeping
  * the preview page behavior identical on both sides.
  */
+function ScenePreviewLoading({ error }: { error: string | null }) {
+    return (
+        <View
+            accessibilityRole="progressbar"
+            accessibilityLabel={error ? "Preview unavailable" : "Loading preview"}
+            style={{ position: "absolute", top: 0, right: 0, bottom: 0, left: 0, backgroundColor: "#101217", alignItems: "center", justifyContent: "center", padding: 20, gap: 10 }}
+        >
+            {error ? null : <ActivityIndicator color="#FFFFFF" />}
+            <Text style={{ color: "#FFFFFF", fontSize: 12, textAlign: "center" }}>
+                {error ?? "Loading preview…"}
+            </Text>
+        </View>
+    );
+}
+
 function SceneWebViewContainer({
     handleLoadEnd,
     handleMessage,

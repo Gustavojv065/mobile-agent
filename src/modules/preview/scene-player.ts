@@ -279,12 +279,10 @@ export function buildScenePlayerScript(): string {
       } catch (_) {}
     }
   }
-  function draw(t) {
-    if (!ctx || !canvas) return;
-    followClips(t);
-    try {
-      v.render(t, canvas, ctx, stubAudio, stubSpeech);
-    } catch (e) {
+  var preparingFrame = false;
+  var pendingFrame = null;
+  var frameGeneration = 0;
+  function frameFailed(e) {
       state.error = String((e && e.message) || e);
       state.playing = false;
       if (state.raf) {
@@ -293,7 +291,46 @@ export function buildScenePlayerScript(): string {
       }
       stopLive();
       post(true);
+  }
+  function paint(t) {
+    try {
+      v.render(t, canvas, ctx, stubAudio, stubSpeech);
+    } catch (e) {
+      frameFailed(e);
     }
+  }
+  function pumpFrame() {
+    if (preparingFrame || pendingFrame === null) return;
+    var request = pendingFrame;
+    pendingFrame = null;
+    preparingFrame = true;
+    // prepareFrame owns clip seeking. Never run followClips concurrently with
+    // it or start another seek before it finishes on the shared elements.
+    Promise.resolve().then(function () {
+      return v.prepareFrame(request.t);
+    }).then(function () {
+      if (request.generation === frameGeneration) paint(request.t);
+    }, function (e) {
+      if (request.generation === frameGeneration) {
+        pendingFrame = null;
+        frameFailed(e);
+      }
+    }).then(function () {
+      preparingFrame = false;
+      pumpFrame();
+    });
+  }
+  function draw(t) {
+    if (!ctx || !canvas) return;
+    if (typeof v.prepareFrame === 'function') {
+      // Real-time playback may outpace decoding. Keep just the latest clock
+      // position instead of building an ever-growing queue of stale frames.
+      pendingFrame = { t: t, generation: frameGeneration };
+      pumpFrame();
+      return;
+    }
+    followClips(t);
+    paint(t);
   }
   function frame(now) {
     if (!state.playing) return;
@@ -331,6 +368,8 @@ export function buildScenePlayerScript(): string {
       return true;
     },
     pause: function () {
+      frameGeneration += 1;
+      pendingFrame = null;
       state.playing = false;
       if (state.raf) {
         try { cancelAnimationFrame(state.raf); } catch (_) {}
@@ -340,6 +379,7 @@ export function buildScenePlayerScript(): string {
       post(true);
     },
     seek: function (t) {
+      frameGeneration += 1;
       t = num(t, 0);
       if (t < 0) t = 0;
       if (duration > 0 && t > duration) t = duration;
