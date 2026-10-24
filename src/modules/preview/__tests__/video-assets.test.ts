@@ -13,13 +13,26 @@ vi.mock("@/core/services/workspace-file-service", () => ({
 
 const nativeMocks = vi.hoisted(() => ({
   transcodeClip: vi.fn(),
+  // Undefined by default: without the op the module mirrors real builds that
+  // predate seek proxies and every served clip keeps its original URL.
+  // Proxy tests assign a mock per test.
+  makeSeekProxy: undefined as (() => Promise<unknown>) | undefined,
   outExists: true,
   outBytes: new Uint8Array([0x00, 0x00, 0x00, 0x18]),
   deleted: [] as string[],
+  moved: [] as string[],
 }));
 
 vi.mock("html-video-export", () => ({
-  getHtmlVideoExportModule: () => ({ transcodeClip: nativeMocks.transcodeClip }),
+  getHtmlVideoExportModule: () => {
+    const module: Record<string, unknown> = {
+      transcodeClip: nativeMocks.transcodeClip,
+    };
+    if (nativeMocks.makeSeekProxy) {
+      module.makeSeekProxy = nativeMocks.makeSeekProxy;
+    }
+    return module;
+  },
 }));
 
 vi.mock("expo-file-system", () => ({
@@ -39,6 +52,9 @@ vi.mock("expo-file-system", () => ({
     }
     delete() {
       nativeMocks.deleted.push(this.name);
+    }
+    async move(dest: { name?: string }) {
+      nativeMocks.moved.push(dest?.name ?? "unknown");
     }
   },
   Paths: { cache: "mock-cache-dir" },
@@ -95,6 +111,9 @@ beforeEach(() => {
   mocks.exists = true;
   mocks.bytes = new Uint8Array([0xff, 0xd8, 0xff, 0x00]);
   serverMocks.baseUrl = null;
+  nativeMocks.makeSeekProxy = undefined;
+  nativeMocks.moved = [];
+  nativeMocks.deleted = [];
 });
 
 describe("extractWorkspaceImageIds", () => {
@@ -600,6 +619,127 @@ describe("inlineVideoAssets served URLs", () => {
       repository(),
     );
     expect(out).toContain("data:video/mp4;base64,");
+  });
+
+  /** A served (non-transcode) clip with the uri + size the proxy lane reads. */
+  function servedWorkspaceFile() {
+    mocks.getById.mockImplementation(async (id: string) => ({
+      id,
+      displayName: "clip.mp4",
+      mimeType: "video/mp4",
+      relativePath: `${id}/clip.mp4`,
+    }));
+    mocks.resolveWorkspaceFile.mockReturnValue({
+      get exists() {
+        return true;
+      },
+      size: 8 * 1024 * 1024,
+      uri: "file:///workspace/clip.mp4",
+      bytes: async () => new Uint8Array([1, 2, 3]),
+    });
+  }
+
+  it("serves an all-keyframe seek proxy when the build can make one", async () => {
+    servedWorkspaceFile();
+    const makeProxy = vi.fn(async () => ({ allIntra: true }));
+    nativeMocks.makeSeekProxy = makeProxy;
+
+    const { html: out } = await inlineVideoAssets(
+      `<video src="workspace://vid-1">`,
+      repository(),
+    );
+
+    expect(makeProxy).toHaveBeenCalledTimes(1);
+    const [inPath, outPath, maxDim] = makeProxy.mock.calls[0] as unknown as [
+      string,
+      string,
+      number,
+    ];
+    expect(inPath).toBe("/workspace/clip.mp4");
+    // Written to a partial name, renamed only after the all-intra check, so
+    // a kill mid-transcode can never leave a truncated file under a name a
+    // later run would trust.
+    expect(outPath.endsWith(".mp4.part")).toBe(true);
+    expect(maxDim).toBe(1280);
+    expect(nativeMocks.moved).toEqual(["proxy-vid-1-8388608-1280.mp4"]);
+    expect(out).toContain(
+      "http://127.0.0.1:9999/cache/proxy-vid-1-8388608-1280.mp4",
+    );
+    expect(out).not.toContain("/files/");
+    expect(out).not.toContain("workspace://");
+    expect(out).toContain('crossorigin="anonymous"');
+  });
+
+  it("serves the original clip when the encoder refuses all-intra", async () => {
+    servedWorkspaceFile();
+    nativeMocks.makeSeekProxy = vi.fn(async () => ({ allIntra: false }));
+
+    const { html: out } = await inlineVideoAssets(
+      `<video src="workspace://vid-1">`,
+      repository(),
+    );
+
+    expect(out).toContain("http://127.0.0.1:9999/files/vid-1/clip.mp4");
+    expect(out).not.toContain("/cache/proxy-");
+    // The verified-failed partial must not linger for a later run.
+    expect(nativeMocks.deleted).toContain(
+      "proxy-vid-1-8388608-1280.mp4.part",
+    );
+    expect(nativeMocks.moved).toEqual([]);
+  });
+
+  it("reuses a cached seek proxy without re-running the native op", async () => {
+    servedWorkspaceFile();
+    const makeProxy = vi.fn(async () => ({ allIntra: true }));
+    nativeMocks.makeSeekProxy = makeProxy;
+    // A verified proxy from an earlier run already sits in cache.
+    nativeMocks.outExists = true;
+
+    const { html: out } = await inlineVideoAssets(
+      `<video src="workspace://vid-1">`,
+      repository(),
+    );
+
+    expect(makeProxy).not.toHaveBeenCalled();
+    expect(nativeMocks.moved).toEqual([]);
+    expect(out).toContain(
+      "http://127.0.0.1:9999/cache/proxy-vid-1-8388608-1280.mp4",
+    );
+  });
+
+  it("serves the original clip when the build predates the seek-proxy op", async () => {
+    servedWorkspaceFile();
+    // nativeMocks.makeSeekProxy stays undefined: no op, no proxy lane.
+
+    const { html: out } = await inlineVideoAssets(
+      `<video src="workspace://vid-1">`,
+      repository(),
+    );
+
+    expect(out).toContain("http://127.0.0.1:9999/files/vid-1/clip.mp4");
+    expect(out).not.toContain("/cache/proxy-");
+  });
+
+  it("caps the seek proxy at the contract canvas long edge", async () => {
+    servedWorkspaceFile();
+    const makeProxy = vi.fn(async () => ({ allIntra: true }));
+    nativeMocks.makeSeekProxy = makeProxy;
+
+    const { html: out } = await inlineVideoAssets(
+      `<video src="workspace://vid-1">` +
+        `<script>window.MOBILE_AGENT_VIDEO={duration:5,width:1080,height:1920};</script>`,
+      repository(),
+    );
+
+    const [, , maxDim] = makeProxy.mock.calls[0] as unknown as [
+      string,
+      string,
+      number,
+    ];
+    expect(maxDim).toBe(1920);
+    expect(out).toContain(
+      "http://127.0.0.1:9999/cache/proxy-vid-1-8388608-1920.mp4",
+    );
   });
 });
 

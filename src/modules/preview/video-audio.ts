@@ -231,6 +231,29 @@ export function readContractAspect(html: string): number | null {
 }
 
 /**
+ * Canvas size declared by the contract literal (last top-level width/height
+ * wins, same rules as {@link readContractDuration}), or null when either is
+ * absent/non-positive — callers treat null as "unknown", never as a default.
+ */
+export function readContractSize(
+  html: string,
+): { width: number; height: number } | null {
+  const width = readLastContractNumber(html, "width");
+  const height = readLastContractNumber(html, "height");
+  if (
+    width == null ||
+    height == null ||
+    width <= 0 ||
+    height <= 0 ||
+    !Number.isFinite(width) ||
+    !Number.isFinite(height)
+  ) {
+    return null;
+  }
+  return { width, height };
+}
+
+/**
  * The LAST top-level numeric `key:` of the contract object literal.
  *
  * Mirrors JS semantics instead of grabbing the first match in sight: the

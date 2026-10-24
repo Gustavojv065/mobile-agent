@@ -67,6 +67,22 @@ export type HtmlVideoExportNativeModule = {
     maxDimension: number,
   ): Promise<{ path: string; width: number; height: number; sizeBytes: number }>;
   /**
+   * Builds an all-keyframe seek proxy of a scene clip (decode → Surface →
+   * AVC re-encode with `KEY_I_FRAME_INTERVAL = 0`) so the export's
+   * frame-accurate seeks decode ONE source frame instead of a whole GOP —
+   * Chromium resets the demuxer and decoder to the previous keyframe on
+   * every `currentTime` assignment. The output is verified sample by sample:
+   * `allIntra: false` means the device encoder refused all-intra and the
+   * file was removed — callers keep serving the original clip (correct,
+   * just slower), never a bad proxy. Audio dropped; rotation preserved.
+   * Plain filesystem paths. Throws when the clip cannot be decoded.
+   */
+  makeSeekProxy(
+    inputPath: string,
+    outputPath: string,
+    maxDimension: number,
+  ): Promise<{ path: string; width: number; height: number; sizeBytes: number; allIntra: boolean }>;
+  /**
    * Serves workspace + cache files over loopback HTTP so scene pages load
    * clips without base64 inflation (same origin: canvas stays clean, range
    * requests work). Plain directory paths in, `{ port }` out. Reference

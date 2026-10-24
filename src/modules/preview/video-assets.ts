@@ -5,6 +5,7 @@ import {
   buildAudioDataUri,
   extractWorkspaceAudioIds,
   MAX_SERVED_AUDIO_FILE_BYTES,
+  readContractSize,
   replaceWorkspaceAudioRef,
 } from "@/modules/preview/video-audio";
 import type { File } from "expo-file-system";
@@ -548,6 +549,112 @@ function formatClipBytes(sizeBytes: number): string {
 }
 
 /**
+ * Seek-proxy ceiling: the contract canvas long edge, clamped to the
+ * recorder's supported range (160–1920), default 1280. A proxy larger than
+ * the export canvas is pure waste — the renderer never shows more pixels
+ * than the canvas holds.
+ */
+function seekProxyMaxDimension(html: string): number {
+  const size = readContractSize(html);
+  const longEdge = size ? Math.max(size.width, size.height) : 1280;
+  return Math.round(Math.min(1920, Math.max(160, longEdge)));
+}
+
+/**
+ * Builds (or reuses) an all-keyframe seek proxy for a served clip, so the
+ * export's frame-accurate seeks decode ONE source frame instead of a whole
+ * GOP: Chromium resets the demuxer and decoder to the previous keyframe on
+ * every `currentTime` assignment, which makes a clip-heavy render decode
+ * dozens of source frames per exported frame. Returns the cache URL to
+ * serve in place of the original, or null to serve the original unchanged —
+ * the native op may be missing (builds predating it), the transcode may
+ * fail, or the device encoder may refuse all-intra (native verifies and
+ * deletes); every case is today's correct behavior without the speedup,
+ * never a render failure.
+ *
+ * The file is written to a `.part` name and renamed only after verification,
+ * so a process kill mid-transcode can never leave a truncated proxy under a
+ * trusted name for a later run to serve.
+ */
+async function seekProxyUrl(
+  baseUrl: string,
+  record: { id: string; displayName: string },
+  file: File,
+  statSize: number | null,
+  maxDimension: number,
+): Promise<string | null> {
+  if (statSize == null || statSize <= 0) return null;
+  const inputUri = (file as { uri?: unknown }).uri;
+  if (typeof inputUri !== "string" || inputUri.length === 0) return null;
+  type SeekProxyFn = (
+    inputPath: string,
+    outputPath: string,
+    maxDimension: number,
+  ) => Promise<{ allIntra?: boolean }>;
+  let makeSeekProxy: SeekProxyFn | null = null;
+  let cacheFileUrl: ((urlBase: string, name: string) => string) | null = null;
+  let cacheFileFor:
+    | ((name: string) => {
+        uri: string;
+        exists: boolean;
+        delete: () => void;
+        move: (dest: unknown, options?: { overwrite?: boolean }) => Promise<void>;
+      })
+    | null = null;
+  try {
+    const [fs, native, server] = await Promise.all([
+      import("expo-file-system"),
+      import("html-video-export"),
+      import("@/modules/preview/asset-server"),
+    ]);
+    const module = native.getHtmlVideoExportModule();
+    if (module && typeof module.makeSeekProxy === "function") {
+      makeSeekProxy = module.makeSeekProxy.bind(module);
+      cacheFileUrl = server.cacheFileUrl;
+      cacheFileFor = (name: string) =>
+        new fs.File(fs.Paths.cache, name) as unknown as {
+          uri: string;
+          exists: boolean;
+          delete: () => void;
+          move: (dest: unknown, options?: { overwrite?: boolean }) => Promise<void>;
+        };
+    }
+  } catch {
+    return null;
+  }
+  if (!makeSeekProxy || !cacheFileFor || !cacheFileUrl) return null;
+  const safeId = record.id.replace(/[^a-zA-Z0-9_-]/g, "_");
+  const cacheName = `proxy-${safeId}-${statSize}-${maxDimension}.mp4`;
+  const partName = `${cacheName}.part`;
+  const outFile = cacheFileFor(cacheName);
+  try {
+    if (!outFile.exists) {
+      const partFile = cacheFileFor(partName);
+      if (partFile.exists) {
+        // Stale partial from an interrupted run; overwrite below anyway.
+        try { partFile.delete(); } catch { /* best effort */ }
+      }
+      const strip = (uri: string) => (uri.startsWith("file://") ? uri.slice("file://".length) : uri);
+      const done = await makeSeekProxy(strip(inputUri), strip(partFile.uri), maxDimension);
+      if (!done || done.allIntra !== true) {
+        // Not all-intra (or op failed): no proxy, no half-written leftovers.
+        try { partFile.delete(); } catch { /* best effort */ }
+        return null;
+      }
+      await partFile.move(outFile, { overwrite: true });
+    }
+    return cacheFileUrl(baseUrl, cacheName);
+  } catch {
+    // Optimization only: any failure serves the original clip.
+    try {
+      const partFile = cacheFileFor(`${cacheName}.part`);
+      if (partFile.exists) partFile.delete();
+    } catch { /* best effort */ }
+    return null;
+  }
+}
+
+/**
  * Inlines `<video>`/`<source>`-referenced workspace clips.
  * Clips play muted and scene-driven; the recorder captures its own audio
  * graph, never page audio.
@@ -588,6 +695,9 @@ async function inlineClipRefs(
   const files: string[] = [];
   const servedUrls: string[] = [];
   let next = html;
+  // One canvas ceiling for every clip of this document — a proxy larger
+  // than the export canvas never shows its extra pixels.
+  const proxyMaxDim = seekProxyMaxDimension(html);
   for (const id of ids) {
     const record = await repository.getById(id);
     if (!record) {
@@ -615,7 +725,11 @@ async function inlineClipRefs(
       isTranscodeOnlyVideoMimeType(resolved) ||
       (statSize != null && statSize > MAX_DIRECT_SERVE_BYTES);
     if (!convert) {
-      const servedUrl = workspaceFileUrl(baseUrl, record.relativePath);
+      // Serve an all-keyframe proxy when this build can make one: every
+      // export seek then decodes one frame instead of a whole GOP. Falls
+      // back to the original file on any miss (old build, encoder refuses).
+      const proxyUrl = await seekProxyUrl(baseUrl, record, file, statSize, proxyMaxDim);
+      const servedUrl = proxyUrl ?? workspaceFileUrl(baseUrl, record.relativePath);
       next = next.split(`workspace://${id}`).join(servedUrl);
       servedUrls.push(servedUrl);
       continue;

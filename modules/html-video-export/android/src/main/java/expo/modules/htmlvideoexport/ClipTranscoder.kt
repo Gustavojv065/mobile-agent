@@ -43,6 +43,58 @@ object ClipTranscoder {
     val sizeBytes: Long,
   )
 
+  data class SeekProxyResult(
+    val path: String,
+    val width: Int,
+    val height: Int,
+    val sizeBytes: Long,
+    /** True when EVERY written sample is a sync sample — one-frame seeks. */
+    val allIntra: Boolean,
+  )
+
+  /** Written samples of one pass, used to verify the all-intra contract. */
+  private data class PassCounts(val frames: Int, val keyframes: Int)
+
+  /**
+   * All-intra seek proxy for frame-accurate export.
+   *
+   * Chromium resets the demuxer and decoder to the previous keyframe on EVERY
+   * `currentTime` seek, so exporting one frame from a normal-GOP source
+   * decodes up to a whole GOP (dozens of frames) per output frame. Re-encoding
+   * the clip as a stream of keyframes makes each of those seeks decode exactly
+   * one frame. AOSP MediaFormat documents `KEY_I_FRAME_INTERVAL = 0` as "a
+   * stream containing all key frames is requested" — requested, not
+   * guaranteed — so the written output is verified: every sample must carry
+   * the sync flag. When the device encoder refuses, the file is deleted and
+   * `allIntra` comes back false; callers keep serving the original clip,
+   * which renders correctly at today's speed.
+   *
+   * Audio is dropped (scene clips play muted; soundtrack scheduling reads the
+   * original file) and display rotation is preserved by the muxer hint,
+   * exactly like [transcode].
+   */
+  fun seekProxy(inputPath: String, outputPath: String, maxDimension: Int): SeekProxyResult {
+    val track = probe(inputPath)
+    val rotated = track.rotation == 90 || track.rotation == 270
+    val srcW = if (rotated) track.height else track.width
+    val srcH = if (rotated) track.width else track.height
+    val scale = minOf(1.0, maxDimension.coerceAtLeast(160) / maxOf(srcW, srcH).toDouble())
+    var w = ((srcW * scale).toInt() / 2) * 2
+    var h = ((srcH * scale).toInt() / 2) * 2
+    w = w.coerceAtLeast(16)
+    h = h.coerceAtLeast(16)
+    // Intra frames cost several times a predicted frame at equal quality:
+    // size the proxy from its pixels so quality tracks resolution, bounded so
+    // absurd sources cannot produce absurd proxies.
+    val bitrate = (w.toLong() * h * 8).coerceIn(2_000_000L, 16_000_000L)
+    val counts = runPass(inputPath, track.index, outputPath, w, h, bitrate, track.rotation, iFrameInterval = 0)
+    val allIntra = counts.frames > 0 && counts.keyframes == counts.frames
+    if (!allIntra) {
+      try { File(outputPath).delete() } catch (_: Exception) {}
+    }
+    return SeekProxyResult(outputPath, w, h, File(outputPath).length(), allIntra)
+  }
+
   fun transcode(
     inputPath: String,
     outputPath: String,
@@ -67,7 +119,7 @@ object ClipTranscoder {
       w = w.coerceAtLeast(160)
       h = h.coerceAtLeast(160)
       try {
-        runPass(inputPath, track.index, outputPath, w, h, bitrate, track.rotation)
+        runPass(inputPath, track.index, outputPath, w, h, bitrate, track.rotation, iFrameInterval = 1)
         val size = File(outputPath).length()
         if (size in 1..maxBytes) {
           return TranscodeResult(outputPath, w, h, size)
@@ -114,11 +166,14 @@ object ClipTranscoder {
     height: Int,
     bitrate: Long,
     rotation: Int,
-  ) {
+    iFrameInterval: Int,
+  ): PassCounts {
     val extractor = MediaExtractor()
     var decoder: MediaCodec? = null
     var encoder: MediaCodec? = null
     var muxer: MediaMuxer? = null
+    var frames = 0
+    var keyframes = 0
     try {
       extractor.setDataSource(inputPath)
       extractor.selectTrack(trackIndex)
@@ -133,7 +188,9 @@ object ClipTranscoder {
         )
         setInteger(MediaFormat.KEY_BIT_RATE, bitrate.toInt())
         setInteger(MediaFormat.KEY_FRAME_RATE, 30)
-        setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
+        // 0 = "a stream containing all key frames is requested" (AOSP
+        // MediaFormat). Verified after the pass: see PassCounts usage.
+        setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, iFrameInterval)
       }
       encoder = MediaCodec.createEncoderByType(MIME_AVC)
       encoder.configure(outputFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
@@ -208,6 +265,8 @@ object ClipTranscoder {
           }
           if (bufferInfo.size > 0 && muxerStarted) {
             muxer.writeSampleData(trackOut, encoded, bufferInfo)
+            frames += 1
+            if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0) keyframes += 1
           }
           encoder.releaseOutputBuffer(encIndex, false)
           if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
@@ -242,5 +301,6 @@ object ClipTranscoder {
       try { muxer?.stop() } catch (_: Exception) {}
       try { muxer?.release() } catch (_: Exception) {}
     }
+    return PassCounts(frames, keyframes)
   }
 }

@@ -164,6 +164,17 @@ class HtmlVideoExportModule : Module() {
       )
     }
 
+    AsyncFunction("makeSeekProxy") { inputPath: String, outputPath: String, maxDimension: Int ->
+      val result = ClipTranscoder.seekProxy(inputPath, outputPath, maxDimension)
+      mapOf(
+        "path" to result.path,
+        "width" to result.width,
+        "height" to result.height,
+        "sizeBytes" to result.sizeBytes.toDouble(),
+        "allIntra" to result.allIntra,
+      )
+    }
+
     AsyncFunction("startAssetServer") { workspaceDir: String, cacheDir: String ->
       synchronized(assetServerLock) {
         var server = assetServer
