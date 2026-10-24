@@ -340,7 +340,9 @@ export function CodePreviewContent({
     // The export records the page as loaded: workspace:// refs must be inlined
     // first (audio, images, clips — same order as the renderVideo tool), or the
     // media silently goes missing from the MP4. The preview page loads the
-    // inlined document so what you see is what the export records.
+    // preview-lane document (no native caches); the export rebuilds it in the
+    // export lane below, where seek proxies and the WAV soundtrack are allowed
+    // to cost minutes once instead of delaying every preview.
     const sceneNeedsAssets = isVideoScene && hasWorkspaceRefs(html);
     const [inlinedSceneHtml, setInlinedSceneHtml] = useState<string | null>(null);
     const [sceneAssetsError, setSceneAssetsError] = useState<string | null>(null);
@@ -356,6 +358,7 @@ export function CodePreviewContent({
                 const { html: audioHtml } = await inlineAudioAssets(
                     html,
                     workspaceRepository,
+                    "preview",
                 );
                 const { html: imageHtml } = await inlineImageAssets(
                     audioHtml,
@@ -364,6 +367,7 @@ export function CodePreviewContent({
                 const { html: sceneHtml } = await inlineVideoAssets(
                     imageHtml,
                     workspaceRepository,
+                    "preview",
                 );
                 if (!cancelled) {
                     setInlinedSceneHtml(sceneHtml);
@@ -679,12 +683,33 @@ export function CodePreviewContent({
                 setPreviewSuspended(true);
                 setAudioLoading(false);
                 setAudioError(null);
+                setExportState({ progress: 0, status: "preparing", posterUri });
+                // Build the export lane document: all-keyframe seek proxies and
+                // the WAV soundtrack are export-only. They are the difference
+                // between a seek that decodes one frame and one that decodes a
+                // 6 s GOP, so the preview must never be the thing that skips
+                // them. Status stays "preparing" while this runs.
+                const { html: audioHtml } = await inlineAudioAssets(
+                    html,
+                    workspaceRepository,
+                    "export",
+                );
+                const { html: imageHtml } = await inlineImageAssets(
+                    audioHtml,
+                    workspaceRepository,
+                );
+                const { html: exportDocument } = await inlineVideoAssets(
+                    imageHtml,
+                    workspaceRepository,
+                    "export",
+                );
+                if (controller.signal.aborted || exportRuntime.active !== entry) return;
                 setExportState({ progress: 0, status: "recording", posterUri });
                 const result = await renderSegments({
                     abortSignal: controller.signal,
                     contractDuration: sceneDuration,
-                    documentHtml: exportHtml,
-                    sourceFileId: hashDocumentKey(exportHtml),
+                    documentHtml: exportDocument,
+                    sourceFileId: hashDocumentKey(exportDocument),
                     onProgress: (p) =>
                         setExportState({
                             progress: Math.max(
@@ -742,11 +767,13 @@ export function CodePreviewContent({
         anyRenderBusy,
         exportFileName,
         exportHtml,
+        html,
         mode,
         pausePlayer,
         sceneAssetsError,
         sceneDuration,
         videoExport,
+        workspaceRepository,
     ]);
 
     const handleMessage = useCallback((event: WebViewMessageEvent) => {

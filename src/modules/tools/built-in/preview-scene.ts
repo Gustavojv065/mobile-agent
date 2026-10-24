@@ -188,10 +188,14 @@ export function createPreviewSceneTool({
           );
         }
 
-        // Image and clip assets inline exactly as for export; file-audio
-        // tracks stay as references (nothing plays in a silent preview).
+        // Image and clip assets inline exactly as for export, minus the native
+        // caches that only change render speed; a preview must open now.
         const { html: imageHtml } = await inlineImageAssets(rawHtml, repository);
-        const { html: sceneHtml, warnings: clipWarnings } = await inlineVideoAssets(imageHtml, repository);
+        const { html: sceneHtml, warnings: clipWarnings } = await inlineVideoAssets(
+          imageHtml,
+          repository,
+          "preview",
+        );
 
         const storyboard = normalizePreviewTimes(
           times,

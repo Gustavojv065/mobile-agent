@@ -571,6 +571,24 @@ describe("inlineAudioAssets", () => {
     expect(out).not.toContain("data:audio");
   });
 
+  it("streams the original soundtrack for a preview instead of decoding a WAV", async () => {
+    serverMocks.baseUrl = "http://127.0.0.1:9999";
+    servedAudioFile();
+    nativeMocks.outExists = false;
+    const decode = vi.fn(async () => ({ bytes: 1024 }));
+    nativeMocks.decodeAudioWav = decode;
+
+    const { html: out } = await inlineAudioAssets(
+      scheduleWithDuration("song-1", 300),
+      repository(),
+      "preview",
+    );
+
+    expect(decode).not.toHaveBeenCalled();
+    expect(out).toContain("http://127.0.0.1:9999/files/song-1/song.mp3");
+    expect(out).not.toContain("/cache/audio-pcm-");
+  });
+
   it("reuses a cached WAV without re-running the decode", async () => {
     serverMocks.baseUrl = "http://127.0.0.1:9999";
     servedAudioFile();
@@ -770,6 +788,23 @@ describe("inlineVideoAssets served URLs", () => {
       bytes: async () => new Uint8Array([1, 2, 3]),
     });
   }
+
+  it("never transcodes for a preview, even when the build can", async () => {
+    servedWorkspaceFile();
+    const makeProxy = vi.fn(async () => ({ allIntra: true }));
+    nativeMocks.makeSeekProxy = makeProxy;
+
+    const { html: out } = await inlineVideoAssets(
+      `<video src="workspace://vid-1">`,
+      repository(),
+      "preview",
+    );
+
+    // A proxy only changes seek cost; it must never delay opening a preview.
+    expect(makeProxy).not.toHaveBeenCalled();
+    expect(out).toContain("http://127.0.0.1:9999/files/vid-1/clip.mp4");
+    expect(out).not.toContain("/cache/proxy-");
+  });
 
   it("serves an all-keyframe seek proxy when the build can make one", async () => {
     servedWorkspaceFile();

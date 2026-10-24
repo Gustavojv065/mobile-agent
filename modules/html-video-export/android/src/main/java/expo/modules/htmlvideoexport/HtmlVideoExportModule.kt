@@ -165,14 +165,25 @@ class HtmlVideoExportModule : Module() {
     }
 
     AsyncFunction("makeSeekProxy") { inputPath: String, outputPath: String, maxDimension: Int ->
-      val result = ClipTranscoder.seekProxy(inputPath, outputPath, maxDimension)
-      mapOf(
-        "path" to result.path,
-        "width" to result.width,
-        "height" to result.height,
-        "sizeBytes" to result.sizeBytes.toDouble(),
-        "allIntra" to result.allIntra,
-      )
+      try {
+        val result = ClipTranscoder.seekProxy(inputPath, outputPath, maxDimension)
+        mapOf(
+          "path" to result.path,
+          "width" to result.width,
+          "height" to result.height,
+          "sizeBytes" to result.sizeBytes.toDouble(),
+          "allIntra" to result.allIntra,
+        )
+      } catch (error: Exception) {
+        // The JS lane treats every failure as "serve the original", so the
+        // cause must be visible here or the optimisation silently never runs.
+        android.util.Log.w(
+          "HtmlVideoExport",
+          "makeSeekProxy failed for $inputPath (${maxDimension}px): ${error.message}",
+          error,
+        )
+        throw error
+      }
     }
 
     AsyncFunction("startAssetServer") { workspaceDir: String, cacheDir: String ->

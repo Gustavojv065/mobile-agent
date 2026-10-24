@@ -121,10 +121,15 @@ export function createPreviewMixTool({
           );
         }
 
-        // Every asset inlines exactly as for export: file tracks must decode.
-        const { html: audioHtml } = await inlineAudioAssets(rawHtml, repository);
+        // Every asset inlines exactly as for export, minus the native caches
+        // (seek proxies, WAV soundtrack) that only change render speed.
+        const { html: audioHtml } = await inlineAudioAssets(rawHtml, repository, "preview");
         const { html: imageHtml } = await inlineImageAssets(audioHtml, repository);
-        const { html: sceneHtml, warnings: clipWarnings } = await inlineVideoAssets(imageHtml, repository);
+        const { html: sceneHtml, warnings: clipWarnings } = await inlineVideoAssets(
+          imageHtml,
+          repository,
+          "preview",
+        );
 
         const check = await requestMixCheck(sceneHtml, {
           duration: videoDuration,

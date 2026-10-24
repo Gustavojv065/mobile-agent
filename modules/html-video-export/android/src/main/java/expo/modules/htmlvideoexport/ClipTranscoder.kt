@@ -5,6 +5,8 @@ import android.media.MediaCodecInfo
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.media.MediaMuxer
+import android.os.SystemClock
+import android.util.Log
 import java.io.File
 import java.nio.ByteBuffer
 
@@ -23,9 +25,16 @@ import java.nio.ByteBuffer
  */
 object ClipTranscoder {
   private const val MIME_AVC = "video/avc"
+  private const val TAG = "HtmlVideoExport"
   private const val DEQUEUE_TIMEOUT_US = 10_000L
   private const val MIN_BITRATE = 400_000
   private const val MAX_BITRATE = 10_000_000
+  /**
+   * Share of written samples that must carry the sync flag for a seek proxy
+   * to be trusted. A 6 s-GOP source decodes ~90 frames per seek; a proxy at
+   * 99.9% intra still seeks in one frame for all but a handful of samples.
+   */
+  private const val MIN_INTRA_RATIO = 0.999
 
   data class ProbedTrack(
     val index: Int,
@@ -87,12 +96,26 @@ object ClipTranscoder {
     // size the proxy from its pixels so quality tracks resolution, bounded so
     // absurd sources cannot produce absurd proxies.
     val bitrate = (w.toLong() * h * 8).coerceIn(2_000_000L, 16_000_000L)
+    val startedAt = SystemClock.elapsedRealtime()
     val counts = runPass(inputPath, track.index, outputPath, w, h, bitrate, track.rotation, iFrameInterval = 0)
-    val allIntra = counts.frames > 0 && counts.keyframes == counts.frames
+    val elapsedMs = SystemClock.elapsedRealtime() - startedAt
+    // A single encoder slip in a long pass used to throw away the whole
+    // proxy (10k+ frames for a minute-long clip). One stray predicted frame
+    // only costs one GOP decode for the output frames in that 1/30 s, so the
+    // contract is "at most a handful of non-sync samples", not "zero".
+    val intraRatio = if (counts.frames > 0) counts.keyframes.toDouble() / counts.frames else 0.0
+    val allIntra = counts.frames > 0 && intraRatio >= MIN_INTRA_RATIO
+    val bytes = File(outputPath).length()
+    Log.i(
+      TAG,
+      "seekProxy ${w}x${h} frames=${counts.frames} keyframes=${counts.keyframes} " +
+        "intra=${"%.4f".format(intraRatio)} allIntra=$allIntra bytes=$bytes ms=$elapsedMs",
+    )
     if (!allIntra) {
+      Log.w(TAG, "seekProxy rejected (needs intra >= $MIN_INTRA_RATIO): $inputPath")
       try { File(outputPath).delete() } catch (_: Exception) {}
     }
-    return SeekProxyResult(outputPath, w, h, File(outputPath).length(), allIntra)
+    return SeekProxyResult(outputPath, w, h, bytes, allIntra)
   }
 
   fun transcode(

@@ -54,6 +54,13 @@ internal class JpegFrameRecorder(
   private val lumaRow = ByteArray(width)
   private val chromaRowU = ByteArray((width + 1) / 2)
   private val chromaRowV = ByteArray((width + 1) / 2)
+  // Per-stage cost, logged periodically: JPEG decode, RGB->YUV conversion and
+  // waiting on the encoder are three different problems with three different
+  // fixes, and the page-side "bridge" timing cannot tell them apart.
+  private var statFrames = 0
+  private var statDecodeMs = 0L
+  private var statConvertMs = 0L
+  private var statQueueMs = 0L
 
   fun begin() {
     android.util.Log.d("HtmlVideoExport", "beginFrames ${width}x${height}@${fps} build=native-yuv-v1")
@@ -185,6 +192,7 @@ internal class JpegFrameRecorder(
     require(index == submittedFrames) { "Expected frame $submittedFrames, received $index." }
 
     val bytes = Base64.decode(base64, Base64.DEFAULT)
+    val decodeStarted = SystemClock.elapsedRealtime()
     val decoded = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
       ?: throw IllegalStateException("A frame could not be decoded from the page.")
     val source = if (decoded.width == width && decoded.height == height) {
@@ -192,8 +200,13 @@ internal class JpegFrameRecorder(
     } else {
       Bitmap.createScaledBitmap(decoded, width, height, true)
     }
+    statDecodeMs += SystemClock.elapsedRealtime() - decodeStarted
 
     try {
+      // Waiting for an input buffer is encoder backpressure, not conversion
+      // work: it is timed as "queue" so a slow encoder cannot masquerade as a
+      // slow YUV loop.
+      val queueStarted = SystemClock.elapsedRealtime()
       val deadline = SystemClock.elapsedRealtime() + 15_000
       var input = codec.dequeueInputBuffer(10_000)
       while (input < 0 && SystemClock.elapsedRealtime() < deadline) {
@@ -202,6 +215,10 @@ internal class JpegFrameRecorder(
       }
       check(input >= 0) { "Timed out waiting for a video input buffer." }
       val size = codec.getInputBuffer(input)?.capacity() ?: error("Missing AVC input buffer.")
+      val queuedAt = SystemClock.elapsedRealtime()
+      statQueueMs += queuedAt - queueStarted
+
+      val convertStarted = queuedAt
       val image = codec.getInputImage(input)
         ?: error("This AVC encoder does not expose flexible YUV input images.")
       try {
@@ -209,6 +226,9 @@ internal class JpegFrameRecorder(
       } finally {
         image.close()
       }
+      statConvertMs += SystemClock.elapsedRealtime() - convertStarted
+
+      val flushStarted = SystemClock.elapsedRealtime()
       codec.queueInputBuffer(input, 0, size, index * 1_000_000L / fps, 0)
       submittedFrames += 1
       // The codec now owns this input buffer; release the page to render the
@@ -216,10 +236,23 @@ internal class JpegFrameRecorder(
       // Waiting for output here would deadlock those encoders. Input-buffer
       // availability above supplies the bounded native backpressure instead.
       drain(false)
+      statQueueMs += SystemClock.elapsedRealtime() - flushStarted
+      statFrames += 1
+      if (statFrames % 300 == 0) logStageStats()
     } finally {
       if (source !== decoded) source.recycle()
       decoded.recycle()
     }
+  }
+
+  /** Average cost per frame of each native stage, in the logcat stream. */
+  private fun logStageStats() {
+    val n = statFrames.coerceAtLeast(1)
+    android.util.Log.d(
+      "HtmlVideoExport",
+      "frameStages n=$statFrames decode=${statDecodeMs / n}ms convert=${statConvertMs / n}ms " +
+        "queue=${statQueueMs / n}ms",
+    )
   }
 
   @Synchronized

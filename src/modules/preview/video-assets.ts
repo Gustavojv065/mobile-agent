@@ -752,6 +752,17 @@ async function seekProxyUrl(
 }
 
 /**
+ * How thorough the media pass may be.
+ *
+ * - `export`: may build native caches (all-keyframe seek proxies, WAV
+ *   soundtracks). Those take minutes of transcoding on a long clip, so the
+ *   export path pays them once and every later render reuses the files.
+ * - `preview`: never transcodes. The preview must open immediately, and a
+ *   proxy only changes seek cost, never what a frame looks like.
+ */
+export type MediaPrepMode = "preview" | "export";
+
+/**
  * Inlines `<video>`/`<source>`-referenced workspace clips.
  * Clips play muted and scene-driven; the recorder captures its own audio
  * graph, never page audio.
@@ -765,13 +776,14 @@ async function seekProxyUrl(
 export function inlineVideoAssets(
   html: string,
   repository: WorkspaceRepository,
+  mode: MediaPrepMode = "export",
 ): Promise<{ html: string; videoFiles: string[]; warnings: string[] }> {
   const ids = extractWorkspaceVideoIds(html);
   if (ids.length === 0) {
     return Promise.resolve({ html, videoFiles: [], warnings: [] });
   }
   const warnings: string[] = [];
-  return inlineClipRefs(html, repository, ids, warnings).then(
+  return inlineClipRefs(html, repository, ids, warnings, mode).then(
     ({ html: out, files }) => ({ html: out, videoFiles: files, warnings }),
   );
 }
@@ -781,6 +793,7 @@ async function inlineClipRefs(
   repository: WorkspaceRepository,
   ids: string[],
   warnings: string[],
+  mode: MediaPrepMode,
 ): Promise<{ html: string; files: string[] }> {
   const { ensureAssetServer, workspaceFileUrl, cacheFileUrl } = await import(
     "@/modules/preview/asset-server"
@@ -823,9 +836,14 @@ async function inlineClipRefs(
       (statSize != null && statSize > MAX_DIRECT_SERVE_BYTES);
     if (!convert) {
       // Serve an all-keyframe proxy when this build can make one: every
-      // export seek then decodes one frame instead of a whole GOP. Falls
-      // back to the original file on any miss (old build, encoder refuses).
-      const proxyUrl = await seekProxyUrl(baseUrl, record, file, statSize, proxyMaxDim);
+      // export seek then decodes one frame instead of a whole GOP (the 5:51
+      // source here has a 6 s GOP, so a seek decodes ~90 frames). Falls back
+      // to the original file on any miss (old build, encoder refuses, or a
+      // preview that must not transcode).
+      const proxyUrl =
+        mode === "export"
+          ? await seekProxyUrl(baseUrl, record, file, statSize, proxyMaxDim)
+          : null;
       const servedUrl = proxyUrl ?? workspaceFileUrl(baseUrl, record.relativePath);
       next = next.split(`workspace://${id}`).join(servedUrl);
       servedUrls.push(servedUrl);
@@ -860,6 +878,7 @@ async function inlineClipRefs(
 export async function inlineAudioAssets(
   html: string,
   repository: WorkspaceRepository,
+  mode: MediaPrepMode = "export",
 ): Promise<{ html: string; audioFiles: string[] }> {
   const ids = extractWorkspaceAudioIds(html);
   if (ids.length === 0) {
@@ -906,7 +925,7 @@ export async function inlineAudioAssets(
     );
     files.push(record.displayName);
     const pcmUrl =
-      audioBound != null
+      mode === "export" && audioBound != null
         ? await audioPcmUrl(baseUrl, record, file, statSize, audioBound)
         : null;
     next = replaceWorkspaceAudioRef(
