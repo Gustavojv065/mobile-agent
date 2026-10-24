@@ -5,8 +5,15 @@ import {
   requestVideoRender,
 } from "@/modules/preview/video-render";
 
-/** Segments stay inside the validated per-render envelope (frames, bridge, abort headroom). */
-export const SEGMENT_SECONDS = 30;
+/**
+ * Segments stay inside the validated per-render envelope (frames, bridge,
+ * abort headroom): 45 s at 30 fps is 1350 frames, still bounded by the
+ * encoder's dequeue depth rather than job length, and the 180 s silence
+ * watchdog outlives any stuck segment. Longer segments amortize the
+ * per-segment fixed costs the timing phases exposed — page boot, first-frame
+ * setup, audio prep — over 50% more footage.
+ */
+export const SEGMENT_SECONDS = 45;
 
 export type SegmentRenderResult = {
   uri: string;
@@ -121,8 +128,12 @@ export async function renderSegments(options: {
 
   const total = contractDuration;
   const count = Math.ceil(total / SEGMENT_SECONDS);
-  const sidecar = (index: number) =>
-    new File(Paths.cache, `render-${sourceFileId}-seg-${index}.json`);
+  // Cache entries carry their exact time window in the name, so a file can
+  // only ever satisfy that window: a segment-length change (or any future
+  // one) re-renders instead of silently splicing footage rendered under a
+  // different layout into the new timeline.
+  const sidecar = (index: number, offset: number, length: number) =>
+    new File(Paths.cache, `render-${sourceFileId}-seg-${index}-${offset}-${length}.json`);
 
   /**
    * One full pass over the timeline: render every segment the cache does not
@@ -150,7 +161,7 @@ export async function renderSegments(options: {
     for (let i = 0; i < count; i += 1) {
       const offset = i * SEGMENT_SECONDS;
       const length = Math.min(SEGMENT_SECONDS, total - offset);
-      const segFile = new File(Paths.cache, `render-${sourceFileId}-seg-${i}.mp4`);
+      const segFile = new File(Paths.cache, `render-${sourceFileId}-seg-${i}-${offset}-${length}.mp4`);
       if (segFile.exists) {
         let meta: {
           hasAudio?: boolean;
@@ -160,7 +171,7 @@ export async function renderSegments(options: {
           encoder?: string;
         } | null = null;
         try {
-          meta = JSON.parse(await sidecar(i).text());
+          meta = JSON.parse(await sidecar(i, offset, length).text());
         } catch {
           // Unreadable sidecar: keep the footage, audio flags stay
           // conservative and the encoder stays unknown (concat still verifies
@@ -187,7 +198,7 @@ export async function renderSegments(options: {
         // under the run's pin.
         try {
           await segFile.delete();
-          await sidecar(i).delete();
+          await sidecar(i, offset, length).delete();
         } catch {
           // Best-effort; a leftover file would fail the move below loudly.
         }
@@ -232,7 +243,7 @@ export async function renderSegments(options: {
       }
       await new File(result.uri).move(segFile, { overwrite: true });
       try {
-        await sidecar(i).write(
+        await sidecar(i, offset, length).write(
           JSON.stringify({
             hasAudio: result.hasAudio,
             audioWarnings: result.audioWarnings,

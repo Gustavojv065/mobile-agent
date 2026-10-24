@@ -20,7 +20,7 @@
  * the runtime derives `stateAt(t)`, a pure function of absolute t:
  *
  * - Window `[start, end)`: at t == end the clip is already gone. Half-open
- *   windows are segment-safe by construction — a 30 s segment seam at exactly
+ *   windows are segment-safe by construction — a segment seam at exactly
  *   `end` paints the clip on exactly one side, never both, never neither.
  * - `from` (default 0) is the source position mapped to `start`; source time
  *   at scene time t is `from + (t - start)`.

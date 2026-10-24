@@ -62,7 +62,7 @@ Define this before the body finishes loading:
 ```html
 <script>
   window.MOBILE_AGENT_VIDEO = {
-    duration: 10,      // seconds, 1–600, default 10 (over 30 s renders in 30 s segments, concatenated)
+    duration: 10,      // seconds, 1–600, default 10 (over 45 s renders in 45 s segments, concatenated)
     fps: 30,           // 5–60, default 30
     width: 1280,       // export width, even number, ≤ 1920, default 1280
     height: 720,       // export height, even number, ≤ 1920, default 720

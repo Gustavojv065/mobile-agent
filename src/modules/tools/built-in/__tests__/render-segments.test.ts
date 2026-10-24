@@ -90,7 +90,7 @@ beforeEach(() => {
   mocks.files.clear();
   mocks.requestVideoRender.mockImplementation(async (_html: string, opts: { segment?: { offset: number; length: number }; onProgress?: (p: number) => void }) => {
     const seg = opts.segment;
-    const index = seg ? Math.round(seg.offset / 30) : 0;
+    const index = seg ? Math.round(seg.offset / 45) : 0;
     opts.onProgress?.(0.5);
     opts.onProgress?.(1);
     return segResult(index);
@@ -123,7 +123,7 @@ describe("renderSegments", () => {
     expect(out.phases?.audioPrepTotalMs).toBe(50);
   });
 
-  it("splits long timelines into 30 s jobs and concatenates", async () => {
+  it("splits long timelines into 45 s jobs and concatenates", async () => {
     const progress: number[] = [];
     const out = await renderSegments({
       contractDuration: 65,
@@ -132,17 +132,16 @@ describe("renderSegments", () => {
       onProgress: (p) => progress.push(p.bytesWritten / p.totalBytes * 100),
     });
 
-    expect(mocks.requestVideoRender).toHaveBeenCalledTimes(3);
+    expect(mocks.requestVideoRender).toHaveBeenCalledTimes(2);
     const segments = mocks.requestVideoRender.mock.calls.map(
       (call) => (call[1] as { segment: { offset: number; length: number } }).segment,
     );
     expect(segments).toEqual([
-      { offset: 0, length: 30 },
-      { offset: 30, length: 30 },
-      { offset: 60, length: 5 },
+      { offset: 0, length: 45 },
+      { offset: 45, length: 20 },
     ]);
     expect(mocks.concatSegments).toHaveBeenCalledTimes(1);
-    expect(out.warnings.join(" ")).toMatch(/3 segments/);
+    expect(out.warnings.join(" ")).toMatch(/2 segments/);
     expect(out.hasAudio).toBe(true);
     expect(progress[0]).toBeGreaterThanOrEqual(0);
     expect(progress[progress.length - 1]).toBeGreaterThan(progress[0]);
@@ -155,12 +154,12 @@ describe("renderSegments", () => {
       sourceFileId: "src-phases",
     });
 
-    // Three fresh segments, each reporting 100/400/50 ms of fixed cost.
+    // Two fresh segments, each reporting 100/400/50 ms of fixed cost.
     expect(out.phases?.totalMs).toBeGreaterThanOrEqual(0);
     expect(out.phases?.concatMs).toBeGreaterThanOrEqual(0);
-    expect(out.phases?.pageLoadTotalMs).toBe(300);
-    expect(out.phases?.firstFrameTotalMs).toBe(1200);
-    expect(out.phases?.audioPrepTotalMs).toBe(150);
+    expect(out.phases?.pageLoadTotalMs).toBe(200);
+    expect(out.phases?.firstFrameTotalMs).toBe(800);
+    expect(out.phases?.audioPrepTotalMs).toBe(100);
   });
 
   it("does not report 100 percent until joining has succeeded", async () => {
@@ -179,9 +178,9 @@ describe("renderSegments", () => {
   });
 
   it("resumes by reusing finished segments and their audio flags", async () => {
-    mocks.files.set("/cache/render-src-3-seg-0.mp4", { exists: true, content: "video" });
+    mocks.files.set("/cache/render-src-3-seg-0-0-45.mp4", { exists: true, content: "video" });
     mocks.files.set(
-      "/cache/render-src-3-seg-0.json",
+      "/cache/render-src-3-seg-0-0-45.json",
       { exists: true, content: JSON.stringify({ hasAudio: true, audioWarnings: ["kept-note"] }) },
     );
     const out = await renderSegments({
@@ -190,22 +189,45 @@ describe("renderSegments", () => {
       sourceFileId: "src-3",
     });
 
-    expect(mocks.requestVideoRender).toHaveBeenCalledTimes(2);
+    expect(mocks.requestVideoRender).toHaveBeenCalledTimes(1);
     expect(out.hasAudio).toBe(true);
     expect(out.audioWarnings).toContain("kept-note");
     const concatArgs = mocks.concatSegments.mock.calls[0][0] as string[];
-    expect(concatArgs).toHaveLength(3);
-    expect(concatArgs[0]).toContain("seg-0");
+    expect(concatArgs).toHaveLength(2);
+    expect(concatArgs[0]).toContain("seg-0-0-45");
+  });
+
+  it("never reuses segments rendered under a different segment length", async () => {
+    // Footage cached by a build that segmented at 30 s: same document hash,
+    // same index — but a 45 s run must not splice a 30 s window into a
+    // 45 s timeline. Geometry in the cache name makes old entries invisible.
+    mocks.files.set("/cache/render-src-layout-seg-0-0-30.mp4", { exists: true, content: "video" });
+    mocks.files.set("/cache/render-src-layout-seg-0-0-30.json", {
+      exists: true,
+      content: JSON.stringify({ hasAudio: true, encoder: "c2.samsung.avc.encoder" }),
+    });
+
+    await renderSegments({
+      contractDuration: 65,
+      documentHtml: DOC,
+      sourceFileId: "src-layout",
+    });
+
+    // Both segments rendered fresh; the stale 30 s files never entered concat.
+    expect(mocks.requestVideoRender).toHaveBeenCalledTimes(2);
+    const concatArgs = mocks.concatSegments.mock.calls[0][0] as string[];
+    expect(concatArgs).toHaveLength(2);
+    expect(concatArgs.some((uri) => uri.includes("-0-30"))).toBe(false);
   });
 
   it("names the failed segment and its time range", async () => {
     mocks.requestVideoRender.mockImplementation(async (_html: string, opts: { segment?: { offset: number; length: number } }) => {
-      if (opts.segment && opts.segment.offset === 30) throw new Error("boom");
+      if (opts.segment && opts.segment.offset === 45) throw new Error("boom");
       return segResult(0);
     });
     await expect(
       renderSegments({ contractDuration: 65, documentHtml: DOC, sourceFileId: "src-4" }),
-    ).rejects.toThrow(/Segment 2\/3.*t=30-60.*boom/);
+    ).rejects.toThrow(/Segment 2\/2.*t=45-65.*boom/);
   });
 
   const pinsOf = () =>
@@ -225,11 +247,10 @@ describe("renderSegments", () => {
     expect(pinsOf()).toEqual([
       undefined,
       "c2.samsung.avc.encoder",
-      "c2.samsung.avc.encoder",
     ]);
     // The sidecar records the encoder so a later resume can re-pin.
     const sidecar = JSON.parse(
-      mocks.files.get("/cache/render-src-pin-1-seg-0.json")?.content ?? "{}",
+      mocks.files.get("/cache/render-src-pin-1-seg-0-0-45.json")?.content ?? "{}",
     );
     expect(sidecar.encoder).toBe("c2.samsung.avc.encoder");
   });
@@ -237,11 +258,11 @@ describe("renderSegments", () => {
   it("re-pins a resumed run from the cached segment's sidecar encoder", async () => {
     // Simulates resume after a process restart: the in-memory pin is gone,
     // but segment 0's sidecar remembers which codec made it.
-    mocks.files.set("/cache/render-src-pin-2-seg-0.mp4", {
+    mocks.files.set("/cache/render-src-pin-2-seg-0-0-45.mp4", {
       exists: true,
       content: "video",
     });
-    mocks.files.set("/cache/render-src-pin-2-seg-0.json", {
+    mocks.files.set("/cache/render-src-pin-2-seg-0-0-45.json", {
       exists: true,
       content: JSON.stringify({ hasAudio: false, encoder: "c2.android.avc.encoder" }),
     });
@@ -254,20 +275,19 @@ describe("renderSegments", () => {
 
     expect(pinsOf()).toEqual([
       "c2.android.avc.encoder",
-      "c2.android.avc.encoder",
     ]);
-    expect(mocks.requestVideoRender).toHaveBeenCalledTimes(2);
+    expect(mocks.requestVideoRender).toHaveBeenCalledTimes(1);
   });
 
   it("re-renders a cached segment recorded under a different encoder", async () => {
-    mocks.files.set("/cache/render-src-pin-3-seg-0.mp4", { exists: true, content: "video" });
+    mocks.files.set("/cache/render-src-pin-3-seg-0-0-45.mp4", { exists: true, content: "video" });
     mocks.files.set(
-      "/cache/render-src-pin-3-seg-0.json",
+      "/cache/render-src-pin-3-seg-0-0-45.json",
       { exists: true, content: JSON.stringify({ encoder: "c2.samsung.avc.encoder" }) },
     );
-    mocks.files.set("/cache/render-src-pin-3-seg-1.mp4", { exists: true, content: "video" });
+    mocks.files.set("/cache/render-src-pin-3-seg-1-45-20.mp4", { exists: true, content: "video" });
     mocks.files.set(
-      "/cache/render-src-pin-3-seg-1.json",
+      "/cache/render-src-pin-3-seg-1-45-20.json",
       { exists: true, content: JSON.stringify({ encoder: "c2.android.avc.encoder" }) },
     );
 
@@ -282,9 +302,8 @@ describe("renderSegments", () => {
     const offsets = mocks.requestVideoRender.mock.calls.map(
       (call) => (call[1] as { segment: { offset: number } }).segment.offset,
     );
-    expect(offsets).toEqual([30, 60]);
+    expect(offsets).toEqual([45]);
     expect(pinsOf()).toEqual([
-      "c2.samsung.avc.encoder",
       "c2.samsung.avc.encoder",
     ]);
     expect(mocks.concatSegments).toHaveBeenCalledTimes(1);
@@ -293,14 +312,15 @@ describe("renderSegments", () => {
   it("keeps a cached segment whose sidecar has no encoder record", async () => {
     // Pre-pin builds recorded no encoder: reuse the footage and let concat's
     // parameter check be the safety net (fail loud, never restart silently).
-    mocks.files.set("/cache/render-src-pin-4-seg-0.mp4", { exists: true, content: "video" });
-    mocks.files.set("/cache/render-src-pin-4-seg-0.json", {
+    mocks.files.set("/cache/render-src-pin-4-seg-0-0-45.mp4", { exists: true, content: "video" });
+    mocks.files.set("/cache/render-src-pin-4-seg-0-0-45.json", {
       exists: true,
       content: JSON.stringify({ hasAudio: true }),
     });
 
+    // 100 s = three segments: the pin takes effect on the one after first.
     await renderSegments({
-      contractDuration: 65,
+      contractDuration: 100,
       documentHtml: DOC,
       sourceFileId: "src-pin-4",
     });
@@ -324,11 +344,13 @@ describe("renderSegments", () => {
       sourceFileId: "src-heal",
       onProgress: (p) => progress.push(p.bytesWritten / p.totalBytes * 100),
     })).rejects.toThrow(/Completed segments were kept.*did not restart automatically/);
-    expect(mocks.requestVideoRender).toHaveBeenCalledTimes(3);
+    expect(mocks.requestVideoRender).toHaveBeenCalledTimes(2);
     expect(mocks.concatSegments).toHaveBeenCalledTimes(1);
-    for (let i = 0; i < 3; i += 1) {
-      expect(mocks.files.has(`/cache/render-src-heal-seg-${i}.mp4`)).toBe(true);
-      expect(mocks.files.has(`/cache/render-src-heal-seg-${i}.json`)).toBe(true);
+    for (let i = 0; i < 2; i += 1) {
+      const offset = i * 45;
+      const length = Math.min(45, 65 - offset);
+      expect(mocks.files.has(`/cache/render-src-heal-seg-${i}-${offset}-${length}.mp4`)).toBe(true);
+      expect(mocks.files.has(`/cache/render-src-heal-seg-${i}-${offset}-${length}.json`)).toBe(true);
     }
     expect(Math.max(...progress)).toBe(99);
     expect(progress).not.toContain(100);
@@ -348,9 +370,9 @@ describe("renderSegments", () => {
     );
 
     await expect(renderSegments({ contractDuration: 65, documentHtml: DOC, sourceFileId: "src-heal-res" })).rejects.toThrow(/resolution/);
-    expect(mocks.requestVideoRender).toHaveBeenCalledTimes(3);
+    expect(mocks.requestVideoRender).toHaveBeenCalledTimes(2);
     expect(mocks.concatSegments).toHaveBeenCalledTimes(1);
-    expect(mocks.files.has("/cache/render-src-heal-res-seg-0.mp4")).toBe(true);
+    expect(mocks.files.has("/cache/render-src-heal-res-seg-0-0-45.mp4")).toBe(true);
   });
 
   it("does not retry concat failures that are not cache mismatches", async () => {
@@ -363,6 +385,6 @@ describe("renderSegments", () => {
     ).rejects.toThrow(/Need 1–32/);
 
     expect(mocks.concatSegments).toHaveBeenCalledTimes(1);
-    expect(mocks.requestVideoRender).toHaveBeenCalledTimes(3);
+    expect(mocks.requestVideoRender).toHaveBeenCalledTimes(2);
   });
 });

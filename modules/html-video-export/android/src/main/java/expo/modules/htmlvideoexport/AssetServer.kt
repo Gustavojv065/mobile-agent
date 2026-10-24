@@ -140,15 +140,24 @@ class AssetServer(private val roots: Map<String, java.io.File>) {
         client.close()
         return
       }
-      serveFile(out, target, headers["range"])
+      serveFile(out, target, headers["range"], headers["if-none-match"])
       client.close()
     } catch (_: Exception) {
       try { client.close() } catch (_: Exception) {}
     }
   }
 
-  private fun serveFile(out: OutputStream, file: java.io.File, range: String?) {
+  private fun serveFile(out: OutputStream, file: java.io.File, range: String?, ifNoneMatch: String?) {
     val total = file.length()
+    // mtime+size validator (sub-second precision, so an in-place edit
+    // rewrites it). Reuse happens only on an explicit If-None-Match match:
+    // Cache-Control no-cache makes the client ask every time, so a match is
+    // proof of freshness — never a hoped-for one.
+    val etag = "\"${file.lastModified()}-${total}\""
+    if (ifNoneMatch != null && etagMatches(ifNoneMatch, etag)) {
+      writeNotModified(out, etag)
+      return
+    }
     var start = 0L
     var end = total - 1
     var partial = false
@@ -181,8 +190,12 @@ class AssetServer(private val roots: Map<String, java.io.File>) {
     if (partial) head.append("Content-Range: bytes $start-$end/$total\r\n")
     head.append("Accept-Ranges: bytes\r\n")
     head.append("Access-Control-Allow-Origin: *\r\n")
-    head.append("Access-Control-Expose-Headers: Content-Range, Accept-Ranges\r\n")
-    head.append("Cache-Control: no-store\r\n")
+    head.append("Access-Control-Expose-Headers: Content-Range, Accept-Ranges, ETag\r\n")
+    // no-cache = store but always revalidate: each segment page re-checks the
+    // ETag and gets a bodiless 304 instead of re-transferring the document
+    // and its assets — and, unlike max-age, it has no staleness window.
+    head.append("Cache-Control: private, no-cache\r\n")
+    head.append("ETag: $etag\r\n")
     head.append("Connection: close\r\n\r\n")
     out.write(head.toString().toByteArray(Charsets.UTF_8))
     out.flush()
@@ -214,6 +227,23 @@ class AssetServer(private val roots: Map<String, java.io.File>) {
       "Access-Control-Allow-Headers: Range\r\n" +
       "Access-Control-Max-Age: 86400\r\n" +
       "Content-Length: 0\r\n" +
+      "Connection: close\r\n\r\n"
+    out.write(head.toByteArray(Charsets.UTF_8))
+    out.flush()
+  }
+
+  /** RFC 9110 If-None-Match: `*`, a comma list, or weak (`W/`) variants. */
+  private fun etagMatches(ifNoneMatch: String, etag: String): Boolean {
+    if (ifNoneMatch.trim() == "*") return true
+    return ifNoneMatch.split(',').any { it.trim().removePrefix("W/") == etag }
+  }
+
+  private fun writeNotModified(out: OutputStream, etag: String) {
+    val head = "HTTP/1.1 304 Not Modified\r\n" +
+      "ETag: $etag\r\n" +
+      "Cache-Control: private, no-cache\r\n" +
+      "Access-Control-Allow-Origin: *\r\n" +
+      "Access-Control-Expose-Headers: Content-Range, Accept-Ranges, ETag\r\n" +
       "Connection: close\r\n\r\n"
     out.write(head.toByteArray(Charsets.UTF_8))
     out.flush()
