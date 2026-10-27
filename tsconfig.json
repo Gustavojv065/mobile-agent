@@ -15,7 +15,8 @@
       "termux-stream": ["./modules/termux-stream/index.ts"],
       "html-video-export": ["./modules/html-video-export/index.ts"],
       "quote-selection": ["./modules/quote-selection/index.ts"],
-      "local-tts": ["./modules/local-tts/index.ts"]
+      "local-tts": ["./modules/local-tts/index.ts"],
+      "share-target": ["./modules/share-target/index.ts"]
     }
   },
   "include": [

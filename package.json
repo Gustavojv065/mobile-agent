@@ -157,6 +157,7 @@
           "html-video-export",
           "quote-selection",
           "local-tts",
+          "share-target",
           "expo-ai-kit",
           "whisper.rn",
           "react-native-tcp-socket"

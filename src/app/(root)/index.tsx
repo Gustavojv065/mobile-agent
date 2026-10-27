@@ -149,6 +149,7 @@ import { useVoiceInput } from "@/hooks/use-voice-input";
 import { listPrimaryAgents, resolveAgent } from "@/modules/agents/registry";
 import { detectFolderIntent } from "@/modules/chat/folder-intent";
 import { formatFileKindLabel } from "@/modules/files/file-type-label";
+import { useSharedContent } from "@/modules/share/use-shared-content";
 import {
   formatToolName,
   toolObjectLabel,
@@ -377,6 +378,14 @@ export default function Screen() {
     setInsertDraft(prompt);
     setInsertNonce((current) => current + 1);
   }, []);
+  // Content shared from other apps (Android share sheet) is imported into the
+  // workspace and attached to the composer; shared text/links are prefilled.
+  const handleInsertSharedText = useCallback((text: string) => {
+    setInsertDraft(text);
+    setInsertNonce((current) => current + 1);
+  }, []);
+
+  useSharedContent({ enabled: ready, onInsertText: handleInsertSharedText });
   const handleRegenerate = useCallback(
     (instruction: string) => {
       sendMessage({ content: instruction }).catch((error: unknown) => {
