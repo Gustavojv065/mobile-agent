@@ -223,10 +223,22 @@ export function buildHeadlessAgentRunDeps(input: {
     requestRunQuestionnaire: async () => null,
     requestSecretAnswer: async () => ({ status: "deferred" } as const),
     generateAndApplyConversationTitle: async () => {},
-    notifyRunStateChange: async ({ body, conversationId, status, title }) => {
-      if (snapshotRef.current.settings.notificationSettings.runFinished) {
+    notifyRunStateChange: async ({
+      announcement,
+      body,
+      conversationId,
+      status,
+      title,
+    }) => {
+      if (
+        announcement ||
+        snapshotRef.current.settings.notificationSettings.runFinished
+      ) {
         await notifyRunFinishedAsync({
-          body,
+          body:
+            status === "success" && announcement?.message
+              ? announcement.message
+              : body,
           conversationId,
           status,
           title,

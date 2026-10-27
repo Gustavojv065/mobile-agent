@@ -2,6 +2,7 @@ import {
   ExpoSpeechRecognitionModule,
   useSpeechRecognitionEvent,
 } from "expo-speech-recognition";
+import * as Speech from "expo-speech";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, Linking } from "react-native";
 import {
@@ -12,6 +13,7 @@ import {
   startLocalVoiceSession,
   type LocalVoiceSession,
 } from "@/modules/voice/local-session";
+import { setVoiceInputActive } from "@/modules/notifications/voice-input-state";
 
 const HISTORY_LENGTH = 48;
 
@@ -61,6 +63,15 @@ export function useVoiceInput({
     onFinalRef.current = onFinal;
     onCancelRef.current = onCancel;
   }, [onCancel, onFinal]);
+
+  // Announcements consult this before speaking so they never play into the
+  // open microphone.
+  useEffect(() => {
+    setVoiceInputActive(active);
+    return () => {
+      setVoiceInputActive(false);
+    };
+  }, [active]);
 
   const commit = useCallback(() => {
     if (!activeRef.current || finishedRef.current) {
@@ -236,6 +247,10 @@ export function useVoiceInput({
     processingRef.current = false;
     errorShownRef.current = false;
     setStatus("starting");
+
+    // Dictation takes over the audio session; stop any message playback or
+    // announcement that is currently speaking.
+    await Speech.stop().catch(() => {});
 
     try {
       const engine = await loadVoiceEngine();

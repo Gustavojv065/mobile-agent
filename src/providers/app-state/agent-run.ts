@@ -55,6 +55,13 @@ import { appendChatRenderError } from "@/core/services/chat-diagnostics";
 import { secureSecretStore } from "@/core/services/secrets";
 import type { PluginRuntimeSnapshot } from "@/modules/plugins/types";
 import { createQuestionTool } from "@/modules/tools/built-in/question";
+import {
+  ANNOUNCE_WHEN_DONE_TOOL_NAME,
+  createAnnounceWhenDoneTool,
+  readAnnouncementRequest,
+  type AnnouncementRequest,
+} from "@/modules/tools/built-in/announce-when-done";
+import { detectExplicitAnnouncementRequest } from "@/modules/notifications/announcement-policy";
 import { createAgentTools } from "@/modules/tools/built-in/agent-tools";
 import { createDownloadFileTool } from "@/modules/tools/built-in/download-file";
 import { createScheduleTools } from "@/modules/tools/built-in/schedules";
@@ -80,7 +87,11 @@ import {
   stopBackgroundAgent,
 } from "background-agent-service";
 import { Platform } from "react-native";
-import { dismissApprovalNotification } from "@/modules/notifications/run-notifications";
+import {
+  dismissApprovalNotification,
+  dismissQuestionNotification,
+  dismissSecretNotification,
+} from "@/modules/notifications/run-notifications";
 import { collectGeneratedVideos } from "@/modules/tools/generated-videos";
 import { persistGeneratedImages } from "@/modules/tools/generated-images";
 import {
@@ -204,6 +215,7 @@ export type AgentRunDeps = {
     runId: string;
   }) => Promise<void>;
   notifyRunStateChange: (input: {
+    announcement?: AnnouncementRequest | null;
     body: string;
     conversationId: string;
     status: "success" | "failed";
@@ -716,6 +728,11 @@ export async function executeClaimedAgentRun(
   const toolExecutions = [
     ...(assistantMessage.metadata?.toolExecutions ?? []),
   ] as ToolExecutionRecord[];
+  let announcementRequest: AnnouncementRequest | null = null;
+  const resolveAnnouncementRequest = (): AnnouncementRequest | null =>
+    announcementRequest ??
+    readAnnouncementRequest(toolExecutions) ??
+    (detectExplicitAnnouncementRequest(run.input) ? { message: null } : null);
   const toolRunAnchors = new Map(
     [
       ...(assistantMessage.metadata?.termuxRunAnchors ?? []),
@@ -1593,6 +1610,17 @@ export async function executeClaimedAgentRun(
             requestSecret: (request) => requestRunSecret(request),
           })
         : null;
+    // Always available (including plan mode) because honoring an explicit
+    // "announce when done" request must never depend on automatic settings.
+    const announcementRuntime =
+      runtimeSupportsTools && !isSubagentRun
+        ? createAnnounceWhenDoneTool({
+            onArm: (request) => {
+              announcementRequest = request;
+            },
+            onRecord: handleToolExecutionRecord,
+          })
+        : null;
 
     for (const serverResult of mcpRuntime?.serverResults ?? []) {
       repositories.mcpServerRepository
@@ -1609,7 +1637,10 @@ export async function executeClaimedAgentRun(
     const pluginTools = pluginSnapshot?.tools;
     // MCP and plugin keys are spread after the built-ins, so a same-named tool
     // silently replaces a built-in (e.g. an MCP `listFiles`). Surface that.
-    const builtInToolNames = new Set(Object.keys(builtInRuntimeTools ?? {}));
+    const builtInToolNames = new Set([
+      ...Object.keys(builtInRuntimeTools ?? {}),
+      ...(announcementRuntime ? Object.keys(announcementRuntime.tools) : []),
+    ]);
     for (const source of [mcpRuntime?.tools, pluginTools]) {
       for (const name of Object.keys(source ?? {})) {
         if (builtInToolNames.has(name)) {
@@ -1620,7 +1651,7 @@ export async function executeClaimedAgentRun(
       }
     }
     const unapprovedRuntimeTools =
-      builtInRuntimeTools || mcpRuntime?.tools || todosRuntime || questionRuntime || skillRuntime || scheduleRuntime || taskRuntime || agentRuntime || pluginManagementRuntime || secretRequestRuntime || pluginTools
+      builtInRuntimeTools || mcpRuntime?.tools || todosRuntime || questionRuntime || skillRuntime || scheduleRuntime || taskRuntime || agentRuntime || pluginManagementRuntime || secretRequestRuntime || announcementRuntime || pluginTools
         ? ({
             ...(builtInRuntimeTools ?? {}),
             ...(mcpRuntime?.tools ?? {}),
@@ -1632,6 +1663,7 @@ export async function executeClaimedAgentRun(
             ...(agentRuntime?.tools ?? {}),
             ...(pluginManagementRuntime?.tools ?? {}),
             ...(secretRequestRuntime?.tools ?? {}),
+            ...(announcementRuntime?.tools ?? {}),
             ...(pluginTools ?? {}),
           } satisfies ToolSet)
         : undefined;
@@ -1642,6 +1674,7 @@ export async function executeClaimedAgentRun(
       ...(skillRuntime ? ["skill", "skillReadFile"] : []),
       ...(scheduleRuntime ? Object.keys(scheduleRuntime.tools) : []),
       ...(secretRequestRuntime ? Object.keys(secretRequestRuntime.tools) : []),
+      ...(announcementRuntime ? [ANNOUNCE_WHEN_DONE_TOOL_NAME] : []),
       ...(isPlanMode && mcpRuntime?.tools
         ? Object.keys(mcpRuntime.tools)
         : []),
@@ -1771,6 +1804,13 @@ export async function executeClaimedAgentRun(
     const taskRuntimeSystem = taskRuntime && runtimeSupportsTools && !isPlanMode
       ? `You can delegate work with the task tool.\n\n${describeSubagentCatalog(snapshotRef.current.agents)}\n\nDelegate when a subagent's specialty fits part of the work or for isolated multi-step research. Write self-contained prompts; the subagent cannot see this conversation. Wait for its result before continuing dependent work.`
       : undefined;
+    const announcementRuntimeSystem = announcementRuntime
+      ? [
+          "If the user explicitly asks to be told, notified, announced, or pinged when the task is done (for example, \"let me know when you're done\" or \"announce when finished\"), call the announceWhenDone tool as soon as you understand the request.",
+          "Pass a short message only when the user asks you to say a specific phrase; otherwise omit it.",
+          "Never call announceWhenDone unless the user explicitly asked for a notification. It ignores the app's automatic announcement settings, so do not use it for routine progress updates.",
+        ].join("\n")
+      : undefined;
     const toolLoopRuntimeSystem = runtimeTools
       ? [
           "Complete the user's requested task before ending your response.",
@@ -1809,6 +1849,7 @@ export async function executeClaimedAgentRun(
         pluginManagementRuntimeSystem,
         agentManagementRuntimeSystem,
         taskRuntimeSystem,
+        announcementRuntimeSystem,
         toolLoopRuntimeSystem,
         ...(pluginSystemParts?.length ? pluginSystemParts : []),
       ]
@@ -2473,8 +2514,11 @@ export async function executeClaimedAgentRun(
       });
     }
 
+    const announcement = resolveAnnouncementRequest();
+
     await notifyRunStateChange({
-      body: "Agent finished this task.",
+      announcement,
+      body: announcement?.message ?? "Agent finished this task.",
       conversationId: conversation.id,
       status: "success",
       title: conversation.title,
@@ -2689,6 +2733,7 @@ export async function executeClaimedAgentRun(
 
     if (finalStatus === "failed") {
       await notifyRunStateChange({
+        announcement: resolveAnnouncementRequest(),
         body: errorMessage,
         conversationId: conversation.id,
         status: "failed",
@@ -2699,6 +2744,8 @@ export async function executeClaimedAgentRun(
     if (persistTimeout) clearTimeout(persistTimeout);
     if (snapshotTimer) clearTimeout(snapshotTimer);
     dismissApprovalNotification(run.id).catch(() => {});
+    dismissQuestionNotification(run.id).catch(() => {});
+    dismissSecretNotification(run.id).catch(() => {});
 
     if (shouldKeepBackgroundAgentAlive()) {
       startBackgroundAgent();

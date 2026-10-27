@@ -28,8 +28,26 @@ export type RunFinishedNotificationData = {
   status: "success" | "failed";
 };
 
+export type QuestionRequestNotificationData = {
+  type: "question-request";
+  schemaVersion: 1;
+  conversationId: string;
+  runId: string;
+  questionnaireId: string;
+};
+
+export type SecretRequestNotificationData = {
+  type: "secret-request";
+  schemaVersion: 1;
+  conversationId: string;
+  runId: string;
+  secretRequestId: string;
+};
+
 const approvalNotificationIds = new Map<string, string>();
 const runFinishedNotificationIds = new Map<string, string>();
+const questionNotificationIds = new Map<string, string>();
+const secretNotificationIds = new Map<string, string>();
 
 export async function prepareRunNotificationsAsync(input?: {
   requestPermission?: boolean;
@@ -53,7 +71,7 @@ export async function prepareRunNotificationsAsync(input?: {
       ),
       Notifications.setNotificationChannelAsync(RESULTS_NOTIFICATION_CHANNEL_ID, {
         name: "Agent results",
-        description: "Alerts you when the agent finishes a task.",
+        description: "Alerts you when the agent finishes or needs your input.",
         importance: Notifications.AndroidImportance.HIGH,
         vibrationPattern: [0, 250, 200, 250],
       }),
@@ -189,6 +207,102 @@ export async function notifyRunFinishedAsync(input: {
   runFinishedNotificationIds.set(input.conversationId, notificationId);
 }
 
+export async function notifyQuestionRequestedAsync(input: {
+  chatTitle: string;
+  conversationId: string;
+  questionCount: number;
+  questionnaireId: string;
+  runId: string;
+}) {
+  await prepareRunNotificationsAsync();
+
+  await dismissQuestionNotification(input.runId);
+
+  const notificationId = await Notifications.scheduleNotificationAsync({
+    content: {
+      title: `${input.chatTitle} has a question`,
+      body:
+        input.questionCount === 1
+          ? "The agent is waiting for your answer."
+          : `The agent is waiting for answers to ${input.questionCount} questions.`,
+      sound: Platform.OS === "ios" ? "default" : undefined,
+      data: {
+        type: "question-request",
+        schemaVersion: 1,
+        conversationId: input.conversationId,
+        runId: input.runId,
+        questionnaireId: input.questionnaireId,
+        url: "/",
+      },
+    },
+    trigger: buildAlertTrigger(RESULTS_NOTIFICATION_CHANNEL_ID),
+  });
+
+  questionNotificationIds.set(input.runId, notificationId);
+}
+
+export async function dismissQuestionNotification(runId: string) {
+  const notificationId = questionNotificationIds.get(runId);
+
+  if (!notificationId) {
+    return;
+  }
+
+  questionNotificationIds.delete(runId);
+
+  await Promise.allSettled([
+    Notifications.cancelScheduledNotificationAsync(notificationId),
+    Notifications.dismissNotificationAsync(notificationId),
+  ]);
+}
+
+export async function notifySecretRequestedAsync(input: {
+  chatTitle: string;
+  conversationId: string;
+  key: string;
+  pluginName: string;
+  runId: string;
+  secretRequestId: string;
+}) {
+  await prepareRunNotificationsAsync();
+
+  await dismissSecretNotification(input.runId);
+
+  const notificationId = await Notifications.scheduleNotificationAsync({
+    content: {
+      title: `${input.chatTitle} needs a secret`,
+      body: `${input.pluginName} needs ${input.key}. Tap to enter it securely.`,
+      sound: Platform.OS === "ios" ? "default" : undefined,
+      data: {
+        type: "secret-request",
+        schemaVersion: 1,
+        conversationId: input.conversationId,
+        runId: input.runId,
+        secretRequestId: input.secretRequestId,
+        url: "/",
+      },
+    },
+    trigger: buildAlertTrigger(RESULTS_NOTIFICATION_CHANNEL_ID),
+  });
+
+  secretNotificationIds.set(input.runId, notificationId);
+}
+
+export async function dismissSecretNotification(runId: string) {
+  const notificationId = secretNotificationIds.get(runId);
+
+  if (!notificationId) {
+    return;
+  }
+
+  secretNotificationIds.delete(runId);
+
+  await Promise.allSettled([
+    Notifications.cancelScheduledNotificationAsync(notificationId),
+    Notifications.dismissNotificationAsync(notificationId),
+  ]);
+}
+
 export async function dismissRunFinishedNotification(conversationId: string) {
   const notificationId = runFinishedNotificationIds.get(conversationId);
 
@@ -207,6 +321,8 @@ export async function dismissRunFinishedNotification(conversationId: string) {
 export async function dismissRunNotificationsAsync() {
   approvalNotificationIds.clear();
   runFinishedNotificationIds.clear();
+  questionNotificationIds.clear();
+  secretNotificationIds.clear();
 
   await Promise.allSettled([
     Notifications.cancelAllScheduledNotificationsAsync(),

@@ -2,6 +2,7 @@ import { drizzle } from "drizzle-orm/expo-sqlite";
 import type { SQLiteDatabase } from "expo-sqlite";
 
 import { normalizeBuiltInToolSettings } from "@/modules/config/built-in-tools";
+import { normalizeNotificationSettings } from "@/modules/notifications/settings";
 import { appSettings, schema } from "@/core/db/schema";
 import type {
   AppSettings,
@@ -31,14 +32,9 @@ export function buildSettings(rows: AppSettingRow[]): AppSettings {
     }
 
     try {
-      const parsed = JSON.parse(raw) as Partial<
-        AppSettings["notificationSettings"]
-      >;
-
-      return {
-        approvalRequests: parsed.approvalRequests !== false,
-        runFinished: parsed.runFinished !== false,
-      };
+      return normalizeNotificationSettings(
+        JSON.parse(raw) as Partial<AppSettings["notificationSettings"]>,
+      );
     } catch {
       return null;
     }
@@ -74,9 +70,7 @@ export function buildSettings(rows: AppSettingRow[]): AppSettings {
     )
       ? (storedThemeMode as ThemeMode)
       : "system",
-    notificationSettings: parsedNotificationSettings ?? {
-      approvalRequests: true,
-      runFinished: true,
-    },
+    notificationSettings:
+      parsedNotificationSettings ?? normalizeNotificationSettings(),
   };
 }

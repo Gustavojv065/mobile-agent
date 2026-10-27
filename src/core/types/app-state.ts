@@ -297,6 +297,13 @@ export type ToolExecutionRecord = {
     output: string | null;
     taskId: string | null;
   };
+  /**
+   * Explicit "announce when done" request armed by the agent tool. Persisted
+   * with the message metadata so it survives run resume without a migration.
+   */
+  announcement?: {
+    message: string | null;
+  } | null;
 };
 
 export type PromptArtifact = {
@@ -336,9 +343,17 @@ export type TodoListItem = {
   completedAt: string | null;
 };
 
+export type AnnouncementMode = "background" | "always";
+
 export type NotificationSettings = {
   approvalRequests: boolean;
   runFinished: boolean;
+  questionRequests: boolean;
+  announcementEnabled: boolean;
+  announcementMode: AnnouncementMode;
+  announceFinished: boolean;
+  announceQuestions: boolean;
+  announcePermissions: boolean;
 };
 
 export type ScheduleFrequency =

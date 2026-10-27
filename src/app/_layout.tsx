@@ -58,7 +58,10 @@ Notifications.setNotificationHandler({
 
     return {
       shouldPlaySound:
-        alertKind === "tool-approval" || alertKind === "run-finished",
+        alertKind === "tool-approval" ||
+        alertKind === "run-finished" ||
+        alertKind === "question-request" ||
+        alertKind === "secret-request",
       shouldSetBadge: false,
       shouldShowBanner: true,
       shouldShowList: true,

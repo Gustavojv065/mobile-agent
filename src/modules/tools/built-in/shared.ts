@@ -14,6 +14,7 @@ export function summarizeValue(value: unknown) {
 export const TOOL_PREVIEW_TEXT_LIMIT = 20000;
 
 export function createRecord(input: {
+  announcement?: ToolExecutionRecord["announcement"];
   mediaResult?: ToolExecutionRecord["mediaResult"];
   preview?: ToolExecutionRecord["preview"];
   id?: string;
@@ -41,5 +42,6 @@ export function createRecord(input: {
     ...(input.diffStat ? { diffStat: input.diffStat } : {}),
     ...(input.preview ? { preview: input.preview } : {}),
     ...(input.mediaResult ? { mediaResult: input.mediaResult } : {}),
+    ...(input.announcement ? { announcement: input.announcement } : {}),
   } satisfies ToolExecutionRecord;
 }

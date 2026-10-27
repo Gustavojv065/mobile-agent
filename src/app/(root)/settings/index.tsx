@@ -47,7 +47,13 @@ import {
 } from "background-agent-service";
 
 type DrawerKey =
-  "current-model" | "db" | "theme" | "background" | "notifications" | null;
+  | "current-model"
+  | "db"
+  | "theme"
+  | "background"
+  | "notifications"
+  | "announcements"
+  | null;
 
 export default function SettingsScreen() {
   const router = useRouter();
@@ -327,7 +333,8 @@ export default function SettingsScreen() {
               label="Notifications"
               value={
                 notificationSettings.approvalRequests ||
-                notificationSettings.runFinished
+                notificationSettings.runFinished ||
+                notificationSettings.questionRequests
                   ? "On"
                   : "Off"
               }
@@ -380,6 +387,167 @@ export default function SettingsScreen() {
                   }}
                 />
               </View>
+
+              <View className="flex-row items-center justify-between">
+                <View className="min-w-0 flex-1">
+                  <Text className="font-sans text-base text-foreground dark:text-foreground-dark">
+                    Questions & secrets
+                  </Text>
+                  <Text className="font-sans text-xs text-muted-foreground dark:text-muted-foreground-dark">
+                    Alert when the agent asks a question or needs a secret.
+                  </Text>
+                </View>
+                <Checkbox
+                  checked={notificationSettings.questionRequests}
+                  onCheckedChange={async (checked) => {
+                    await updateNotificationSettings({
+                      questionRequests: checked,
+                    });
+                  }}
+                />
+              </View>
+            </DrawerBody>
+          </DrawerContent>
+        </Drawer>
+        <Separator />
+        <Drawer
+          onOpenChange={(open) => {
+            setOpenDrawer(open ? "announcements" : null);
+          }}
+          open={openDrawer === "announcements"}
+        >
+          <DrawerTrigger asChild>
+            <SettingsLinkRow
+              label="Announcements"
+              value={
+                !notificationSettings.announcementEnabled
+                  ? "Off"
+                  : notificationSettings.announcementMode === "always"
+                    ? "Always"
+                    : "Background"
+              }
+            />
+          </DrawerTrigger>
+          <DrawerContent showCloseButton>
+            <DrawerHeader>
+              <DrawerTitle>Announcements</DrawerTitle>
+            </DrawerHeader>
+            <DrawerBody contentContainerClassName="gap-sp-3">
+              <Text className="font-sans text-sm text-muted-foreground dark:text-muted-foreground-dark">
+                Read a short spoken update aloud when a task finishes or the
+                agent needs you. Notification alerts stay separate.
+              </Text>
+
+              {Platform.OS === "ios" ? (
+                <Text className="font-sans text-xs text-muted-foreground dark:text-muted-foreground-dark">
+                  iOS may pause speech while the app is locked or in the
+                  background. Notification alerts still work.
+                </Text>
+              ) : null}
+
+              <View className="flex-row items-center justify-between">
+                <View className="min-w-0 flex-1">
+                  <Text className="font-sans text-base text-foreground dark:text-foreground-dark">
+                    Spoken announcements
+                  </Text>
+                  <Text className="font-sans text-xs text-muted-foreground dark:text-muted-foreground-dark">
+                    Use the system voice. Silent mode and Focus still apply.
+                  </Text>
+                </View>
+                <Checkbox
+                  checked={notificationSettings.announcementEnabled}
+                  onCheckedChange={async (checked) => {
+                    await updateNotificationSettings({
+                      announcementEnabled: checked,
+                    });
+                  }}
+                />
+              </View>
+
+              <View className="flex-row items-center justify-between">
+                <View className="min-w-0 flex-1">
+                  <Text className="font-sans text-base text-foreground dark:text-foreground-dark">
+                    Announce while app is open
+                  </Text>
+                  <Text className="font-sans text-xs text-muted-foreground dark:text-muted-foreground-dark">
+                    Off: announcements only play after you leave the app.
+                  </Text>
+                </View>
+                <Checkbox
+                  checked={notificationSettings.announcementMode === "always"}
+                  disabled={!notificationSettings.announcementEnabled}
+                  onCheckedChange={async (checked) => {
+                    await updateNotificationSettings({
+                      announcementMode: checked ? "always" : "background",
+                    });
+                  }}
+                />
+              </View>
+
+              <View className="flex-row items-center justify-between">
+                <View className="min-w-0 flex-1">
+                  <Text className="font-sans text-base text-foreground dark:text-foreground-dark">
+                    Task finished
+                  </Text>
+                  <Text className="font-sans text-xs text-muted-foreground dark:text-muted-foreground-dark">
+                    Announce when a run completes or fails.
+                  </Text>
+                </View>
+                <Checkbox
+                  checked={notificationSettings.announceFinished}
+                  disabled={!notificationSettings.announcementEnabled}
+                  onCheckedChange={async (checked) => {
+                    await updateNotificationSettings({
+                      announceFinished: checked,
+                    });
+                  }}
+                />
+              </View>
+
+              <View className="flex-row items-center justify-between">
+                <View className="min-w-0 flex-1">
+                  <Text className="font-sans text-base text-foreground dark:text-foreground-dark">
+                    Questions
+                  </Text>
+                  <Text className="font-sans text-xs text-muted-foreground dark:text-muted-foreground-dark">
+                    Announce when the agent asks a question.
+                  </Text>
+                </View>
+                <Checkbox
+                  checked={notificationSettings.announceQuestions}
+                  disabled={!notificationSettings.announcementEnabled}
+                  onCheckedChange={async (checked) => {
+                    await updateNotificationSettings({
+                      announceQuestions: checked,
+                    });
+                  }}
+                />
+              </View>
+
+              <View className="flex-row items-center justify-between">
+                <View className="min-w-0 flex-1">
+                  <Text className="font-sans text-base text-foreground dark:text-foreground-dark">
+                    Permissions
+                  </Text>
+                  <Text className="font-sans text-xs text-muted-foreground dark:text-muted-foreground-dark">
+                    Announce when the agent needs approval or a secret.
+                  </Text>
+                </View>
+                <Checkbox
+                  checked={notificationSettings.announcePermissions}
+                  disabled={!notificationSettings.announcementEnabled}
+                  onCheckedChange={async (checked) => {
+                    await updateNotificationSettings({
+                      announcePermissions: checked,
+                    });
+                  }}
+                />
+              </View>
+
+              <Text className="font-sans text-xs text-muted-foreground dark:text-muted-foreground-dark">
+                You can also ask the agent to announce when a specific task is
+                done. That request overrides these settings.
+              </Text>
             </DrawerBody>
           </DrawerContent>
         </Drawer>

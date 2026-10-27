@@ -29,12 +29,17 @@ import { revokeProxySession } from "@/modules/mcp/proxy";
 import { testMcpServerConnection } from "@/modules/mcp/runtime-tools";
 import {
     dismissApprovalNotification,
+    dismissQuestionNotification,
     dismissRunNotificationsAsync,
+    dismissSecretNotification,
     dismissStaleApprovalNotificationsAsync,
     notifyApprovalRequestedAsync,
+    notifyQuestionRequestedAsync,
     notifyRunFinishedAsync,
+    notifySecretRequestedAsync,
     prepareRunNotificationsAsync,
 } from "@/modules/notifications/run-notifications";
+import { announceAsync } from "@/modules/notifications/announcements";
 import {
     setBackgroundAgentNotificationState,
     stopBackgroundAgent,
@@ -979,6 +984,8 @@ export function AppStateProvider({ children }: AppStateProviderProps) {
             current.filter((item) => item.id !== questionnaire.id),
         );
 
+        dismissQuestionNotification(questionnaire.runId).catch(() => { });
+
         setBackgroundAgentNotificationState("running").catch(() => { });
     },
         [],
@@ -1001,6 +1008,45 @@ export function AppStateProvider({ children }: AppStateProviderProps) {
         );
 
         setPendingQuestionnaires((current) => [...current, questionnaire]);
+
+        const notificationSettings =
+            snapshotRef.current.settings.notificationSettings;
+        const currentConversationId =
+            snapshotRef.current.currentConversation?.id ?? null;
+        const questionCount = questionnaire.items.length;
+
+        if (appStateRef.current === "active") {
+            if (currentConversationId !== questionnaire.conversationId) {
+                setInAppNotification({
+                    body:
+                        questionCount === 1
+                            ? "The agent is waiting for your answer."
+                            : `The agent is waiting for answers to ${questionCount} questions.`,
+                    conversationId: questionnaire.conversationId,
+                    id: `${questionnaire.conversationId}:question:${questionnaire.id}`,
+                    title: `${questionnaire.chatTitle} has a question`,
+                });
+            }
+        } else if (notificationSettings.questionRequests) {
+            notifyQuestionRequestedAsync({
+                chatTitle: questionnaire.chatTitle,
+                conversationId: questionnaire.conversationId,
+                questionCount,
+                questionnaireId: questionnaire.id,
+                runId: questionnaire.runId,
+            }).catch(() => { });
+        }
+
+        announceAsync({
+            appState: appStateRef.current,
+            conversationId: questionnaire.conversationId,
+            kind: "questions",
+            settings: notificationSettings,
+            text:
+                questionCount === 1
+                    ? `The agent has a question in ${questionnaire.chatTitle}.`
+                    : `The agent has questions in ${questionnaire.chatTitle}.`,
+        }).catch(() => { });
 
         setBackgroundAgentNotificationState("waiting_approval").catch(() => { });
 
@@ -1029,6 +1075,8 @@ export function AppStateProvider({ children }: AppStateProviderProps) {
         setPendingSecretRequests((current) =>
             current.filter((item) => item.id !== secretRequest.id),
         );
+
+        dismissSecretNotification(secretRequest.runId).catch(() => { });
 
         setBackgroundAgentNotificationState("running").catch(() => { });
     },
@@ -1102,6 +1150,39 @@ export function AppStateProvider({ children }: AppStateProviderProps) {
 
         setPendingSecretRequests((current) => [...current, secretRequest]);
 
+        const notificationSettings =
+            snapshotRef.current.settings.notificationSettings;
+        const currentConversationId =
+            snapshotRef.current.currentConversation?.id ?? null;
+
+        if (appStateRef.current === "active") {
+            if (currentConversationId !== secretRequest.conversationId) {
+                setInAppNotification({
+                    body: `${secretRequest.pluginName} needs ${secretRequest.key}.`,
+                    conversationId: secretRequest.conversationId,
+                    id: `${secretRequest.conversationId}:secret:${secretRequest.id}`,
+                    title: `${secretRequest.chatTitle} needs a secret`,
+                });
+            }
+        } else if (notificationSettings.questionRequests) {
+            notifySecretRequestedAsync({
+                chatTitle: secretRequest.chatTitle,
+                conversationId: secretRequest.conversationId,
+                key: secretRequest.key,
+                pluginName: secretRequest.pluginName,
+                runId: secretRequest.runId,
+                secretRequestId: secretRequest.id,
+            }).catch(() => { });
+        }
+
+        announceAsync({
+            appState: appStateRef.current,
+            conversationId: secretRequest.conversationId,
+            kind: "permissions",
+            settings: notificationSettings,
+            text: `${secretRequest.pluginName} needs a secret in ${secretRequest.chatTitle}.`,
+        }).catch(() => { });
+
         setBackgroundAgentNotificationState("waiting_approval").catch(() => { });
 
         return await new Promise<PendingSecretRequestAnswer>((resolve) => {
@@ -1174,6 +1255,14 @@ export function AppStateProvider({ children }: AppStateProviderProps) {
             }).catch(() => { });
         }
 
+        announceAsync({
+            appState: appStateRef.current,
+            conversationId: approval.conversationId,
+            kind: "permissions",
+            settings: snapshotRef.current.settings.notificationSettings,
+            text: `The agent needs permission in ${approval.chatTitle}.`,
+        }).catch(() => { });
+
         setBackgroundAgentNotificationState("waiting_approval").catch(() => { });
 
         return await new Promise<
@@ -1199,37 +1288,54 @@ export function AppStateProvider({ children }: AppStateProviderProps) {
     const notifyRunStateChange = useCallback(
         async (
         input: {
+        announcement?: { message: string | null } | null;
         body: string;
         conversationId: string;
         status: "success" | "failed";
         title: string;
         }) => {
+        const notificationSettings =
+            snapshotRef.current.settings.notificationSettings;
         const currentConversationId =
             snapshotRef.current.currentConversation?.id ?? null;
+        const forced = Boolean(input.announcement);
+        const active = appStateRef.current === "active";
+        const alertBody =
+            input.status === "success" && input.announcement?.message
+                ? input.announcement.message
+                : input.body;
 
-        if (appStateRef.current === "active") {
+        if (active) {
             if (currentConversationId !== input.conversationId) {
                 setInAppNotification({
-                    body: input.body,
+                    body: alertBody,
                     conversationId: input.conversationId,
                     id: `${input.conversationId}:${Date.now()}`,
                     title: input.title,
                 });
             }
-
-            return;
+        } else if (forced || notificationSettings.runFinished) {
+            await notifyRunFinishedAsync({
+                body: alertBody,
+                conversationId: input.conversationId,
+                status: input.status,
+                title: input.title,
+            }).catch(() => { });
         }
 
-        if (!snapshotRef.current.settings.notificationSettings.runFinished) {
-            return;
-        }
+        const fallback =
+            input.status === "success"
+                ? `Agent finished in ${input.title}.`
+                : `Agent failed in ${input.title}.`;
 
-        await notifyRunFinishedAsync({
-            body: input.body,
+        await announceAsync({
+            appState: appStateRef.current,
             conversationId: input.conversationId,
-            status: input.status,
-            title: input.title,
-        });
+            force: forced,
+            kind: "finished",
+            settings: notificationSettings,
+            text: input.announcement?.message?.trim() || fallback,
+        }).catch(() => { });
     },
         [],
     );
@@ -1739,7 +1845,8 @@ export function AppStateProvider({ children }: AppStateProviderProps) {
 
         const alertsEnabled =
             snapshotRef.current.settings.notificationSettings.approvalRequests ||
-            snapshotRef.current.settings.notificationSettings.runFinished;
+            snapshotRef.current.settings.notificationSettings.runFinished ||
+            snapshotRef.current.settings.notificationSettings.questionRequests;
 
         prepareRunNotificationsAsync({
             requestPermission: alertsEnabled,

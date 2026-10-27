@@ -4,6 +4,7 @@ import type {
     ResolvedConfig,
 } from "@/core/types/app-state";
 import { DEFAULT_BUILT_IN_TOOL_SETTINGS } from "@/modules/config/built-in-tools";
+import { DEFAULT_NOTIFICATION_SETTINGS } from "@/modules/notifications/settings";
 
 export const REQUEST_INACTIVITY_TIMEOUT_MS = 5 * 60_000;
 
@@ -69,8 +70,7 @@ export const EMPTY_SETTINGS: AppSettings = {
     schedulingEnabled: true,
     themeMode: "system",
     notificationSettings: {
-        approvalRequests: true,
-        runFinished: true,
+        ...DEFAULT_NOTIFICATION_SETTINGS,
     },
 };
 
