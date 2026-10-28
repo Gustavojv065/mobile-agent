@@ -1,0 +1,311 @@
+import { CameraView, useCameraPermissions } from "expo-camera";
+import { fetch as expoFetch } from "expo/fetch";
+import { useEffect, useRef, useState } from "react";
+import {
+  AppState,
+  Linking,
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+} from "react-native";
+
+import { Button } from "@/components/ui/button";
+import { DrawerBody, DrawerFooter } from "@/components/ui/drawer";
+import { Input } from "@/components/ui/input";
+import {
+  makeOpenCodeClient,
+  normalizeOpenCodeUrl,
+  parseOpenCodePairingLink,
+} from "@/modules/harnesses/opencode";
+import {
+  loadOpenCodeConnection,
+  saveOpenCodeConnection,
+  type SavedOpenCodeConnection,
+} from "@/modules/harnesses/opencode-storage";
+
+const EMPTY: SavedOpenCodeConnection = {
+  url: "http://127.0.0.1:4096",
+  username: "opencode",
+  password: "",
+  directory: "",
+};
+
+export function OpenCodeConnectionForm({
+  onConnected,
+}: {
+  onConnected: () => void;
+}) {
+  const [connection, setConnection] = useState(EMPTY);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [mode, setMode] = useState<"qr" | "manual">("qr");
+  const [pairing, setPairing] = useState<{ url: string; code: string } | null>(
+    null,
+  );
+  const [error, setError] = useState<string | null>(null);
+  const [foreground, setForeground] = useState(
+    AppState.currentState === "active",
+  );
+  const [cameraError, setCameraError] = useState(false);
+  const [permission, requestPermission, getPermission] = useCameraPermissions();
+  const scanned = useRef(false);
+  const requested = useRef(false);
+  const mounted = useRef(true);
+  const request = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    mounted.current = true;
+    loadOpenCodeConnection()
+      .then((value) => {
+        if (mounted.current && value) setConnection(value);
+      })
+      .catch(() => {
+        if (mounted.current) setError("Could not load the saved connection.");
+      })
+      .finally(() => {
+        if (mounted.current) setLoading(false);
+      });
+    return () => {
+      mounted.current = false;
+      request.current?.abort();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (mode !== "qr" || requested.current) return;
+    requested.current = true;
+    void requestPermission().catch(() => {
+      if (mounted.current) setCameraError(true);
+    });
+  }, [mode, requestPermission]);
+
+  useEffect(() => {
+    const listener = AppState.addEventListener("change", (state) => {
+      setForeground(state === "active");
+      if (state === "active") void getPermission().catch(() => {});
+    });
+    return () => listener.remove();
+  }, [getPermission]);
+
+  async function connect() {
+    if (request.current || (mode === "qr" && !pairing)) return;
+    const controller = new AbortController();
+    request.current = controller;
+    setBusy(true);
+    setError(null);
+    const timeout = setTimeout(() => controller.abort(), 15000);
+    try {
+      let next = { ...connection, url: normalizeOpenCodeUrl(connection.url) };
+      if (mode === "qr" && pairing) {
+        const api = makeOpenCodeClient(
+          { ...EMPTY, url: pairing.url },
+          expoFetch as typeof globalThis.fetch,
+        );
+        const session = await api.server.connect(
+          { code: pairing.code },
+          { signal: controller.signal },
+        );
+        next = {
+          ...connection,
+          url: pairing.url,
+          username: "opencode",
+          password: session.token,
+          sessionID: undefined,
+        };
+        // Retain a single-use pairing token even if the subsequent check fails.
+        if (controller.signal.aborted) return;
+        await saveOpenCodeConnection(next);
+        if (mounted.current) {
+          setConnection(next);
+          setPairing(null);
+          setMode("manual");
+        }
+      }
+      const api = makeOpenCodeClient(
+        next,
+        expoFetch as typeof globalThis.fetch,
+      );
+      const info = await api.server.info({ signal: controller.signal });
+      if (!/^2\./.test(info.version)) throw new Error("version");
+      await api.session.list({ limit: 1 }, { signal: controller.signal });
+      if (controller.signal.aborted) return;
+      await saveOpenCodeConnection(next);
+      if (mounted.current) onConnected();
+    } catch {
+      if (mounted.current)
+        setError(
+          "Could not connect. Check the server or scan a fresh pairing code.",
+        );
+    } finally {
+      clearTimeout(timeout);
+      request.current = null;
+      if (mounted.current) setBusy(false);
+    }
+  }
+
+  return (
+    <>
+      <DrawerBody contentContainerClassName="gap-sp-3 pb-sp-4">
+        {mode === "qr" ? (
+          <>
+            <View
+              className="overflow-hidden rounded-card bg-black"
+              style={styles.scanner}
+            >
+              {permission?.granted && foreground && !pairing && !cameraError ? (
+                <CameraView
+                  style={StyleSheet.absoluteFill}
+                  facing="back"
+                  barcodeScannerSettings={{ barcodeTypes: ["qr"] }}
+                  onMountError={() => setCameraError(true)}
+                  onBarcodeScanned={({ data }) => {
+                    if (scanned.current || busy) return;
+                    scanned.current = true;
+                    try {
+                      setPairing(parseOpenCodePairingLink(data));
+                      setError(null);
+                    } catch {
+                      setError("Not a supported OpenCode pairing code.");
+                      scanned.current = false;
+                    }
+                  }}
+                />
+              ) : null}
+              <View pointerEvents="none" style={styles.overlay}>
+                {pairing ? (
+                  <Text className="font-sans text-base text-white">
+                    QR code scanned
+                  </Text>
+                ) : (
+                  <View style={styles.guide} />
+                )}
+              </View>
+            </View>
+            {pairing ? (
+              <>
+                <Text
+                  selectable
+                  className="text-center font-sans text-sm text-foreground dark:text-foreground-dark"
+                >
+                  {pairing.url}
+                </Text>
+              </>
+            ) : (
+              <Text className="text-center font-sans text-sm text-muted-foreground dark:text-muted-foreground-dark">
+                Scan your OpenCode pairing code
+              </Text>
+            )}
+            {cameraError ? (
+              <Text className="text-center font-sans text-sm text-muted-foreground dark:text-muted-foreground-dark">
+                Camera unavailable. Use the server URL instead.
+              </Text>
+            ) : null}
+            {permission && !permission.granted ? (
+              <Button
+                variant="outline"
+                onPress={() => {
+                  if (permission.canAskAgain)
+                    void requestPermission().catch(() => setCameraError(true));
+                  else void Linking.openSettings().catch(() => {});
+                }}
+              >
+                {permission.canAskAgain
+                  ? "Allow camera"
+                  : "Open camera settings"}
+              </Button>
+            ) : null}
+          </>
+        ) : (
+          <>
+            <Text className="font-sans text-sm text-foreground dark:text-foreground-dark">
+              Server URL
+            </Text>
+            <Input
+              value={connection.url}
+              disabled={loading || busy}
+              autoCapitalize="none"
+              autoCorrect={false}
+              keyboardType="url"
+              onChangeText={(url) =>
+                setConnection((old) => ({ ...old, url, sessionID: undefined }))
+              }
+            />
+            <Text className="font-sans text-sm text-foreground dark:text-foreground-dark">
+              Password
+            </Text>
+            <Input
+              value={connection.password}
+              disabled={loading || busy}
+              secureTextEntry
+              autoCapitalize="none"
+              autoCorrect={false}
+              onChangeText={(password) =>
+                setConnection((old) => ({
+                  ...old,
+                  password,
+                  sessionID: undefined,
+                }))
+              }
+            />
+          </>
+        )}
+        {error ? (
+          <Text
+            accessibilityRole="alert"
+            className="font-sans text-sm text-destructive dark:text-destructive-dark"
+          >
+            {error}
+          </Text>
+        ) : null}
+      </DrawerBody>
+      <DrawerFooter className="items-center gap-sp-3">
+        <Button
+          className="w-full"
+          loading={busy}
+          disabled={loading || busy || (mode === "qr" && !pairing)}
+          onPress={() => {
+            void connect();
+          }}
+        >
+          Connect
+        </Button>
+        <Pressable
+          accessibilityRole="link"
+          className="items-center"
+          hitSlop={8}
+          disabled={busy}
+          onPress={() => {
+            setMode((value) => (value === "qr" ? "manual" : "qr"));
+            setError(null);
+          }}
+          style={({ pressed }) => (pressed ? { opacity: 0.6 } : null)}
+        >
+          <Text className="font-sans text-sm text-muted-foreground underline dark:text-muted-foreground-dark">
+            {mode === "qr" ? "Use server URL instead" : "Scan QR code instead"}
+          </Text>
+        </Pressable>
+      </DrawerFooter>
+    </>
+  );
+}
+
+const styles = StyleSheet.create({
+  scanner: { height: 280, width: "100%" },
+  overlay: {
+    position: "absolute",
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  guide: {
+    width: 200,
+    height: 200,
+    borderWidth: 2,
+    borderColor: "white",
+    borderRadius: 16,
+  },
+});

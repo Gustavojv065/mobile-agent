@@ -145,6 +145,7 @@ import { useChat } from "@/hooks/use-chat";
 import { useChatInfo } from "@/hooks/use-chat-info";
 import { useConfig } from "@/hooks/use-config";
 import { useTheme } from "@/hooks/use-theme";
+import { useHarness } from "@/providers/harness-state";
 import { useVoiceInput } from "@/hooks/use-voice-input";
 import { listPrimaryAgents, resolveAgent } from "@/modules/agents/registry";
 import { detectFolderIntent } from "@/modules/chat/folder-intent";
@@ -259,6 +260,7 @@ function logComposerDebug(label: string, data: Record<string, unknown>) {
 }
 
 export default function Screen() {
+  const harness = useHarness();
   const router = useRouter();
   const theme = useTheme();
   const keyboardVisible = useKeyboardState((state) => state.isVisible);
@@ -495,7 +497,7 @@ export default function Screen() {
     ({ item: message }: { item: StoredMessage }) => (
       <ChatMessage
         canEditAndResend={
-          message.id === latestUserMessageId && !currentConversationBusy
+          !harness.active && message.id === latestUserMessageId && !currentConversationBusy
         }
         message={message}
         showFooter={assistantResponseFooters.has(message.id)}
@@ -507,6 +509,7 @@ export default function Screen() {
       />
     ),
     [
+      harness.active,
       currentConversationBusy,
       handleEditMessage,
       handleRegenerate,
@@ -797,7 +800,7 @@ export default function Screen() {
                     Allow once
                   </Button>
                 </View>
-                <Pressable
+                {!harness.active ? <Pressable
                   accessibilityRole="button"
                   className="items-center"
                   hitSlop={8}
@@ -807,7 +810,7 @@ export default function Screen() {
                   <Text className="font-sans text-sm text-muted-foreground underline dark:text-muted-foreground-dark">
                     Allow for chat
                   </Text>
-                </Pressable>
+                </Pressable> : null}
               </DrawerFooter>
             </DrawerContent>
           </Drawer>

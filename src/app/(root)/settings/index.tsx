@@ -31,6 +31,7 @@ import { cn } from "@/core/utils";
 import { useAppState } from "@/hooks/use-app-state";
 import { useConfig } from "@/hooks/use-config";
 import { useTheme } from "@/hooks/use-theme";
+import { SUPPORTED_HARNESSES } from "@/modules/harnesses/catalog";
 import { countEnabledBuiltInFileTools } from "@/modules/config/built-in-tools";
 import {
   loadVoiceEngine,
@@ -184,6 +185,12 @@ export default function SettingsScreen() {
             router.push("/settings/providers");
           }}
           value={providerCount !== null ? `${providerCount}` : undefined}
+        />
+        <Separator />
+        <SettingsLinkRow
+          label="Harnesses"
+          onPress={() => router.push("/settings/harnesses")}
+          value={`${SUPPORTED_HARNESSES.length}`}
         />
         <Separator />
         <SettingsLinkRow

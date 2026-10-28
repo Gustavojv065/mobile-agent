@@ -28,6 +28,7 @@
     "android": {
       "versionCode": 2,
       "permissions": [
+        "android.permission.CAMERA",
         "android.permission.REQUEST_INSTALL_PACKAGES",
         "android.permission.WAKE_LOCK",
         "android.permission.FOREGROUND_SERVICE",
@@ -55,6 +56,14 @@
     },
     "plugins": [
       "expo-router",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow $(PRODUCT_NAME) to scan OpenCode pairing QR codes.",
+          "recordAudioAndroid": false,
+          "barcodeScannerEnabled": true
+        }
+      ],
       [
         "expo-build-properties",
         {
@@ -110,7 +119,7 @@
         "expo-image-picker",
         {
           "photosPermission": "Allow $(PRODUCT_NAME) to attach selected photos to your chats.",
-          "cameraPermission": false,
+          "cameraPermission": "Allow $(PRODUCT_NAME) to scan OpenCode pairing QR codes.",
           "microphonePermission": "Allow $(PRODUCT_NAME) to use the microphone for voice input."
         }
       ],

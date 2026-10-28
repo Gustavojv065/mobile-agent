@@ -32,6 +32,7 @@ import { useChat } from "@/hooks/use-chat";
 import { usePathname, useRouter } from "expo-router";
 import {
   Download,
+  ChevronDown,
   Edit,
   EllipsisVertical,
   Library,
@@ -46,14 +47,44 @@ import {
 } from "lucide-react-native";
 import { useState, memo, useCallback, useMemo } from "react";
 import { ActivityIndicator, Pressable, Text, View } from "react-native";
+import Animated, {
+  useAnimatedStyle,
+  useDerivedValue,
+  useReducedMotion,
+  withTiming,
+} from "react-native-reanimated";
 
 import { ChatImportDrawer } from "@/components/chat/chat-import-drawer";
 import { ExportChatDrawer } from "@/components/chat/export-chat-drawer";
 import type { Conversation } from "@/core/types/app-state";
 import { cn } from "@/core/utils";
 import { useTheme } from "@/hooks/use-theme";
+import { useHarness } from "@/providers/harness-state";
+
+function SessionSectionChevron({
+  open,
+  color,
+}: {
+  open: boolean;
+  color: string;
+}) {
+  const reducedMotion = useReducedMotion();
+  const rotation = useDerivedValue(() =>
+    withTiming(open ? 180 : 0, { duration: reducedMotion ? 0 : 160 }),
+  );
+  const style = useAnimatedStyle(() => ({
+    transform: [{ rotate: `${rotation.value}deg` }],
+  }));
+  return (
+    <Animated.View style={style}>
+      <ChevronDown color={color} size={16} />
+    </Animated.View>
+  );
+}
 
 export function AppSidebar() {
+  const harness = useHarness();
+  const [openCodeSessionsOpen, setOpenCodeSessionsOpen] = useState(true);
   const theme = useTheme();
   const pathname = usePathname();
   const router = useRouter();
@@ -281,7 +312,10 @@ export function AppSidebar() {
           </SidebarGroup>
           {pinnedConversations.length > 0 ? (
             <SidebarGroup>
-              <SidebarGroupLabel className="!px-0 text-sm font-semibold normal-case tracking-normal text-foreground dark:text-foreground-dark">
+              <SidebarGroupLabel
+                style={{ fontFamily: "Geist_600SemiBold" }}
+                className="!px-0 text-sm font-semibold normal-case tracking-normal text-foreground dark:text-foreground-dark"
+              >
                 Pinned
               </SidebarGroupLabel>
               <SidebarMenu>
@@ -289,8 +323,70 @@ export function AppSidebar() {
               </SidebarMenu>
             </SidebarGroup>
           ) : null}
+          {harness.connected ? (
+            <SidebarGroup>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="OpenCode sessions"
+                accessibilityState={{ expanded: openCodeSessionsOpen }}
+                className="min-h-10 flex-row items-center gap-sp-2"
+                onPress={() => setOpenCodeSessionsOpen((value) => !value)}
+              >
+                <Text
+                  style={{ fontFamily: "Geist_600SemiBold" }}
+                  className="font-sans text-sm font-semibold text-foreground dark:text-foreground-dark"
+                >
+                  OpenCode sessions
+                </Text>
+                <SessionSectionChevron
+                  open={openCodeSessionsOpen}
+                  color={theme.textSecondary}
+                />
+              </Pressable>
+              {openCodeSessionsOpen ? (
+                <SidebarMenu>
+                  {harness.sessions.map((session) => (
+                    <SidebarMenuItem key={session.id}>
+                      <SidebarClose asChild>
+                        <SidebarMenuButton
+                          isActive={
+                            harness.active && harness.sessionID === session.id
+                          }
+                          onPress={() => {
+                            void harness
+                              .selectSession(session.id)
+                              .then(() => router.dismissTo("/"));
+                          }}
+                        >
+                          <Text
+                            numberOfLines={1}
+                            className={cn(
+                              "flex-1 font-sans text-sm",
+                              harness.active && harness.sessionID === session.id
+                                ? "text-background dark:text-background-dark"
+                                : "text-foreground dark:text-foreground-dark",
+                            )}
+                          >
+                            {session.title || "OpenCode chat"}
+                          </Text>
+                        </SidebarMenuButton>
+                      </SidebarClose>
+                    </SidebarMenuItem>
+                  ))}
+                  {harness.sessions.length === 0 ? (
+                    <Text className="font-sans text-sm text-muted-foreground dark:text-muted-foreground-dark">
+                      No sessions yet
+                    </Text>
+                  ) : null}
+                </SidebarMenu>
+              ) : null}
+            </SidebarGroup>
+          ) : null}
           <SidebarGroup>
-            <SidebarGroupLabel className="!px-0 text-sm font-semibold normal-case tracking-normal text-foreground dark:text-foreground-dark">
+            <SidebarGroupLabel
+              style={{ fontFamily: "Geist_600SemiBold" }}
+              className="!px-0 text-sm font-semibold normal-case tracking-normal text-foreground dark:text-foreground-dark"
+            >
               Chats
             </SidebarGroupLabel>
             <SidebarMenu>
@@ -538,7 +634,10 @@ function ChatOptions({
             </Text>
           </View>
         </DropdownMenuItem>
-        <DropdownMenuItem disabled={!pinned && pinnedCount >= 3} onPress={onTogglePin}>
+        <DropdownMenuItem
+          disabled={!pinned && pinnedCount >= 3}
+          onPress={onTogglePin}
+        >
           <View className="flex-row items-center gap-sp-2">
             {pinned ? (
               <PinOff color={theme.text} size={16} />

@@ -12,6 +12,7 @@ import { MixCheckHost } from "@/components/ui/video-mix-host";
 import { VideoRenderHost } from "@/components/ui/video-render-host";
 import { migrateAppDatabase } from "@/core/db/database";
 import { AppStateProvider } from "@/providers/app-state";
+import { HarnessProvider } from "@/providers/harness-state";
 import { UpdateProvider, useUpdate } from "@/providers/check-for-updates";
 import { AppQueryProvider } from "@/providers/query-provider";
 import {
@@ -322,6 +323,7 @@ export default function MainLayout() {
               onInit={migrateAppDatabase}
             >
               <AppStateProvider>
+                <HarnessProvider>
                 <UpdateProvider>
                   <SplashScreenController ready={fontsReady} />
                   <NotificationObserver />
@@ -334,6 +336,7 @@ export default function MainLayout() {
                   <BrowserHost />
                   <Slot />
                 </UpdateProvider>
+                </HarnessProvider>
               </AppStateProvider>
             </SQLiteProvider>
           </AppQueryProvider>
