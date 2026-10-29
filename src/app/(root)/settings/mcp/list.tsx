@@ -56,7 +56,7 @@ function normalizeMcpUrl(value: string) {
 
 export default function McpCatalogScreen() {
   const router = useRouter();
-  const { connect } = useLocalSearchParams<{ connect?: string }>();
+  const { connect, search } = useLocalSearchParams<{ connect?: string; search?: string }>();
   const theme = useTheme();
   const { createMcpServerOAuth, mcpServers } = useConfig();
   const [busyKey, setBusyKey] = useState<string | null>(null);
@@ -68,7 +68,7 @@ export default function McpCatalogScreen() {
   const [setupDrawerOpen, setSetupDrawerOpen] = useState(false);
   const [githubQuickOpen, setGithubQuickOpen] = useState(connect === "github");
   const [tokenQuickConfig, setTokenQuickConfig] = useState<GuidedTokenServer | null>(null);
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useState(typeof search === "string" ? search : "");
 
   const filteredPresets = useMemo(() => {
     const needle = query.trim().toLowerCase();
