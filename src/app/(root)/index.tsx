@@ -177,25 +177,25 @@ const REASONING_EFFORT_OPTIONS: {
 }[] = [
   {
     value: "none",
-    label: "Off",
-    description: "Do not request model reasoning",
+    label: "Desativado",
+    description: "Não solicitar raciocínio ao modelo",
   },
   {
     value: "minimal",
-    label: "Minimal",
-    description: "Use the lowest available reasoning level",
+    label: "Mínimo",
+    description: "Usar o nível mínimo de raciocínio disponível",
   },
-  { value: "low", label: "Low", description: "Use light reasoning" },
+  { value: "low", label: "Baixo", description: "Usar raciocínio leve" },
   {
     value: "medium",
-    label: "Medium",
-    description: "Balance reasoning quality and speed (default)",
+    label: "Médio",
+    description: "Equilibrar qualidade e velocidade (padrão)",
   },
-  { value: "high", label: "High", description: "Use deeper reasoning" },
+  { value: "high", label: "Alto", description: "Usar raciocínio mais profundo" },
   {
     value: "xhigh",
-    label: "Extra high",
-    description: "Use the highest available reasoning level",
+    label: "Muito alto",
+    description: "Usar o nível máximo de raciocínio disponível",
   },
 ];
 
@@ -547,9 +547,9 @@ export default function Screen() {
         >
           <View className="flex-row items-center justify-between gap-sp-3">
             <View className="flex flex-row">
-              <SidebarTrigger accessibilityLabel="Open sidebar" />
+              <SidebarTrigger accessibilityLabel="Abrir menu lateral" />
               <Button
-                accessibilityLabel="New chat"
+                accessibilityLabel="Nova conversa"
                 onPress={() => {
                   createConversation().catch(console.error);
                 }}
@@ -561,7 +561,7 @@ export default function Screen() {
               </Button>
             </View>
             <Button
-              accessibilityLabel="Chat info"
+              accessibilityLabel="Informações da conversa"
               onPress={() => {
                 setInfoDrawerOpen(true);
               }}
@@ -588,7 +588,7 @@ export default function Screen() {
                       size="small"
                     />
                     <Text className="font-sans text-sm text-muted-foreground dark:text-muted-foreground-dark">
-                      Loading chat…
+                      Carregando conversa…
                     </Text>
                   </View>
                 ) : (
@@ -625,7 +625,7 @@ export default function Screen() {
                         ) : (
                           <View className="px-sp-2 py-sp-8">
                             <Text className="font-sans text-base text-muted-foreground dark:text-muted-foreground-dark">
-                              Connect a model to start chatting.
+                              Conecte um modelo de IA para começar a conversar.
                             </Text>
                           </View>
                         )
@@ -634,7 +634,7 @@ export default function Screen() {
                     />
                     {messages.length > 0 ? (
                       <MessageScrollerButton
-                        accessibilityLabel="Jump to latest"
+                        accessibilityLabel="Ir para a mensagem mais recente"
                         className="h-10 w-10 rounded-full px-0"
                       >
                         <ArrowDown color={theme.text} size={18} />
@@ -646,7 +646,7 @@ export default function Screen() {
 
               {error ? (
                 <CodeBlock className="mb-10" size="sm" variant="destructive">
-                  <CodeBlockContent wrap accessibilityLabel="Send error">
+                  <CodeBlockContent wrap accessibilityLabel="Erro no envio">
                     {error}
                   </CodeBlockContent>
                 </CodeBlock>
@@ -660,7 +660,7 @@ export default function Screen() {
                   }}
                   variant="outline"
                 >
-                  Open settings
+                  Abrir configurações
                 </Button>
               ) : null}
 
@@ -981,32 +981,32 @@ export default function Screen() {
           >
             <DrawerContent showCloseButton showHandle>
               <DrawerHeader>
-                <DrawerTitle>Save prompt</DrawerTitle>
+                <DrawerTitle>Salvar prompt</DrawerTitle>
                 <DrawerDescription>
-                  Save this response text for reuse in any chat.
+                  Salve esta resposta para reutilizá-la em outras conversas.
                 </DrawerDescription>
               </DrawerHeader>
               <DrawerBody contentContainerClassName="gap-sp-3">
                 <View className="gap-sp-2">
                   <Text className="font-sans text-sm font-medium text-foreground dark:text-foreground-dark">
-                    Title
+                    Título
                   </Text>
                   <Input
                     autoFocus
                     maxLength={80}
                     onChangeText={setSavePromptTitle}
-                    placeholder="Professional email"
+                    placeholder="E-mail profissional"
                     value={savePromptTitle}
                   />
                 </View>
                 <View className="gap-sp-2">
                   <Text className="font-sans text-sm font-medium text-foreground dark:text-foreground-dark">
-                    Prompt text
+                    Texto do prompt
                   </Text>
                   <Textarea
                     className="min-h-44 max-h-96"
                     onChangeText={setSavePromptContent}
-                    placeholder="Write the prompt you want to reuse."
+                    placeholder="Escreva o prompt que deseja reutilizar."
                     value={savePromptContent}
                   />
                 </View>
