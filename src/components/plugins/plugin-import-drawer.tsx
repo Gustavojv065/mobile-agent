@@ -69,7 +69,7 @@ export function PluginImportDrawer({
       setError(
         pickError instanceof Error
           ? pickError.message
-          : "Could not read the selected file.",
+          : "Não foi possível ler o arquivo selecionado.",
       );
     } finally {
       setBusy(null);
@@ -95,7 +95,7 @@ export function PluginImportDrawer({
       setError(
         fetchError instanceof Error
           ? fetchError.message
-          : "Could not fetch the plugin from that URL.",
+          : "Não foi possível importar o plugin a partir da URL.",
       );
     } finally {
       setBusy(null);
@@ -106,9 +106,10 @@ export function PluginImportDrawer({
     <Drawer onOpenChange={onOpenChange} open={open}>
       <DrawerContent showCloseButton showHandle>
         <DrawerHeader>
-          <DrawerTitle>Import plugin</DrawerTitle>
+          <DrawerTitle>Importar plugin</DrawerTitle>
           <DrawerDescription>
-            Pick a .js file or paste a URL to one.
+            Selecione um arquivo .js ou informe uma URL confiável.
+            Plugins JavaScript podem executar código: instale apenas fontes verificadas.
           </DrawerDescription>
         </DrawerHeader>
         <DrawerBody contentContainerClassName="gap-sp-3 pb-sp-4">
@@ -118,13 +119,13 @@ export function PluginImportDrawer({
             onPress={handlePickFile}
             variant="outline"
           >
-            Choose .js file
+            Selecionar arquivo .js
           </Button>
 
           <View className="flex-row items-center gap-sp-3 py-sp-1">
             <View className="h-px flex-1 bg-border dark:bg-border-dark" />
             <Text className="font-sans text-xs font-medium text-muted-foreground dark:text-muted-foreground-dark">
-              OR
+              OU
             </Text>
             <View className="h-px flex-1 bg-border dark:bg-border-dark" />
           </View>
@@ -137,7 +138,7 @@ export function PluginImportDrawer({
                 setUrl(value);
                 setError(null);
               }}
-              placeholder="Plugin URL"
+              placeholder="URL do plugin (.js)"
               value={url}
             />
             <Button
@@ -145,7 +146,7 @@ export function PluginImportDrawer({
               onPress={handleFetchUrl}
               variant="outline"
             >
-              Install
+              Instalar
             </Button>
           </View>
 
@@ -157,7 +158,7 @@ export function PluginImportDrawer({
         </DrawerBody>
         <DrawerFooter>
           <Button disabled onPress={() => onOpenChange(false)}>
-            Done
+            Concluído
           </Button>
         </DrawerFooter>
       </DrawerContent>
