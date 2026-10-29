@@ -64,7 +64,7 @@ export default function SettingsHarnessesScreen() {
       <Card className="overflow-hidden">
         {loading ? (
           <View
-            accessibilityLabel="Loading harnesses"
+            accessibilityLabel="Carregando ambientes de agentes"
             className="flex-row items-center justify-between gap-sp-3 px-sp-4 py-sp-4"
           >
             <Skeleton className="h-4 w-2/5" />
@@ -90,8 +90,8 @@ export default function SettingsHarnessesScreen() {
                 </Text>
                 <Text className="text-right font-sans text-sm text-muted-foreground dark:text-muted-foreground-dark">
                   {harness.connected
-                    ? `${harness.models.length} available`
-                    : "Connect"}
+                    ? `${harness.models.length} disponíveis`
+                    : "Conectar"}
                 </Text>
                 <ChevronRight color={theme.textSecondary} size={18} />
               </Pressable>
@@ -123,19 +123,19 @@ export default function SettingsHarnessesScreen() {
                     label="Status"
                     value={
                       loading
-                        ? "Connecting"
+                        ? "Conectando"
                         : harness.connected
-                          ? "Connected"
-                          : "Not set up"
+                          ? "Conectado"
+                          : "Não configurado"
                     }
                   />
                   <Separator />
-                  <StatusRow label="Family" value="Harness" />
+                  <StatusRow label="Tipo" value="Harness" />
                   {harness.active && currentModel ? (
                     <>
                       <Separator />
                       <StatusRow
-                        label="Current model"
+                        label="Modelo atual"
                         value={currentModel.label}
                       />
                     </>
@@ -143,7 +143,7 @@ export default function SettingsHarnessesScreen() {
                 </View>
                 <View className="gap-sp-2">
                   <Text className="font-sans text-sm text-muted-foreground dark:text-muted-foreground-dark">
-                    {harness.connected ? "Active connection" : "Connection"}
+                    {harness.connected ? "Conexão ativa" : "Conexão"}
                   </Text>
                   {harness.connected ? (
                     <>
@@ -179,7 +179,7 @@ export default function SettingsHarnessesScreen() {
                       loading={loading}
                       onPress={() => setPage(1)}
                     >
-                      Connect
+                      Conectar
                     </Button>
                   )}
                 </View>
@@ -187,7 +187,7 @@ export default function SettingsHarnessesScreen() {
                   <View className="gap-sp-3">
                     <View className="flex-row items-center justify-between gap-sp-3">
                       <Text className="flex-1 font-sans text-sm text-muted-foreground dark:text-muted-foreground-dark">
-                        Models from OpenCode
+                        Modelos do OpenCode
                       </Text>
                       <Button
                         size="xs"
@@ -198,14 +198,14 @@ export default function SettingsHarnessesScreen() {
                           void harness.connect();
                         }}
                       >
-                        Refresh
+                        Atualizar
                       </Button>
                     </View>
                     <Input
                       autoCapitalize="none"
                       autoCorrect={false}
                       onChangeText={setModelQuery}
-                      placeholder="Search models"
+                      placeholder="Buscar modelos"
                       value={modelQuery}
                     />
                     <View className="overflow-hidden rounded-card border border-border dark:border-border-dark">
@@ -221,8 +221,8 @@ export default function SettingsHarnessesScreen() {
                             modelId={model.modelId}
                             stateLabel={
                               currentModel?.ref === model.ref
-                                ? "Current"
-                                : "Use"
+                                ? "Atual"
+                                : "Usar"
                             }
                             onPress={() => {
                               void selectModel(model.ref).catch(() => {});
@@ -233,8 +233,8 @@ export default function SettingsHarnessesScreen() {
                       {displayModels.length === 0 ? (
                         <Text className="px-sp-4 py-sp-4 font-sans text-sm text-muted-foreground dark:text-muted-foreground-dark">
                           {query
-                            ? "No models match your search."
-                            : "No models available."}
+                            ? "Nenhum modelo encontrado."
+                            : "Nenhum modelo disponível."}
                         </Text>
                       ) : null}
                     </View>
@@ -256,7 +256,7 @@ export default function SettingsHarnessesScreen() {
                     leftIcon={<ChevronLeft color={theme.text} size={16} />}
                     onPress={() => setPage(0)}
                   />
-                  <DrawerTitle>Connect</DrawerTitle>
+                  <DrawerTitle>Conectar</DrawerTitle>
                 </View>
               </DrawerHeader>
               {open && page === 1 ? (
