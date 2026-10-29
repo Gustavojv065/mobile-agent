@@ -339,7 +339,8 @@ function PresetRow({
   preset: McpServerPreset;
   status: "untested" | "connected" | "failed";
 }) {
-  const canReconfigure = preset.id === "github" || getGuidedTokenServer(preset) !== null;
+  const canReconfigure =
+    preset.id === "github" || getGuidedTokenServer(preset) !== null;
 
   return (
     <View className="flex-row items-center gap-sp-3 px-sp-4 py-sp-4">
@@ -366,16 +367,20 @@ function PresetRow({
                 : "Adicionado, ainda sem teste"}
           </Text>
         ) : null}
-        <Text className="hidden">        </Text>
       </View>
       <Button
-        disabled={false}
         loading={busy}
         onPress={onPress}
         size="sm"
         variant={connected && !canReconfigure ? "secondary" : "outline"}
       >
-        {connected ? (canReconfigure ? "Atualizar acesso" : "Gerenciar") : preset.authMode === "oauth" ? "Autorizar" : "Conectar"}
+        {connected
+          ? canReconfigure
+            ? "Atualizar acesso"
+            : "Gerenciar"
+          : preset.authMode === "oauth"
+            ? "Autorizar"
+            : "Conectar"}
       </Button>
     </View>
   );
