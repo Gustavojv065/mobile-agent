@@ -1,5 +1,5 @@
-import { Redirect, useRouter } from "expo-router";
-import { ChevronLeft, ChevronRight, Plus } from "lucide-react-native";
+import { useRouter } from "expo-router";
+import { ChevronLeft, ChevronRight, Github, Plus, PlugZap } from "lucide-react-native";
 import { useMemo, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 
@@ -16,16 +16,12 @@ export default function ConnectedPluginsScreen() {
   const router = useRouter();
   const theme = useTheme();
   const { ready } = useAppState();
-  const { plugins } = useConfig();
+  const { plugins, mcpServers } = useConfig();
   const [importOpen, setImportOpen] = useState(false);
   const enabledCount = useMemo(
     () => plugins.filter((plugin) => plugin.enabled).length,
     [plugins],
   );
-
-  if (ready && plugins.length === 0) {
-    return <Redirect href={"/settings/plugins/list" as never} />;
-  }
 
   return (
     <Container
@@ -45,7 +41,7 @@ export default function ConnectedPluginsScreen() {
             Plugins
           </Text>
           <Text className="font-sans text-xs text-muted-foreground dark:text-muted-foreground-dark">
-            {enabledCount} active
+            {enabledCount} ativos
           </Text>
         </View>
         <Button
@@ -55,18 +51,52 @@ export default function ConnectedPluginsScreen() {
           size="sm"
           variant="outline"
         >
-          Add custom
+          Importar plugin
         </Button>
       </View>
+
+      <Card className="gap-sp-3 px-sp-4 py-sp-4">
+        <Text className="font-sans text-base font-semibold text-foreground dark:text-foreground-dark">
+          Conecte seus serviços
+        </Text>
+        <Text className="font-sans text-sm text-muted-foreground dark:text-muted-foreground-dark">
+          GitHub e outros serviços usam conexões MCP. Plugins instalados
+          aparecem logo abaixo. As funções existentes continuam disponíveis.
+        </Text>
+        <Button
+          leftIcon={<Github color={theme.background} size={17} />}
+          onPress={() => router.push("/settings/mcp/list?connect=github" as never)}
+        >
+          Conectar GitHub por token
+        </Button>
+        <Button
+          leftIcon={<PlugZap color={theme.text} size={17} />}
+          onPress={() => router.push("/settings/mcp/connected" as never)}
+          variant="outline"
+        >
+          Outras conexões ({mcpServers.filter((server) => server.enabled).length} ativas)
+        </Button>
+      </Card>
 
       {!ready ? (
         <Card className="px-sp-4 py-sp-4">
           <Text className="font-sans text-sm text-muted-foreground dark:text-muted-foreground-dark">
-            Loading plugins…
+            Carregando plugins…
           </Text>
         </Card>
       ) : (
         <>
+          {plugins.length === 0 ? (
+            <Card className="gap-sp-2 px-sp-4 py-sp-4">
+              <Text className="font-sans text-base font-medium text-foreground dark:text-foreground-dark">
+                Nenhum plugin instalado
+              </Text>
+              <Text className="font-sans text-sm text-muted-foreground dark:text-muted-foreground-dark">
+                Você pode instalar plugins personalizados ou conectar serviços
+                pela opção MCP acima. São recursos diferentes.
+              </Text>
+            </Card>
+          ) : (
           <Card className="overflow-hidden">
             {plugins.map((plugin, index) => (
               <View key={plugin.id}>
@@ -92,8 +122,8 @@ export default function ConnectedPluginsScreen() {
                       numberOfLines={1}
                     >
                       {plugin.enabled
-                        ? plugin.description || "Enabled"
-                        : "Disabled"}
+                        ? plugin.description || "Ativo"
+                        : "Desativado"}
                     </Text>
                     {plugin.lastError ? (
                       <Text
@@ -110,12 +140,13 @@ export default function ConnectedPluginsScreen() {
               </View>
             ))}
           </Card>
+          )}
           <Button
             leftIcon={<Plus color={theme.text} size={16} />}
             onPress={() => router.push("/settings/plugins/list" as never)}
             variant="outline"
           >
-            Add more
+            Explorar plugins
           </Button>
         </>
       )}
