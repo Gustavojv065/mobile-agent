@@ -34,7 +34,7 @@ function normalizeUrl(value: string): string | null {
     const url = new URL(value);
     if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash)
       return null;
-    return url.href.replace(/\\/$/, "");
+    return url.href.replace(/\/$/, "");
   } catch {
     return null;
   }
@@ -56,7 +56,7 @@ export function createGuidedTokenHeaders(
   token: string,
 ): Record<string, string> {
   const value = token.trim();
-  if (!value || /\\s/.test(value) || value.includes("\\r") || value.includes("\\n")) {
+  if (!value || /\s/.test(value) || value.includes("\r") || value.includes("\n")) {
     throw new Error("Cole uma chave válida, sem espaços ou quebras de linha.");
   }
   return { [config.headerName]: config.prefix + value };
