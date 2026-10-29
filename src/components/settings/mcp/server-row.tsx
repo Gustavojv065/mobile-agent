@@ -55,10 +55,10 @@ export function McpServerRow({
   const theme = useTheme();
   const statusText =
     server.lastStatus === "connected"
-      ? `${server.toolCount ?? 0} tools`
+      ? `${server.toolCount ?? 0} ferramentas`
       : server.lastStatus === "failed"
-        ? "Failed"
-        : "Untested";
+        ? "Falhou"
+        : "Não testado";
 
   return (
     <View className="gap-sp-3 px-sp-4 py-sp-4">
@@ -75,7 +75,7 @@ export function McpServerRow({
             </Text>
             {server.oauthMode === "proxy" ? (
               <Badge textClassName="text-xs" variant="secondary">
-                Managed
+                Gerenciado
               </Badge>
             ) : null}
             <StatusPill status={server.lastStatus} text={statusText} />
@@ -106,7 +106,7 @@ export function McpServerRow({
           size="sm"
           variant="outline"
         >
-          {server.enabled ? "Disable" : "Enable"}
+          {server.enabled ? "Desativar" : "Ativar"}
         </Button>
         <Button
           leftIcon={<RefreshCw color={theme.text} size={14} />}
@@ -115,7 +115,7 @@ export function McpServerRow({
           size="sm"
           variant="outline"
         >
-          Test
+          Testar
         </Button>
         {server.authMode === "oauth" ? (
           <Button
@@ -134,7 +134,7 @@ export function McpServerRow({
           size="sm"
           variant="ghost"
         >
-          Clear auth
+          Limpar autenticação
         </Button>
         <Button
           leftIcon={<Trash2 color={theme.destructive} size={14} />}
@@ -143,7 +143,7 @@ export function McpServerRow({
           size="sm"
           variant="ghost"
         >
-          Delete
+          Remover
         </Button>
       </View>
     </View>
