@@ -188,17 +188,17 @@ export default function SettingsScreen() {
         />
         <Separator />
         <SettingsLinkRow
-          label="Harnesses"
+          label="Ambientes de agentes"
           onPress={() => router.push("/settings/harnesses")}
           value={`${SUPPORTED_HARNESSES.length}`}
         />
         <Separator />
         <SettingsLinkRow
-          label="Built-in tools"
+          label="Ferramentas integradas"
           onPress={() => {
             router.push("/settings/tools");
           }}
-          value={`${enabledToolCount} active`}
+          value={`${enabledToolCount} ativas`}
         />
         <Separator />
         <SettingsLinkRow
@@ -214,7 +214,7 @@ export default function SettingsScreen() {
           onPress={() => {
             router.push("/settings/skills" as never);
           }}
-          value={`${enabledSkillCount} active`}
+          value={`${enabledSkillCount} ativas`}
         />
         <Separator />
         <SettingsLinkRow
@@ -222,19 +222,19 @@ export default function SettingsScreen() {
           onPress={() => {
             router.push("/settings/plugins" as never);
           }}
-          value={`${enabledPluginCount} active`}
+          value={`${enabledPluginCount} ativos`}
         />
         <Separator />
         <SettingsLinkRow
-          label="Agents"
+          label="Agentes"
           onPress={() => {
             router.push("/settings/agents" as never);
           }}
-          value={`${agents.length} custom`}
+          value={`${agents.length} personalizados`}
         />
         <Separator />
         <SettingsLinkRow
-          label="Saved prompts"
+          label="Prompts salvos"
           onPress={() => {
             router.push("/settings/prompts" as never);
           }}
@@ -242,22 +242,22 @@ export default function SettingsScreen() {
         />
         <Separator />
         <SettingsLinkRow
-          label="Memory"
+          label="Memória"
           onPress={() => {
             router.push("/settings/memory" as never);
           }}
-          value={memoryEnabled ? "Local" : "Disabled"}
+          value={memoryEnabled ? "Local" : "Desativada"}
         />
         <Separator />
         <SettingsLinkRow
-          label="Jobs"
+          label="Tarefas agendadas"
           onPress={() => {
             router.push("/settings/jobs" as never);
           }}
           value={
             schedulingEnabled
               ? `${schedules.filter((schedule) => schedule.enabled).length} active`
-              : "Off"
+              : "Desativadas"
           }
         />
         <Separator />
@@ -269,37 +269,37 @@ export default function SettingsScreen() {
         >
           <DrawerTrigger asChild>
             <SettingsLinkRow
-              label="Background agent"
+              label="Agente em segundo plano"
               value={
                 batteryOptimizationGranted === null
                   ? "…"
                   : batteryOptimizationGranted
                     ? agentActive
-                      ? "Active"
-                      : "Ready"
-                    : "Permission needed"
+                      ? "Ativo"
+                      : "Pronto"
+                    : "Permissão necessária"
               }
             />
           </DrawerTrigger>
           <DrawerContent showCloseButton>
             <DrawerHeader>
-              <DrawerTitle>Background agent</DrawerTitle>
+              <DrawerTitle>Agente em segundo plano</DrawerTitle>
             </DrawerHeader>
             <DrawerBody contentContainerClassName="gap-sp-2">
               <Text className="font-sans text-sm text-muted-foreground dark:text-muted-foreground-dark">
-                Keeps the agent running when the app is in the background. Uses
-                a foreground service + wake lock (Android).
+                Mantém o agente em execução mesmo quando o aplicativo está em
+                segundo plano, usando um serviço do Android.
               </Text>
 
               {Platform.OS === "android" ? (
                 <View className="flex-row items-center justify-between">
                   <View className="min-w-0 flex-1">
                     <Text className="font-sans text-base text-foreground dark:text-foreground-dark">
-                      Battery optimization
+                      Otimização de bateria
                     </Text>
                     <Text className="font-sans text-xs text-muted-foreground dark:text-muted-foreground-dark">
-                      Stops Android from killing the agent while it runs in the
-                      background.
+                      Impede que o Android encerre o agente durante a execução
+                      em segundo plano.
                     </Text>
                   </View>
                   <Checkbox
@@ -319,13 +319,13 @@ export default function SettingsScreen() {
         </Drawer>
         <Separator />
         <SettingsLinkRow
-          label="Voice input"
+          label="Entrada de voz"
           onPress={() => router.push("/settings/voice" as never)}
           value={
             voiceEngine === "system"
-              ? "System"
+              ? "Sistema"
               : (voiceModels.find((model) => model.id === voiceEngine)?.label ??
-                "System")
+                "Sistema")
           }
         />
         <Separator />
@@ -337,7 +337,7 @@ export default function SettingsScreen() {
         >
           <DrawerTrigger asChild>
             <SettingsLinkRow
-              label="Notifications"
+              label="Notificações"
               value={
                 notificationSettings.approvalRequests ||
                 notificationSettings.runFinished ||
@@ -349,11 +349,11 @@ export default function SettingsScreen() {
           </DrawerTrigger>
           <DrawerContent showCloseButton>
             <DrawerHeader>
-              <DrawerTitle>Notifications</DrawerTitle>
+              <DrawerTitle>Notificações</DrawerTitle>
             </DrawerHeader>
             <DrawerBody contentContainerClassName="gap-sp-2">
               <Text className="font-sans text-sm text-muted-foreground dark:text-muted-foreground-dark">
-                Alerts sent even when the app is in the background.
+                Alertas enviados mesmo quando o aplicativo está em segundo plano.
               </Text>
 
               <View className="flex-row items-center justify-between">
@@ -425,7 +425,7 @@ export default function SettingsScreen() {
         >
           <DrawerTrigger asChild>
             <SettingsLinkRow
-              label="Announcements"
+              label="Avisos por voz"
               value={
                 !notificationSettings.announcementEnabled
                   ? "Off"
@@ -437,7 +437,7 @@ export default function SettingsScreen() {
           </DrawerTrigger>
           <DrawerContent showCloseButton>
             <DrawerHeader>
-              <DrawerTitle>Announcements</DrawerTitle>
+              <DrawerTitle>Avisos por voz</DrawerTitle>
             </DrawerHeader>
             <DrawerBody contentContainerClassName="gap-sp-3">
               <Text className="font-sans text-sm text-muted-foreground dark:text-muted-foreground-dark">
@@ -567,15 +567,15 @@ export default function SettingsScreen() {
         >
           <DrawerTrigger asChild>
             <SettingsLinkRow
-              label="Current model"
-              value={currentModel?.label ?? "None"}
+              label="Modelo atual"
+              value={currentModel?.label ?? "Nenhum"}
             />
           </DrawerTrigger>
           <DrawerContent showCloseButton>
             <DrawerBody>
               <SearchBox
                 onChangeText={setModelSearch}
-                placeholder="Search models"
+                placeholder="Buscar modelos"
                 value={modelSearch}
               />
               {activeModels.length > 0 ? (
@@ -600,11 +600,11 @@ export default function SettingsScreen() {
                   })
                 ) : (
                   <EmptyStateText>
-                    No models match “{modelSearch}”.
+                    Nenhum modelo corresponde a “{modelSearch}”.
                   </EmptyStateText>
                 )
               ) : (
-                <EmptyStateText>No active models</EmptyStateText>
+                <EmptyStateText>Nenhum modelo ativo</EmptyStateText>
               )}
             </DrawerBody>
             <DrawerFooter>
@@ -615,7 +615,7 @@ export default function SettingsScreen() {
                 }}
                 variant="outline"
               >
-                Manage providers
+                Gerenciar provedores
               </Button>
             </DrawerFooter>
           </DrawerContent>
@@ -629,26 +629,26 @@ export default function SettingsScreen() {
         >
           <DrawerTrigger asChild>
             <SettingsLinkRow
-              label="Theme"
+              label="Tema"
               value={
                 themeMode === "system"
-                  ? "System"
+                  ? "Sistema"
                   : themeMode === "dark"
-                    ? "Dark"
-                    : "Light"
+                    ? "Escuro"
+                    : "Claro"
               }
             />
           </DrawerTrigger>
           <DrawerContent showCloseButton>
             <DrawerHeader>
-              <DrawerTitle>Theme</DrawerTitle>
+              <DrawerTitle>Tema</DrawerTitle>
             </DrawerHeader>
             <DrawerBody contentContainerClassName="gap-sp-2">
               {(
                 [
-                  ["system", "System", "Follow your device appearance"],
-                  ["light", "Light", "Always use the light theme"],
-                  ["dark", "Dark", "Always use the dark theme"],
+                  ["system", "Sistema", "Seguir a aparência do dispositivo"],
+                  ["light", "Claro", "Usar sempre o tema claro"],
+                  ["dark", "Escuro", "Usar sempre o tema escuro"],
                 ] as const
               ).map(([value, label, subtitle]) => (
                 <DrawerOptionRow
@@ -676,13 +676,13 @@ export default function SettingsScreen() {
         >
           <DrawerTrigger asChild>
             <SettingsLinkRow
-              label="Database"
-              value={databaseMode === "local" ? "Local" : "Remote"}
+              label="Banco de dados"
+              value={databaseMode === "local" ? "Local" : "Remoto"}
             />
           </DrawerTrigger>
           <DrawerContent showCloseButton>
             <DrawerHeader>
-              <DrawerTitle>Database</DrawerTitle>
+              <DrawerTitle>Banco de dados</DrawerTitle>
             </DrawerHeader>
             <DrawerBody>
               <View className="flex-row gap-sp-2">
@@ -710,12 +710,12 @@ export default function SettingsScreen() {
                   }}
                   variant={databaseMode === "remote" ? "default" : "outline"}
                 >
-                  Remote
+                  Remoto
                 </Button>
               </View>
               <View className="gap-sp-2">
                 <Text className="font-sans text-sm font-medium text-foreground dark:text-foreground-dark">
-                  Database URL
+                  URL do banco de dados
                 </Text>
                 <Input
                   autoCapitalize="none"
@@ -770,15 +770,15 @@ export default function SettingsScreen() {
 
       <Card className="overflow-hidden">
         <SettingsLinkRow
-          label="App Update"
+          label="Atualização do aplicativo"
           value={
             installing
               ? downloadProgress !== null
-                ? `Downloading ${progressLabel(downloadProgress)}`
-                : "Downloading..."
+                ? `Baixando ${progressLabel(downloadProgress)}`
+                : "Baixando..."
               : release
-                ? `Update ${release.tagName}`
-                : "Up to date"
+                ? `Atualização ${release.tagName}`
+                : "Atualizado"
           }
           showChevron={!!release}
           disabled={installing}
@@ -787,12 +787,12 @@ export default function SettingsScreen() {
         <Separator />
         <SettingsLinkRow
           disabled={!ready || hydrating || busyKey === "refresh"}
-          label="Refresh config"
+          label="Recarregar configurações"
           onPress={() => {
             runAction("refresh", refresh).catch(console.error);
           }}
           showChevron={false}
-          value={hydrating || busyKey === "refresh" ? "Loading..." : undefined}
+          value={hydrating || busyKey === "refresh" ? "Carregando..." : undefined}
         />
       </Card>
     </Container>
