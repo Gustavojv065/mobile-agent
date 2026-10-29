@@ -11,7 +11,7 @@ Esta versão é desenvolvida no fork `Gustavojv065/mobile-agent`, com alteraçõ
 - GitHub: assistente para criar e inserir um token fine-grained, testar a conexão e atualizar credenciais.
 - Credenciais do GitHub armazenadas pelo cofre de segredos já existente no aplicativo.
 - CI: checagem TypeScript e testes de unidade.
-- Workflow experimental `Android APK Preview PT-BR`: tenta gerar um APK ARM64 de depuração sem `EXPO_TOKEN` usando GitHub Actions.
+- Workflow `Android APK Preview PT-BR`: cria APK ARM64 **standalone em modo Release**, com o código JS incluído, sem servidor Expo/Metro e sem `EXPO_TOKEN`. A compilação precisa ser validada no Actions e depois no aparelho.
 
 ## Testar as conexões
 
@@ -26,12 +26,12 @@ Esta versão é desenvolvida no fork `Gustavojv065/mobile-agent`, com alteraçõ
 1. Abra a aba **Actions** do seu fork, `https://github.com/Gustavojv065/mobile-agent/actions`.
 2. Se o GitHub informar que os workflows do fork estão desativados, habilite-os usando a opção exibida.
 3. No PR, aguarde um novo evento de execução do workflow `Android APK Preview PT-BR`. Se não houver execução, será preciso disparar um novo commit para gerar um evento `pull_request`.
-4. Após um build bem-sucedido, abra o workflow e baixe o artefato `mobile-agent-ptbr-arm64-preview`.
-5. O artefato é um APK de **teste, não uma versão de produção assinada**. Ele usa o identificador `com.gustavojv065.mobileagent.preview`, separado do aplicativo original, e não aponta para o projeto EAS/atualizações do desenvolvedor original.
+4. Após um build bem-sucedido, abra o workflow e baixe o artefato `mobile-agent-ptbr-arm64-standalone`. Não instale o artefato antigo `mobile-agent-ptbr-arm64-preview` — ele era um Development Build que exigia Expo/Metro.
+5. O artefato é um APK Release independente **de testes**, não uma distribuição final publicada. Ele usa o identificador `com.gustavojv065.mobileagent.preview`, separado do aplicativo original, e não aponta para o projeto EAS/atualizações do desenvolvedor original. A validação do workflow verifica a presença de `assets/index.android.bundle` dentro do APK.
 
 ## Limitações atuais
 
-- Não foi confirmado build ou execução em aparelho real; não chamar o APK de pronto até obter artefato e realizar teste.
+- Um build Debug anterior abriu somente o Expo Development Launcher, sem a interface de conversas; foi descartado. O novo APK Release ainda precisa ser compilado e testado no aparelho. As conversas e credenciais do aplicativo original não migram automaticamente para o pacote separado.
 - O workflow pode exigir ajustes nativos ou de memória após a primeira compilação.
 - O instalador de produção original `android.yml` ainda requer o segredo `EXPO_TOKEN`; o novo preview foi feito justamente para não depender dele.
 - Tradução PT-BR ainda não cobre todas as telas, logs técnicos nem todo conteúdo retornado pelos modelos.
