@@ -41,6 +41,20 @@ type Draft = {
   url: string;
 };
 
+// Only offer a token-only form for verified, fixed provider endpoints.
+const SIMPLE_TOKEN_PRESETS: Record<string, { url: string; header: string; prefix: string }> = {
+  render: {
+    url: "https://mcp.render.com/mcp",
+    header: "Authorization",
+    prefix: "Bearer ",
+  },
+  "google-maps": {
+    url: "https://mapstools.googleapis.com/mcp",
+    header: "X-Goog-Api-Key",
+    prefix: "",
+  },
+};
+
 const EMPTY_DRAFT: Draft = {
   authMode: "none",
   enabled: true,
@@ -155,6 +169,12 @@ export function McpServerForm({
   );
   const [error, setError] = useState<string | null>(null);
   const [page, setPage] = useState(0);
+  const [simpleToken, setSimpleToken] = useState("");
+  const simplePreset = presetId ? SIMPLE_TOKEN_PRESETS[presetId] : undefined;
+  const simpleTokenEnabled = Boolean(
+    simplePreset && draft?.authMode === "headers" &&
+      draft.url === simplePreset.url && !serverId,
+  );
 
   useEffect(() => {
     if (serverId) {
@@ -206,7 +226,12 @@ export function McpServerForm({
       throw new Error("Label and URL are required.");
     }
 
-    const parsedHeaders = parseHeaderText(draft.headerText);
+    // The simplified token is converted to the correct header internally.
+    // The manual headers form remains available for custom configurations.
+    const parsedHeaders =
+      simpleTokenEnabled && simpleToken.trim() && simplePreset
+        ? { [simplePreset.header]: simplePreset.prefix + simpleToken.trim() }
+        : parseHeaderText(draft.headerText);
     if (
       draft.authMode === "headers" &&
       !targetServer &&
@@ -284,6 +309,27 @@ export function McpServerForm({
                   value={draft.url}
                 />
               </Field>
+              {simpleTokenEnabled ? (
+                <View className="gap-sp-2">
+                  <Text className="font-sans text-sm font-medium text-foreground dark:text-foreground-dark">
+                    Token / chave de API
+                  </Text>
+                  <Input
+                    accessibilityLabel="Token do serviço"
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    autoComplete="off"
+                    placeholder="Cole sua chave aqui"
+                    secureTextEntry
+                    onChangeText={setSimpleToken}
+                    value={simpleToken}
+                  />
+                  <Text className="font-sans text-xs text-muted-foreground dark:text-muted-foreground-dark">
+                    Não precisa preencher Authorization nem headers.
+                    O token será salvo no cofre de segredos do aplicativo.
+                  </Text>
+                </View>
+              ) : null}
               <View className="flex-row gap-sp-2">
                 <SegmentButton
                   active={draft.transport === "http"}
