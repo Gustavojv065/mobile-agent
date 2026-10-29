@@ -198,7 +198,7 @@ export default function SettingsScreen() {
           onPress={() => {
             router.push("/settings/tools");
           }}
-          value={`${enabledToolCount} ativas`}
+          value={`${enabledToolCount} ${enabledToolCount === 1 ? "ativa" : "ativas"}`}
         />
         <Separator />
         <SettingsLinkRow
@@ -206,7 +206,7 @@ export default function SettingsScreen() {
           onPress={() => {
             router.push("/settings/mcp/connected" as never);
           }}
-          value={`${enabledMcpServerCount} ativos`}
+          value={`${enabledMcpServerCount} ${enabledMcpServerCount === 1 ? "ativo" : "ativos"}`}
         />
         <Separator />
         <SettingsLinkRow
@@ -214,7 +214,7 @@ export default function SettingsScreen() {
           onPress={() => {
             router.push("/settings/skills" as never);
           }}
-          value={`${enabledSkillCount} ativas`}
+          value={`${enabledSkillCount} ${enabledSkillCount === 1 ? "ativa" : "ativas"}`}
         />
         <Separator />
         <SettingsLinkRow
@@ -222,7 +222,7 @@ export default function SettingsScreen() {
           onPress={() => {
             router.push("/settings/plugins" as never);
           }}
-          value={`${enabledPluginCount} ativos`}
+          value={`${enabledPluginCount} ${enabledPluginCount === 1 ? "ativo" : "ativos"}`}
         />
         <Separator />
         <SettingsLinkRow
@@ -230,7 +230,7 @@ export default function SettingsScreen() {
           onPress={() => {
             router.push("/settings/agents" as never);
           }}
-          value={`${agents.length} personalizados`}
+          value={`${agents.length} ${agents.length === 1 ? "personalizado" : "personalizados"}`}
         />
         <Separator />
         <SettingsLinkRow
