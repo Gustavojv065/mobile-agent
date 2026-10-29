@@ -15,6 +15,9 @@ concurrency:
 
 jobs:
   build-and-release:
+    # The fork must never publish from the upstream Expo/EAS project.
+    # Configure an owned Expo project before enabling a production release.
+    if: github.repository == 'TecnicalBot/mobile-agent'
     runs-on: ubuntu-latest
 
     steps:
