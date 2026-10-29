@@ -6,6 +6,7 @@ import { Text, View } from "react-native";
 import { McpScreenHeader } from "@/components/settings/mcp/screen-header";
 import { McpServerForm } from "@/components/settings/mcp/mcp-server-form";
 import { GitHubQuickConnect } from "@/components/settings/mcp/github-quick-connect";
+import { McpTokenQuickConnect } from "@/components/settings/mcp/token-quick-connect";
 import { Container } from "@/components/shared/container";
 import { SearchBox } from "@/components/shared/search-box";
 import { Badge } from "@/components/ui/badge";
@@ -20,6 +21,7 @@ import {
   type McpServerPreset,
 } from "@/modules/mcp/catalog";
 import { isMcpOAuthCanceledError } from "@/modules/mcp/oauth";
+import { getGuidedTokenServer, type GuidedTokenServer } from "@/modules/mcp/guided-token-presets";
 
 const CONNECTION_PRIORITY: Record<string, number> = {
   github: 0,
@@ -65,6 +67,7 @@ export default function McpCatalogScreen() {
   const [setupPresetId, setSetupPresetId] = useState<string | null>(null);
   const [setupDrawerOpen, setSetupDrawerOpen] = useState(false);
   const [githubQuickOpen, setGithubQuickOpen] = useState(connect === "github");
+  const [tokenQuickConfig, setTokenQuickConfig] = useState<GuidedTokenServer | null>(null);
   const [query, setQuery] = useState("");
 
   const filteredPresets = useMemo(() => {
@@ -118,6 +121,12 @@ export default function McpCatalogScreen() {
     // GitHub uses a guided token screen instead of exposing raw HTTP headers.
     if (preset.id === "github" && preset.authMode === "headers") {
       setGithubQuickOpen(true);
+      return;
+    }
+
+    const guidedToken = getGuidedTokenServer(preset);
+    if (guidedToken) {
+      setTokenQuickConfig(guidedToken);
       return;
     }
 
@@ -203,10 +212,11 @@ export default function McpCatalogScreen() {
           {filteredPresets.length > 0 ? (
             <Card className="overflow-hidden">
               {filteredPresets.map((preset, index) => {
-                const connected = mcpServers.some(
+                const existingServer = mcpServers.find(
                   (server) =>
                     normalizeMcpUrl(server.url) === normalizeMcpUrl(preset.url),
                 );
+                const connected = Boolean(existingServer);
 
                 return (
                   <View key={preset.id}>
@@ -214,7 +224,14 @@ export default function McpCatalogScreen() {
                     <PresetRow
                       busy={busyKey === preset.id}
                       connected={connected}
-                      onPress={() => connectPreset(preset).catch(console.error)}
+                      status={existingServer?.lastStatus ?? "untested"}
+                      onPress={() => {
+                        if (connected && preset.id !== "github" && !getGuidedTokenServer(preset)) {
+                          router.dismissTo("/settings/mcp/connected");
+                        } else {
+                          void connectPreset(preset).catch(console.error);
+                        }
+                      }}
                       preset={preset}
                     />
                   </View>
@@ -270,6 +287,28 @@ export default function McpCatalogScreen() {
         </DrawerContent>
       </Drawer>
 
+      <Drawer
+        onOpenChange={(open) => { if (!open) setTokenQuickConfig(null); }}
+        open={tokenQuickConfig !== null}
+      >
+        <DrawerContent showCloseButton showHandle>
+          {tokenQuickConfig ? (
+            <McpTokenQuickConnect
+              key={tokenQuickConfig.id}
+              config={tokenQuickConfig}
+              onConnected={() => {
+                setTokenQuickConfig(null);
+                router.dismissTo("/settings/mcp/connected");
+              }}
+              onManage={() => {
+                setTokenQuickConfig(null);
+                router.dismissTo("/settings/mcp/connected");
+              }}
+            />
+          ) : null}
+        </DrawerContent>
+      </Drawer>
+
       <Drawer onOpenChange={setSetupDrawerOpen} open={setupDrawerOpen}>
         <DrawerContent contentClassName="overflow-hidden" showCloseButton showHandle>
           <McpServerForm
@@ -292,13 +331,15 @@ function PresetRow({
   connected,
   onPress,
   preset,
+  status,
 }: {
   busy: boolean;
   connected: boolean;
   onPress: () => void;
   preset: McpServerPreset;
+  status: "untested" | "connected" | "failed";
 }) {
-  const canReconfigure = preset.id === "github";
+  const canReconfigure = preset.id === "github" || getGuidedTokenServer(preset) !== null;
 
   return (
     <View className="flex-row items-center gap-sp-3 px-sp-4 py-sp-4">
@@ -316,15 +357,25 @@ function PresetRow({
         <Text className="font-sans text-sm text-muted-foreground dark:text-muted-foreground-dark">
           {CONNECTION_DESCRIPTIONS[preset.id] ?? preset.description}
         </Text>
+        {connected ? (
+          <Text className="font-sans text-xs text-muted-foreground dark:text-muted-foreground-dark">
+            {status === "connected"
+              ? "Conexão testada com sucesso"
+              : status === "failed"
+                ? "Falha no teste — confira a conexão"
+                : "Adicionado, ainda sem teste"}
+          </Text>
+        ) : null}
+        <Text className="hidden">        </Text>
       </View>
       <Button
-        disabled={connected && !canReconfigure}
+        disabled={false}
         loading={busy}
         onPress={onPress}
         size="sm"
         variant={connected && !canReconfigure ? "secondary" : "outline"}
       >
-        {connected ? (canReconfigure ? "Atualizar acesso" : "Adicionado") : "Conectar"}
+        {connected ? (canReconfigure ? "Atualizar acesso" : "Gerenciar") : preset.authMode === "oauth" ? "Autorizar" : "Conectar"}
       </Button>
     </View>
   );
