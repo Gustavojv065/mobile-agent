@@ -21,6 +21,27 @@ import {
 } from "@/modules/mcp/catalog";
 import { isMcpOAuthCanceledError } from "@/modules/mcp/oauth";
 
+const CONNECTION_PRIORITY: Record<string, number> = {
+  github: 0,
+  supabase: 1,
+  notion: 2,
+  "hugging-face": 3,
+  linear: 4,
+  render: 5,
+};
+
+const CONNECTION_DESCRIPTIONS: Record<string, string> = {
+  github: "Gerencie repositórios, issues e Pull Requests pelo aplicativo.",
+  supabase: "Acesse projetos e bancos de dados com sua autorização.",
+  notion: "Consulte e organize páginas do seu espaço de trabalho.",
+  linear: "Acompanhe projetos, tarefas e issues.",
+  render: "Gerencie serviços e acompanhe seus deploys.",
+  "hugging-face": "Pesquise modelos, datasets e ferramentas de IA.",
+  "microsoft-learn": "Pesquise a documentação oficial da Microsoft.",
+  context7: "Consulte a documentação atualizada de bibliotecas.",
+  exa: "Pesquise conteúdos na web.",
+};
+
 function normalizeMcpUrl(value: string) {
   try {
     const url = new URL(value);
@@ -49,7 +70,8 @@ export default function McpCatalogScreen() {
     const needle = query.trim().toLowerCase();
 
     const orderedPresets = [...catalogPresets].sort(
-      (a, b) => Number(b.id === "github") - Number(a.id === "github"),
+      (a, b) =>
+        (CONNECTION_PRIORITY[a.id] ?? 100) - (CONNECTION_PRIORITY[b.id] ?? 100),
     );
 
     if (!needle) {
@@ -59,6 +81,9 @@ export default function McpCatalogScreen() {
     return orderedPresets.filter(
       (preset) =>
         preset.label.toLowerCase().includes(needle) ||
+        (CONNECTION_DESCRIPTIONS[preset.id] ?? preset.description)
+          .toLowerCase()
+          .includes(needle) ||
         preset.description.toLowerCase().includes(needle),
     );
   }, [catalogPresets, query]);
@@ -156,6 +181,16 @@ export default function McpCatalogScreen() {
         }
         title="Conexões MCP"
       />
+
+      <Card className="gap-sp-2 px-sp-4 py-sp-4">
+        <Text className="font-sans text-base font-semibold text-foreground dark:text-foreground-dark">
+          Conecte suas ferramentas
+        </Text>
+        <Text className="font-sans text-sm text-muted-foreground dark:text-muted-foreground-dark">
+          Escolha o serviço. Você verá instruções em português e poderá
+          conferir o status da conexão depois de configurar.
+        </Text>
+      </Card>
 
       {catalogPresets.length > 0 ? (
         <>
@@ -278,7 +313,7 @@ function PresetRow({
           ) : null}
         </View>
         <Text className="font-sans text-sm text-muted-foreground dark:text-muted-foreground-dark">
-          {preset.description}
+          {CONNECTION_DESCRIPTIONS[preset.id] ?? preset.description}
         </Text>
       </View>
       <Button
