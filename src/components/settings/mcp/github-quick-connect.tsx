@@ -19,8 +19,11 @@ export function GitHubQuickConnect({
   onConnected: () => void;
   onManage: () => void;
 }) {
-  const { createMcpServer, testMcpServer } = useConfig();
+  const { createMcpServer, mcpServers, testMcpServer, updateMcpServer } = useConfig();
   const [token, setToken] = useState("");
+  const existingGitHub = mcpServers.find(
+    (server) => server.url.replace(/\/$/, "") === GITHUB_MCP_URL.replace(/\/$/, ""),
+  );
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -37,14 +40,23 @@ export function GitHubQuickConnect({
     setError(null);
 
     try {
-      const server = await createMcpServer({
-        authMode: "headers",
-        enabled: true,
-        headerValues: { Authorization: "Bearer " + value },
-        label: "GitHub",
-        transport: "http",
-        url: GITHUB_MCP_URL,
-      });
+      const serverId = existingGitHub
+        ? (await updateMcpServer(existingGitHub.id, {
+            authMode: "headers",
+            enabled: true,
+            headerValues: { Authorization: "Bearer " + value },
+            label: "GitHub",
+            transport: "http",
+            url: GITHUB_MCP_URL,
+          }), existingGitHub.id)
+        : (await createMcpServer({
+            authMode: "headers",
+            enabled: true,
+            headerValues: { Authorization: "Bearer " + value },
+            label: "GitHub",
+            transport: "http",
+            url: GITHUB_MCP_URL,
+          })).id;
 
       // The existing credential store persists headers securely. Do not
       // retain the plaintext token in component state after saving it.
@@ -52,7 +64,7 @@ export function GitHubQuickConnect({
       setSaved(true);
 
       try {
-        await testMcpServer(server.id);
+        await testMcpServer(serverId);
         onConnected();
       } catch {
         setError(
@@ -76,7 +88,7 @@ export function GitHubQuickConnect({
       <DrawerBody contentContainerClassName="gap-sp-4 pb-sp-4">
         <View className="gap-sp-2">
           <Text className="font-sans text-base font-semibold text-foreground dark:text-foreground-dark">
-            Seus repositórios em poucos passos
+            {existingGitHub ? "Atualizar acesso ao GitHub" : "Seus repositórios em poucos passos"}
           </Text>
           <Text className="font-sans text-sm text-muted-foreground dark:text-muted-foreground-dark">
             1. Crie um token de acesso de permissões específicas (fine-grained)
@@ -132,7 +144,7 @@ export function GitHubQuickConnect({
             loading={busy}
             onPress={() => void connect()}
           >
-            Conectar e testar
+            {existingGitHub ? "Atualizar e testar" : "Conectar e testar"}
           </Button>
         )}
 
