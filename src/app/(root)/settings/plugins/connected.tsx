@@ -1,5 +1,5 @@
 import { useRouter } from "expo-router";
-import { ChevronLeft, ChevronRight, Github, Plus, PlugZap } from "lucide-react-native";
+import { ChevronLeft, ChevronRight, GitBranch, Plus, PlugZap } from "lucide-react-native";
 import { useMemo, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 
@@ -64,7 +64,7 @@ export default function ConnectedPluginsScreen() {
           aparecem logo abaixo. As funções existentes continuam disponíveis.
         </Text>
         <Button
-          leftIcon={<Github color={theme.background} size={17} />}
+          leftIcon={<GitBranch color={theme.background} size={17} />}
           onPress={() => router.push("/settings/mcp/list?connect=github" as never)}
         >
           Conectar GitHub por token
