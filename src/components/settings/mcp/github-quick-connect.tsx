@@ -40,23 +40,28 @@ export function GitHubQuickConnect({
     setError(null);
 
     try {
-      const serverId = existingGitHub
-        ? (await updateMcpServer(existingGitHub.id, {
-            authMode: "headers",
-            enabled: true,
-            headerValues: { Authorization: "Bearer " + value },
-            label: "GitHub",
-            transport: "http",
-            url: GITHUB_MCP_URL,
-          }), existingGitHub.id)
-        : (await createMcpServer({
-            authMode: "headers",
-            enabled: true,
-            headerValues: { Authorization: "Bearer " + value },
-            label: "GitHub",
-            transport: "http",
-            url: GITHUB_MCP_URL,
-          })).id;
+      let serverId: string;
+      if (existingGitHub) {
+        await updateMcpServer(existingGitHub.id, {
+          authMode: "headers",
+          enabled: true,
+          headerValues: { Authorization: "Bearer " + value },
+          label: "GitHub",
+          transport: "http",
+          url: GITHUB_MCP_URL,
+        });
+        serverId = existingGitHub.id;
+      } else {
+        const server = await createMcpServer({
+          authMode: "headers",
+          enabled: true,
+          headerValues: { Authorization: "Bearer " + value },
+          label: "GitHub",
+          transport: "http",
+          url: GITHUB_MCP_URL,
+        });
+        serverId = server.id;
+      }
 
       // The existing credential store persists headers securely. Do not
       // retain the plaintext token in component state after saving it.
