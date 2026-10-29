@@ -256,7 +256,7 @@ export default function SettingsScreen() {
           }}
           value={
             schedulingEnabled
-              ? `${schedules.filter((schedule) => schedule.enabled).length} active`
+              ? `${schedules.filter((schedule) => schedule.enabled).length} ativas`
               : "Desativadas"
           }
         />
@@ -342,8 +342,8 @@ export default function SettingsScreen() {
                 notificationSettings.approvalRequests ||
                 notificationSettings.runFinished ||
                 notificationSettings.questionRequests
-                  ? "On"
-                  : "Off"
+                  ? "Ativadas"
+                  : "Desativadas"
               }
             />
           </DrawerTrigger>
@@ -359,11 +359,11 @@ export default function SettingsScreen() {
               <View className="flex-row items-center justify-between">
                 <View className="min-w-0 flex-1">
                   <Text className="font-sans text-base text-foreground dark:text-foreground-dark">
-                    Approval requests
+                    Solicitações de aprovação
                   </Text>
                   <Text className="font-sans text-xs text-muted-foreground dark:text-muted-foreground-dark">
-                    Alert when the agent asks permission to use a tool. Includes
-                    Approve / Reject actions.
+                    Alerta quando o agente pede permissão para usar uma ferramenta.
+                    Permite aprovar ou recusar a ação.
                   </Text>
                 </View>
                 <Checkbox
@@ -379,10 +379,10 @@ export default function SettingsScreen() {
               <View className="flex-row items-center justify-between">
                 <View className="min-w-0 flex-1">
                   <Text className="font-sans text-base text-foreground dark:text-foreground-dark">
-                    Run finished
+                    Execução concluída
                   </Text>
                   <Text className="font-sans text-xs text-muted-foreground dark:text-muted-foreground-dark">
-                    Alert when the agent finishes a task or fails.
+                    Avisa quando uma tarefa termina ou apresenta falha.
                   </Text>
                 </View>
                 <Checkbox
@@ -398,10 +398,10 @@ export default function SettingsScreen() {
               <View className="flex-row items-center justify-between">
                 <View className="min-w-0 flex-1">
                   <Text className="font-sans text-base text-foreground dark:text-foreground-dark">
-                    Questions & secrets
+                    Perguntas e credenciais
                   </Text>
                   <Text className="font-sans text-xs text-muted-foreground dark:text-muted-foreground-dark">
-                    Alert when the agent asks a question or needs a secret.
+                    Avisa quando o agente faz uma pergunta ou solicita uma credencial.
                   </Text>
                 </View>
                 <Checkbox
@@ -428,10 +428,10 @@ export default function SettingsScreen() {
               label="Avisos por voz"
               value={
                 !notificationSettings.announcementEnabled
-                  ? "Off"
+                  ? "Desativados"
                   : notificationSettings.announcementMode === "always"
-                    ? "Always"
-                    : "Background"
+                    ? "Sempre"
+                    : "Segundo plano"
               }
             />
           </DrawerTrigger>
@@ -441,24 +441,24 @@ export default function SettingsScreen() {
             </DrawerHeader>
             <DrawerBody contentContainerClassName="gap-sp-3">
               <Text className="font-sans text-sm text-muted-foreground dark:text-muted-foreground-dark">
-                Read a short spoken update aloud when a task finishes or the
-                agent needs you. Notification alerts stay separate.
+                Lê um breve aviso em voz alta ao terminar uma tarefa ou
+                quando o agente precisar de você. Notificações continuam separadas.
               </Text>
 
               {Platform.OS === "ios" ? (
                 <Text className="font-sans text-xs text-muted-foreground dark:text-muted-foreground-dark">
-                  iOS may pause speech while the app is locked or in the
-                  background. Notification alerts still work.
+                  O iOS pode interromper a fala quando a tela estiver bloqueada
+                  ou o aplicativo estiver em segundo plano. As notificações continuam.
                 </Text>
               ) : null}
 
               <View className="flex-row items-center justify-between">
                 <View className="min-w-0 flex-1">
                   <Text className="font-sans text-base text-foreground dark:text-foreground-dark">
-                    Spoken announcements
+                    Avisos falados
                   </Text>
                   <Text className="font-sans text-xs text-muted-foreground dark:text-muted-foreground-dark">
-                    Use the system voice. Silent mode and Focus still apply.
+                    Usa a voz do sistema, respeitando os modos silencioso e Foco.
                   </Text>
                 </View>
                 <Checkbox
@@ -474,10 +474,10 @@ export default function SettingsScreen() {
               <View className="flex-row items-center justify-between">
                 <View className="min-w-0 flex-1">
                   <Text className="font-sans text-base text-foreground dark:text-foreground-dark">
-                    Announce while app is open
+                    Anunciar com o aplicativo aberto
                   </Text>
                   <Text className="font-sans text-xs text-muted-foreground dark:text-muted-foreground-dark">
-                    Off: announcements only play after you leave the app.
+                    Desativado: os avisos só serão lidos em segundo plano.
                   </Text>
                 </View>
                 <Checkbox
@@ -494,10 +494,10 @@ export default function SettingsScreen() {
               <View className="flex-row items-center justify-between">
                 <View className="min-w-0 flex-1">
                   <Text className="font-sans text-base text-foreground dark:text-foreground-dark">
-                    Task finished
+                    Tarefa concluída
                   </Text>
                   <Text className="font-sans text-xs text-muted-foreground dark:text-muted-foreground-dark">
-                    Announce when a run completes or fails.
+                    Anuncia quando uma execução termina ou falha.
                   </Text>
                 </View>
                 <Checkbox
