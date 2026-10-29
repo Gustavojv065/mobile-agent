@@ -1,5 +1,5 @@
 import { useRouter } from "expo-router";
-import { ChevronLeft, ChevronRight, GitBranch, Plus, PlugZap } from "lucide-react-native";
+import { ChevronLeft, ChevronRight, GitBranch, Plus } from "lucide-react-native";
 import { useMemo, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 
@@ -69,14 +69,33 @@ export default function ConnectedPluginsScreen() {
         >
           Conectar GitHub por token
         </Button>
-        <Button
-          leftIcon={<PlugZap color={theme.text} size={17} />}
+        <Pressable
+          accessibilityRole="button"
+          className="min-h-12 flex-row items-center justify-between rounded-ui border border-border px-sp-3 dark:border-border-dark"
           onPress={() => router.push("/settings/mcp/connected" as never)}
-          variant="outline"
         >
-          Outras conexões ({mcpServers.filter((server) => server.enabled).length} ativas)
-        </Button>
+          <Text className="font-sans text-sm font-medium text-foreground dark:text-foreground-dark">
+            Conexões MCP ({mcpServers.filter((server) => server.enabled).length} ativas)
+          </Text>
+          <ChevronRight color={theme.textSecondary} size={18} />
+        </Pressable>
       </Card>
+
+      <Pressable
+        accessibilityRole="button"
+        className="min-h-14 flex-row items-center justify-between gap-sp-3 rounded-ui border border-border px-sp-4 dark:border-border-dark"
+        onPress={() => router.push("/settings/plugins/integrations" as never)}
+      >
+        <View className="min-w-0 flex-1">
+          <Text className="font-sans text-base font-medium text-foreground dark:text-foreground-dark">
+            Integrações conhecidas do ChatGPT
+          </Text>
+          <Text className="font-sans text-xs text-muted-foreground dark:text-muted-foreground-dark">
+            Veja o que pode ser conectado ao Mobile Agent
+          </Text>
+        </View>
+        <ChevronRight color={theme.textSecondary} size={18} />
+      </Pressable>
 
       {!ready ? (
         <Card className="px-sp-4 py-sp-4">
