@@ -45,7 +45,7 @@ export default function ConnectedMcpServersScreen() {
       setError(
         actionError instanceof Error
           ? actionError.message
-          : "MCP action failed.",
+          : "Não foi possível realizar esta ação.",
       );
     } finally {
       setBusyKey(null);
@@ -81,10 +81,10 @@ export default function ConnectedMcpServersScreen() {
             size="sm"
             variant="outline"
           >
-            Add custom
+            Configuração manual
           </Button>
         }
-        title="MCP servers"
+        title="Conexões e serviços"
       />
 
       {!ready ? (
@@ -146,7 +146,7 @@ export default function ConnectedMcpServersScreen() {
             onPress={() => router.push("/settings/mcp/list" as never)}
             variant="outline"
           >
-            Add more
+            Adicionar serviços
           </Button>
         </>
       )}
@@ -163,7 +163,7 @@ export default function ConnectedMcpServersScreen() {
             key={editServerId ?? "custom"}
             onSaved={() => setSetupDrawerOpen(false)}
             serverId={editServerId ?? undefined}
-            title={editServerId ? "Edit MCP server" : "Add MCP server"}
+            title={editServerId ? "Editar conexão" : "Adicionar conexão"}
           />
         </DrawerContent>
       </Drawer>
