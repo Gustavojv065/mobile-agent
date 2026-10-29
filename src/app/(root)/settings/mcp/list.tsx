@@ -48,11 +48,15 @@ export default function McpCatalogScreen() {
   const filteredPresets = useMemo(() => {
     const needle = query.trim().toLowerCase();
 
+    const orderedPresets = [...catalogPresets].sort(
+      (a, b) => Number(b.id === "github") - Number(a.id === "github"),
+    );
+
     if (!needle) {
-      return catalogPresets;
+      return orderedPresets;
     }
 
-    return catalogPresets.filter(
+    return orderedPresets.filter(
       (preset) =>
         preset.label.toLowerCase().includes(needle) ||
         preset.description.toLowerCase().includes(needle),
@@ -258,6 +262,8 @@ function PresetRow({
   onPress: () => void;
   preset: McpServerPreset;
 }) {
+  const canReconfigure = preset.id === "github";
+
   return (
     <View className="flex-row items-center gap-sp-3 px-sp-4 py-sp-4">
       <View className="min-w-0 flex-1 gap-1">
@@ -276,13 +282,13 @@ function PresetRow({
         </Text>
       </View>
       <Button
-        disabled={connected}
+        disabled={connected && !canReconfigure}
         loading={busy}
         onPress={onPress}
         size="sm"
-        variant={connected ? "secondary" : "outline"}
+        variant={connected && !canReconfigure ? "secondary" : "outline"}
       >
-        {connected ? "Adicionado" : "Conectar"}
+        {connected ? (canReconfigure ? "Atualizar acesso" : "Adicionado") : "Conectar"}
       </Button>
     </View>
   );
