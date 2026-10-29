@@ -28,7 +28,7 @@ export function McpTokenQuickConnect({
 
   const existing = mcpServers.find(
     (server) =>
-      server.url.replace(/\\/$/, "") === config.url.replace(/\\/$/, ""),
+      server.url.replace(/\/$/, "") === config.url.replace(/\/$/, ""),
   );
 
   const saveAndTest = async () => {
