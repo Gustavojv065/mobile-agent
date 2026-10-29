@@ -1,4 +1,4 @@
-import { useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import { Plus } from "lucide-react-native";
 import { useEffect, useMemo, useState } from "react";
 import { Text, View } from "react-native";
@@ -54,6 +54,7 @@ function normalizeMcpUrl(value: string) {
 
 export default function McpCatalogScreen() {
   const router = useRouter();
+  const { connect } = useLocalSearchParams<{ connect?: string }>();
   const theme = useTheme();
   const { createMcpServerOAuth, mcpServers } = useConfig();
   const [busyKey, setBusyKey] = useState<string | null>(null);
@@ -63,7 +64,7 @@ export default function McpCatalogScreen() {
   const [error, setError] = useState<string | null>(null);
   const [setupPresetId, setSetupPresetId] = useState<string | null>(null);
   const [setupDrawerOpen, setSetupDrawerOpen] = useState(false);
-  const [githubQuickOpen, setGithubQuickOpen] = useState(false);
+  const [githubQuickOpen, setGithubQuickOpen] = useState(connect === "github");
   const [query, setQuery] = useState("");
 
   const filteredPresets = useMemo(() => {
