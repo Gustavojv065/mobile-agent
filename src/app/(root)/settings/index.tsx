@@ -174,13 +174,13 @@ export default function SettingsScreen() {
           variant="ghost"
         />
         <Text className="font-sans text-xl font-semibold text-foreground dark:text-foreground-dark">
-          Settings
+          Configurações
         </Text>
       </View>
 
       <Card className="overflow-hidden">
         <SettingsLinkRow
-          label="Providers"
+          label="Modelos de IA"
           onPress={() => {
             router.push("/settings/providers");
           }}
@@ -202,11 +202,11 @@ export default function SettingsScreen() {
         />
         <Separator />
         <SettingsLinkRow
-          label="MCP servers"
+          label="Conexões e serviços"
           onPress={() => {
             router.push("/settings/mcp/connected" as never);
           }}
-          value={`${enabledMcpServerCount} active`}
+          value={`${enabledMcpServerCount} ativos`
         />
         <Separator />
         <SettingsLinkRow
