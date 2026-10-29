@@ -52,7 +52,7 @@ export const WHISPER_LANGUAGES = [
   { id: "fr", label: "French" },
   { id: "de", label: "German" },
   { id: "it", label: "Italian" },
-  { id: "pt", label: "Portuguese" },
+  { id: "pt", label: "Português" },
   { id: "nl", label: "Dutch" },
   { id: "ru", label: "Russian" },
   { id: "hi", label: "Hindi" },
@@ -90,8 +90,11 @@ const DEFAULT_SETTINGS: VoiceSettings = { engine: "system", languages: {} };
 
 function defaultLanguageFor(engine: VoiceEngine): WhisperLanguage {
   const options = getModelLanguages(engine);
+  // Prioritize Portuguese for new installations, while preserving any
+  // existing language preference saved for the chosen engine.
+  const portuguese = options.find((item) => item.id === "pt");
   const english = options.find((item) => item.id === "en");
-  return (english ?? options[0] ?? WHISPER_LANGUAGES[1]).id;
+  return (portuguese ?? english ?? options[0] ?? WHISPER_LANGUAGES[1]).id;
 }
 
 function directory() {
