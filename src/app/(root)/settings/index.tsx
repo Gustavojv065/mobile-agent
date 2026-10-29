@@ -206,7 +206,7 @@ export default function SettingsScreen() {
           onPress={() => {
             router.push("/settings/mcp/connected" as never);
           }}
-          value={`${enabledMcpServerCount} ativos`
+          value={`${enabledMcpServerCount} ativos`}
         />
         <Separator />
         <SettingsLinkRow
