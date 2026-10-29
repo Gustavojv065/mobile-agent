@@ -28,7 +28,7 @@ export default function SettingsMemoryScreen() {
         />
         <View className="min-w-0 flex-1">
           <Text className="font-sans text-xl font-semibold text-foreground dark:text-foreground-dark">
-            Memory
+            Memória
           </Text>
         </View>
       </View>
@@ -48,7 +48,7 @@ export default function SettingsMemoryScreen() {
               Local
             </Text>
             <Text className="font-sans text-xs text-muted-foreground dark:text-muted-foreground-dark">
-              {memoryEnabled ? "Selected" : "Disabled"}
+              {memoryEnabled ? "Selecionada" : "Desativada"}
             </Text>
           </View>
           <ChevronRight color={theme.textSecondary} size={18} />
