@@ -5,6 +5,7 @@ import { Text, View } from "react-native";
 
 import { McpScreenHeader } from "@/components/settings/mcp/screen-header";
 import { McpServerForm } from "@/components/settings/mcp/mcp-server-form";
+import { GitHubQuickConnect } from "@/components/settings/mcp/github-quick-connect";
 import { Container } from "@/components/shared/container";
 import { SearchBox } from "@/components/shared/search-box";
 import { Badge } from "@/components/ui/badge";
@@ -41,6 +42,7 @@ export default function McpCatalogScreen() {
   const [error, setError] = useState<string | null>(null);
   const [setupPresetId, setSetupPresetId] = useState<string | null>(null);
   const [setupDrawerOpen, setSetupDrawerOpen] = useState(false);
+  const [githubQuickOpen, setGithubQuickOpen] = useState(false);
   const [query, setQuery] = useState("");
 
   const filteredPresets = useMemo(() => {
@@ -69,7 +71,7 @@ export default function McpCatalogScreen() {
       setCatalogError(
         catalogLoadError instanceof Error
           ? catalogLoadError.message
-          : "Could not load MCP connections.",
+          : "Não foi possível carregar os serviços.",
       );
     } finally {
       if (!signal?.aborted) setCatalogLoading(false);
@@ -83,6 +85,12 @@ export default function McpCatalogScreen() {
   }, []);
 
   const connectPreset = async (preset: McpServerPreset) => {
+    // GitHub uses a guided token screen instead of exposing raw HTTP headers.
+    if (preset.id === "github" && preset.authMode === "headers") {
+      setGithubQuickOpen(true);
+      return;
+    }
+
     if (preset.authMode !== "oauth") {
       setSetupPresetId(preset.id);
       setSetupDrawerOpen(true);
@@ -112,7 +120,7 @@ export default function McpCatalogScreen() {
       setError(
         connectError instanceof Error
           ? connectError.message
-          : "Could not connect the MCP server.",
+          : "Não foi possível conectar o servidor MCP.",
       );
     } finally {
       setBusyKey(null);
@@ -139,17 +147,17 @@ export default function McpCatalogScreen() {
             size="sm"
             variant="outline"
           >
-            Add custom
+            Avançado
           </Button>
         }
-        title="MCP servers"
+        title="Conexões MCP"
       />
 
       {catalogPresets.length > 0 ? (
         <>
           <SearchBox
             onChangeText={setQuery}
-            placeholder="Search MCP servers"
+            placeholder="Buscar serviços"
             value={query}
           />
           {filteredPresets.length > 0 ? (
@@ -176,7 +184,7 @@ export default function McpCatalogScreen() {
           ) : (
             <Card className="px-sp-4 py-sp-4">
               <Text className="font-sans text-sm text-muted-foreground dark:text-muted-foreground-dark">
-                {`No MCP servers match "${query}".`}
+                {`Nenhum serviço corresponde a "${query}".`}
               </Text>
             </Card>
           )}
@@ -184,14 +192,14 @@ export default function McpCatalogScreen() {
       ) : catalogLoading ? (
         <Card className="px-sp-4 py-sp-4">
           <Text className="font-sans text-sm text-muted-foreground dark:text-muted-foreground-dark">
-            Loading preconfigured MCP servers…
+            Carregando serviços disponíveis…
           </Text>
         </Card>
       ) : (
         <Card className="px-sp-4 py-sp-4">
           <Text className="font-sans text-sm text-muted-foreground dark:text-muted-foreground-dark">
-            No preconfigured MCP servers found. Use Add custom above to connect
-            your own.
+            Nenhum serviço pré-configurado disponível. Use Avançado para adicionar
+            um servidor manualmente.
           </Text>
         </Card>
       )}
@@ -207,6 +215,21 @@ export default function McpCatalogScreen() {
         </Text>
       ) : null}
 
+      <Drawer onOpenChange={setGithubQuickOpen} open={githubQuickOpen}>
+        <DrawerContent showCloseButton showHandle>
+          <GitHubQuickConnect
+            onConnected={() => {
+              setGithubQuickOpen(false);
+              router.dismissTo("/settings/mcp/connected");
+            }}
+            onManage={() => {
+              setGithubQuickOpen(false);
+              router.dismissTo("/settings/mcp/connected");
+            }}
+          />
+        </DrawerContent>
+      </Drawer>
+
       <Drawer onOpenChange={setSetupDrawerOpen} open={setupDrawerOpen}>
         <DrawerContent contentClassName="overflow-hidden" showCloseButton showHandle>
           <McpServerForm
@@ -216,7 +239,7 @@ export default function McpCatalogScreen() {
               router.dismissTo("/settings/mcp/connected");
             }}
             presetId={setupPresetId ?? undefined}
-            title="Set up MCP server"
+            title="Configurar servidor MCP"
           />
         </DrawerContent>
       </Drawer>
@@ -259,7 +282,7 @@ function PresetRow({
         size="sm"
         variant={connected ? "secondary" : "outline"}
       >
-        {connected ? "Added" : "Set up"}
+        {connected ? "Adicionado" : "Conectar"}
       </Button>
     </View>
   );
