@@ -73,7 +73,7 @@ export default function ConnectedSkillsScreen() {
             Skills
           </Text>
           <Text className="font-sans text-xs text-muted-foreground dark:text-muted-foreground-dark">
-            {enabledSkills} ativas
+            {enabledSkills} {enabledSkills === 1 ? "ativa" : "ativas"}
           </Text>
         </View>
         <Button
