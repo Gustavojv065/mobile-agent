@@ -54,7 +54,7 @@ export default function SettingsAgentsScreen() {
       setError(
         actionError instanceof Error
           ? actionError.message
-          : "Agent action failed.",
+          : "Não foi possível executar a ação do agente.",
       );
     } finally {
       setBusyKey(null);
@@ -69,7 +69,7 @@ export default function SettingsAgentsScreen() {
       setError(
         actionError instanceof Error
           ? actionError.message
-          : "Failed to start chat.",
+          : "Não foi possível iniciar a conversa.",
       );
     }
   };
@@ -88,7 +88,7 @@ export default function SettingsAgentsScreen() {
           variant="ghost"
         />
         <Text className="min-w-0 flex-1 font-sans text-xl font-semibold text-foreground dark:text-foreground-dark">
-          Agents
+          Agentes
         </Text>
         <Button
           className="ml-auto"
@@ -97,7 +97,7 @@ export default function SettingsAgentsScreen() {
           size="sm"
           variant="outline"
         >
-          Create
+          Criar
         </Button>
       </View>
 
@@ -109,10 +109,10 @@ export default function SettingsAgentsScreen() {
         >
           <View className="min-w-0 flex-1">
             <Text className="font-sans text-base font-medium text-foreground dark:text-foreground-dark">
-              Built-in agents
+              Agentes integrados
             </Text>
             <Text className="font-sans text-sm text-muted-foreground dark:text-muted-foreground-dark">
-              {NATIVE_AGENTS.length} available
+              {NATIVE_AGENTS.length} disponíveis
             </Text>
           </View>
           <ChevronRight color={theme.textSecondary} size={18} />
@@ -217,7 +217,7 @@ function CustomAgentRow({
             ) : null}
           </View>
           {!agent.enabled ? (
-            <Badge variant="secondary">Disabled</Badge>
+            <Badge variant="secondary">Desativado</Badge>
           ) : null}
           <ChevronRight color={theme.textSecondary} size={18} />
         </Pressable>
@@ -227,7 +227,7 @@ function CustomAgentRow({
           <View className="flex-row items-center gap-sp-3">
             <SquarePen color={theme.text} size={16} />
             <Text className="text-foreground dark:text-foreground-dark">
-              Edit
+              Editar
             </Text>
           </View>
         </DropdownMenuItem>
@@ -238,7 +238,7 @@ function CustomAgentRow({
           <View className="flex-row items-center gap-sp-3">
             <Copy color={theme.text} size={16} />
             <Text className="text-foreground dark:text-foreground-dark">
-              Copy
+              Copiar
             </Text>
           </View>
         </DropdownMenuItem>
@@ -249,7 +249,7 @@ function CustomAgentRow({
           <View className="flex-row items-center gap-sp-3">
             <Trash2 color={theme.destructive} size={16} />
             <Text className="text-destructive dark:text-destructive-dark">
-              Delete
+              Excluir
             </Text>
           </View>
         </DropdownMenuItem>
