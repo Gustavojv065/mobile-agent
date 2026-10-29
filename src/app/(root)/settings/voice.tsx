@@ -45,7 +45,7 @@ export default function VoiceSettingsScreen() {
   const [installed, setInstalled] = useState<string[]>([]);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [page, setPage] = useState(0);
-  const [language, setLanguage] = useState<WhisperLanguage>("en");
+  const [language, setLanguage] = useState<WhisperLanguage>("pt");
   const [busy, setBusy] = useState<string | null>(null);
   const [progress, setProgress] = useState(0);
   const supported = Platform.OS === "android" || Platform.OS === "ios";
@@ -66,7 +66,7 @@ export default function VoiceSettingsScreen() {
   };
   useEffect(() => {
     refresh().catch((error: unknown) =>
-      Alert.alert("Voice settings", String(error)),
+      Alert.alert("Configurações de voz", String(error)),
     );
     // Downloads are scoped to this screen; leaving cancels unfinished files.
     return () => {
@@ -94,7 +94,7 @@ export default function VoiceSettingsScreen() {
       setEngine(next);
     } catch (error) {
       Alert.alert(
-        "Voice settings",
+        "Configurações de voz",
         error instanceof Error ? error.message : String(error),
       );
     }
@@ -108,7 +108,7 @@ export default function VoiceSettingsScreen() {
       await refresh();
     } catch (error) {
       Alert.alert(
-        "Download failed",
+        "Falha no download",
         error instanceof Error ? error.message : String(error),
       );
     } finally {
@@ -119,17 +119,17 @@ export default function VoiceSettingsScreen() {
   const remove = (id: string, label: string) =>
     Alert.alert(
       `Delete ${label}?`,
-      "The model can be downloaded again. If it is selected, voice input will switch to System.",
+      "O modelo poderá ser baixado novamente. Se estiver ativo, a entrada de voz voltará ao reconhecimento do sistema.",
       [
-        { text: "Cancel", style: "cancel" },
+        { text: "Cancelar", style: "cancel" },
         {
-          text: "Delete",
+          text: "Excluir",
           style: "destructive",
           onPress: () => {
             deleteVoiceModel(id)
               .then(refresh)
               .catch((error: unknown) =>
-                Alert.alert("Delete failed", String(error)),
+                Alert.alert("Falha ao excluir", String(error)),
               );
           },
         },
@@ -144,9 +144,9 @@ export default function VoiceSettingsScreen() {
     [selectedKey],
   );
   const languageLabel =
-    languageOptions.find((item) => item.id === language)?.label ?? "English";
+    languageOptions.find((item) => item.id === language)?.label ?? "Português";
 
-  const rowValue = (id: string) => (engine === id ? "Selected" : "Setup");
+  const rowValue = (id: string) => (engine === id ? "Selecionado" : "Configurar");
 
   return (
     <Container
@@ -162,24 +162,24 @@ export default function VoiceSettingsScreen() {
           variant="ghost"
         />
         <Text className="font-sans text-xl font-semibold text-foreground dark:text-foreground-dark">
-          Voice input
+          Entrada de voz
         </Text>
       </View>
 
       {!supported ? (
         <Text className="px-sp-1 font-sans text-sm text-muted-foreground dark:text-muted-foreground-dark">
-          Local Whisper requires Android or iOS.
+          O Whisper local exige Android ou iOS.
         </Text>
       ) : null}
 
       <Card className="overflow-hidden">
         <VoiceLinkRow
-          label="System"
+          label="Sistema"
           onPress={() => {
             setPage(0);
             setSelectedKey("system");
           }}
-          value={engine === "system" ? "Selected" : "Setup"}
+          value={engine === "system" ? "Selecionado" : "Configurar"}
         />
         {models.map((model) => (
           <View key={model.id}>
@@ -211,16 +211,16 @@ export default function VoiceSettingsScreen() {
               <DrawerHeader>
                 <DrawerTitle>
                   {selectedIsSystem
-                    ? "System"
-                    : (selectedModel?.label ?? "Model")}
+                    ? "Sistema"
+                    : (selectedModel?.label ?? "Modelo")}
                 </DrawerTitle>
               </DrawerHeader>
 
               <DrawerBody contentContainerClassName="gap-sp-4 pb-sp-4">
                 {selectedIsSystem ? (
                   <Text className="font-sans text-sm text-muted-foreground dark:text-muted-foreground-dark">
-                    Uses your device’s speech recognizer. Best accuracy, and the
-                    language follows your device settings.
+                    Usa o reconhecimento de voz do dispositivo. O idioma segue
+                    as configurações do Android ou iOS.
                   </Text>
                 ) : null}
 
@@ -230,15 +230,15 @@ export default function VoiceSettingsScreen() {
                       label="Status"
                       value={
                         engine === selectedModel.id
-                          ? "Selected"
+                          ? "Selecionado"
                           : installed.includes(selectedModel.id)
-                            ? "Downloaded"
-                            : "Not downloaded"
+                            ? "Baixado"
+                            : "Não baixado"
                       }
                     />
                     <Separator />
                     <DetailRow
-                      label="Size"
+                      label="Tamanho"
                       value={formatBytes(selectedModel.sizeBytes)}
                     />
                   </View>
@@ -246,7 +246,7 @@ export default function VoiceSettingsScreen() {
 
                 {!selectedIsSystem ? (
                   <DrawerLinkRow
-                    label="Language"
+                    label="Idioma"
                     onPress={() => setPage(1)}
                     value={languageLabel}
                   />
@@ -263,7 +263,7 @@ export default function VoiceSettingsScreen() {
                       />
                     </View>
                     <Text className="font-sans text-xs text-muted-foreground dark:text-muted-foreground-dark">
-                      Downloading {Math.round(progress * 100)}%
+                      Baixando {Math.round(progress * 100)}%
                     </Text>
                   </View>
                 ) : null}
@@ -277,7 +277,7 @@ export default function VoiceSettingsScreen() {
                       selectEngine("system").catch(console.error);
                     }}
                   >
-                    {engine === "system" ? "Selected" : "Use System"}
+                    {engine === "system" ? "Selecionado" : "Usar sistema"}
                   </Button>
                 ) : selectedModel ? (
                   installed.includes(selectedModel.id) ? (
@@ -289,7 +289,7 @@ export default function VoiceSettingsScreen() {
                           selectEngine(selectedModel.id).catch(console.error);
                         }}
                       >
-                        {engine === selectedModel.id ? "Selected" : "Use model"}
+                        {engine === selectedModel.id ? "Selecionado" : "Usar modelo"}
                       </Button>
                       <Button
                         disabled={busy !== null}
@@ -298,7 +298,7 @@ export default function VoiceSettingsScreen() {
                         }
                         variant="outline"
                       >
-                        Delete
+                        Excluir
                       </Button>
                     </View>
                   ) : (
@@ -310,13 +310,13 @@ export default function VoiceSettingsScreen() {
                         }}
                       >
                         {busy === selectedModel.id
-                          ? "Downloading…"
-                          : `Download ${formatBytes(selectedModel.sizeBytes)}`}
+                          ? "Baixando…"
+                          : `Baixar ${formatBytes(selectedModel.sizeBytes)}`}
                       </Button>
                       {busy === selectedModel.id ? (
                         <Pressable
-                          accessibilityHint="Cancels the model download"
-                          accessibilityLabel="Cancel"
+                          accessibilityHint="Cancela o download do modelo"
+                          accessibilityLabel="Cancelar"
                           accessibilityRole="button"
                           className="items-center py-sp-3"
                           hitSlop={8}
@@ -328,7 +328,7 @@ export default function VoiceSettingsScreen() {
                           }
                         >
                           <Text className="font-sans text-sm text-muted-foreground dark:text-muted-foreground-dark">
-                            Cancel
+                            Cancelar
                           </Text>
                         </Pressable>
                       ) : null}
@@ -341,13 +341,13 @@ export default function VoiceSettingsScreen() {
             <DrawerPagerPage>
               <DrawerHeader className="flex-row items-center gap-sp-2">
                 <Pressable
-                  accessibilityLabel="Back"
+                  accessibilityLabel="Voltar"
                   className="h-9 w-9 items-center justify-center rounded-full"
                   onPress={() => setPage(0)}
                 >
                   <ChevronLeft color={theme.text} size={22} />
                 </Pressable>
-                <DrawerTitle>Language</DrawerTitle>
+                <DrawerTitle>Idioma</DrawerTitle>
               </DrawerHeader>
               <DrawerBody contentContainerClassName="gap-sp-2 pb-sp-4">
                 {languageOptions.map((item) => {
