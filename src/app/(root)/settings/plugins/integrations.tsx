@@ -1,5 +1,5 @@
 import { useRouter } from "expo-router";
-import { ChevronLeft, ChevronRight, ExternalLink, PlugZap, Search } from "lucide-react-native";
+import { ChevronLeft, ChevronRight, ExternalLink, PlugZap } from "lucide-react-native";
 import { useMemo, useState } from "react";
 import { Alert, Linking, Pressable, Text, View } from "react-native";
 
