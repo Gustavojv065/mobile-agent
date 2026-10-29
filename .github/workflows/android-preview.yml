@@ -22,7 +22,7 @@ concurrency:
 
 jobs:
   build-preview:
-    name: Build Android ARM64 test APK
+    name: Build standalone Android ARM64 APK
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
@@ -97,16 +97,37 @@ jobs:
           fs.writeFileSync(file, lines.join("\n"));
           NODE
 
-      - name: Build debug APK (ARM64)
+      # assembleDebug installs Expo's development launcher and needs Metro.
+      # Release bundles the real chat application JS locally and starts offline.
+      - name: Build standalone release APK (ARM64)
         working-directory: android
         env:
           NODE_OPTIONS: --max-old-space-size=3072
-        run: ./gradlew :app:assembleDebug --no-daemon --max-workers=2 -PreactNativeArchitectures=arm64-v8a
+        run: ./gradlew :app:assembleRelease --no-daemon --max-workers=2 -PreactNativeArchitectures=arm64-v8a
 
-      - name: Publish test APK as workflow artifact
+      - name: Verify standalone APK contains bundled application
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          apks=(android/app/build/outputs/apk/release/*.apk)
+          if [ "${#apks[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one release APK, found ${#apks[@]}"
+            exit 1
+          fi
+          echo "Checking bundled assets in ${apks[0]}"
+          unzip -Z1 "${apks[0]}" > apk-contents.txt
+          if ! grep -Fxq 'assets/index.android.bundle' apk-contents.txt; then
+            echo "::error::Release APK is missing the bundled React Native/Expo application"
+            exit 1
+          fi
+          echo "Bundled application found; no development server required."
+          mv "${apks[0]}" mobile-agent-ptbr-arm64-standalone.apk
+
+      - name: Publish standalone test APK
         uses: actions/upload-artifact@v4
         with:
-          name: mobile-agent-ptbr-arm64-preview
-          path: android/app/build/outputs/apk/debug/*.apk
+          name: mobile-agent-ptbr-arm64-standalone
+          path: mobile-agent-ptbr-arm64-standalone.apk
           if-no-files-found: error
           retention-days: 7
