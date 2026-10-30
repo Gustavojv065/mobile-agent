@@ -23,7 +23,7 @@ export const FEATURED_INTEGRATIONS: readonly IntegrationEntry[] = [
   { id: "gpts-to-plugin", name: "GPTs to Plugin", description: "Ferramenta da plataforma ChatGPT, sem sincronização com este APK.", action: "chatgpt" },
   { id: "magicpath", name: "MagicPath", description: "Integração com Mobile Agent ainda não confirmada.", action: "chatgpt" },
   { id: "minidroid", name: "MiniDroid", description: "Ferramenta independente; não é um servidor MCP nativo deste aplicativo.", action: "chatgpt" },
-  { id: "notion", name: "Notion", description: "Conecte suas páginas e documentos autorizando no navegador.", action: "mcp", mcpPresetId: "notion", mcpUrl: "https://mcp.notion.com/mcp" },
+  { id: "notion", name: "Notion", description: "Toque para entrar no Notion e autorizar o Mobile Agent no navegador.", action: "mcp", mcpPresetId: "notion", mcpUrl: "https://mcp.notion.com/mcp" },
   { id: "nvidia-skills", name: "NVIDIA Skills", description: "Explore skills compatíveis; a conexão do ChatGPT não é transferida.", action: "skills" },
   { id: "omgskills", name: "omgskills", description: "Explore skills compatíveis para instalar no Mobile Agent.", action: "skills" },
   { id: "pets", name: "Pets", description: "Plugin específico do ChatGPT, sem integração MCP verificada.", action: "chatgpt" },
@@ -31,11 +31,44 @@ export const FEATURED_INTEGRATIONS: readonly IntegrationEntry[] = [
   { id: "plugin-management", name: "Plugin Management", description: "Gerenciador de plugins do ChatGPT, separado do aplicativo.", action: "chatgpt" },
   { id: "product-design", name: "Product Design", description: "Explore skills de design equivalentes no catálogo do Mobile Agent.", action: "skills" },
   { id: "prompt-perfect", name: "Prompt Perfect", description: "Plugin do ChatGPT, sem sincronização automática de conta.", action: "chatgpt" },
-  { id: "supabase", name: "Supabase", description: "Conecte seus projetos com autorização no navegador.", action: "mcp", mcpPresetId: "supabase", mcpUrl: "https://mcp.supabase.com/mcp" },
+  { id: "supabase", name: "Supabase", description: "Toque para entrar no Supabase e autorizar o Mobile Agent no navegador.", action: "mcp", mcpPresetId: "supabase", mcpUrl: "https://mcp.supabase.com/mcp" },
   { id: "template-creator", name: "Template Creator", description: "Plugin do ChatGPT. Consulte as skills disponíveis para templates.", action: "skills" },
   { id: "ui-ux-designer", name: "UI UX Designer", description: "Explore skills de design e acessibilidade compatíveis.", action: "skills" },
   { id: "vercel", name: "Vercel", description: "MCP oficial exige autorização e clientes aprovados pelo Vercel.", action: "docs", docsUrl: "https://vercel.com/docs/agent-resources/vercel-mcp" },
 ];
+
+/**
+ * These two official, public HTTPS MCP endpoints support OAuth in the
+ * browser. Only trusted, pinned entries may initiate direct authorization.
+ * This does not import or re-use tokens from the user's ChatGPT account.
+ */
+export type OneTapOAuthPreset = {
+  label: string;
+  transport: "http";
+  url: string;
+};
+
+const ONE_TAP_OAUTH_PRESETS: Readonly<
+  Partial<Record<IntegrationEntry["id"], OneTapOAuthPreset>>
+> = {
+  notion: { label: "Notion", transport: "http", url: "https://mcp.notion.com/mcp" },
+  supabase: { label: "Supabase", transport: "http", url: "https://mcp.supabase.com/mcp" },
+};
+
+export function getOneTapOAuthPreset(
+  entry: IntegrationEntry,
+): OneTapOAuthPreset | null {
+  const preset = ONE_TAP_OAUTH_PRESETS[entry.id];
+  if (
+    entry.action !== "mcp" ||
+    !preset ||
+    !entry.mcpUrl ||
+    entry.mcpUrl !== preset.url
+  ) {
+    return null;
+  }
+  return preset;
+}
 
 export function findMobileMcpConnection(
   entry: IntegrationEntry,
