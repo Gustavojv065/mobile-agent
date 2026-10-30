@@ -52,9 +52,9 @@ import { formatFileKindLabel } from "@/modules/files/file-type-label";
 type LibraryCategory = "all" | "images" | "docs";
 
 const CATEGORIES: { id: LibraryCategory; label: string }[] = [
-  { id: "all", label: "All" },
-  { id: "images", label: "Images" },
-  { id: "docs", label: "Docs" },
+  { id: "all", label: "Todos" },
+  { id: "images", label: "Imagens" },
+  { id: "docs", label: "Documentos" },
 ];
 
 export default function LibraryScreen() {
@@ -137,7 +137,7 @@ export default function LibraryScreen() {
       }
 
       if (!localFile.exists) {
-        throw new Error("This file is no longer available in the workspace.");
+        throw new Error("Este arquivo não está mais disponível.");
       }
 
       const mimeType = isTextWorkspaceFile(workspaceFile)
@@ -158,16 +158,16 @@ export default function LibraryScreen() {
       }
 
       if (!(await Linking.canOpenURL(localFile.uri))) {
-        throw new Error("No compatible app is available to open this file.");
+        throw new Error("Nenhum aplicativo compatível está disponível para abrir o arquivo.");
       }
 
       await Linking.openURL(localFile.uri);
     } catch (error) {
       Alert.alert(
-        "Unable to open file",
+        "Não foi possível abrir o arquivo",
         error instanceof Error
           ? error.message
-          : "The file could not be opened.",
+          : "Não foi possível abrir o arquivo.",
       );
     } finally {
       setOpeningFileId(null);
@@ -186,15 +186,15 @@ export default function LibraryScreen() {
 
       const mimeType = workspaceFile.mimeType || localFile.type || "application/octet-stream";
       const result = await downloadFile(localFile.uri, workspaceFile.displayName, mimeType);
-      if (result) Alert.alert("Downloaded", `${result.name} has been saved to Downloads.`);
+      if (result) Alert.alert("Download concluído", `${result.name} foi salvo na pasta Downloads.`);
     } catch (error) {
       if (error instanceof Error && /cancel/i.test(error.message)) {
         return;
       }
 
       Alert.alert(
-        "Download failed",
-        error instanceof Error ? error.message : "Failed to download the file.",
+        "Falha no download",
+        error instanceof Error ? error.message : "Não foi possível baixar o arquivo.",
       );
     } finally {
       setDownloadingFileId(null);
@@ -207,12 +207,12 @@ export default function LibraryScreen() {
     }
 
     Alert.alert(
-      "Delete file?",
-      `${workspaceFile.displayName} will be permanently deleted.`,
+      "Excluir arquivo?",
+      `${workspaceFile.displayName} será excluído definitivamente.`,
       [
-        { text: "Cancel", style: "cancel" },
+        { text: "Cancelar", style: "cancel" },
         {
-          text: "Delete",
+          text: "Excluir",
           style: "destructive",
           onPress: () => {
             setDeletingFileId(workspaceFile.id);
@@ -243,7 +243,7 @@ export default function LibraryScreen() {
           variant="ghost"
         />
         <Text className="font-sans text-xl font-semibold text-foreground dark:text-foreground-dark">
-          Library
+          Biblioteca
         </Text>
       </View>
 

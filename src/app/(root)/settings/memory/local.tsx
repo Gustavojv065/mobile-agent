@@ -51,7 +51,7 @@ export default function SettingsMemoryScreen() {
       setError(
         actionError instanceof Error
           ? actionError.message
-          : "Memory action failed.",
+          : "Falha ao gerenciar a memória.",
       );
     } finally {
       setBusyKey(null);
@@ -62,7 +62,7 @@ export default function SettingsMemoryScreen() {
     const nextContent = content.trim();
 
     if (!nextContent) {
-      throw new Error("Memory content is required.");
+      throw new Error("O conteúdo da memória é obrigatório.");
     }
 
     await writeMemory(nextContent);
@@ -90,10 +90,10 @@ export default function SettingsMemoryScreen() {
         />
         <View className="min-w-0 flex-1">
           <Text className="font-sans text-xl font-semibold text-foreground dark:text-foreground-dark">
-            Local memory
+            Memória local
           </Text>
           <Text className="font-sans text-xs text-muted-foreground dark:text-muted-foreground-dark">
-            {memoryEnabled ? "On" : "Off"}
+            {memoryEnabled ? "Ativada" : "Desativada"}
           </Text>
         </View>
       </View>
@@ -102,7 +102,7 @@ export default function SettingsMemoryScreen() {
         <SwitchRow
           checked={memoryEnabled}
           disabled={busyKey === "memory-enabled"}
-          label="Memory"
+          label="Memória"
           onCheckedChange={(enabled) => {
             runAction("memory-enabled", async () => {
               await updateMemoryEnabled(enabled);
@@ -113,7 +113,7 @@ export default function SettingsMemoryScreen() {
 
       <Card className="gap-sp-3 px-sp-4 py-sp-4">
         <Pressable
-          accessibilityLabel="Edit memory"
+          accessibilityLabel="Editar memória"
           accessibilityRole="button"
           onPress={openEditor}
           style={({ pressed }) => (pressed ? { opacity: 0.84 } : null)}
@@ -127,7 +127,7 @@ export default function SettingsMemoryScreen() {
             )}
             selectable
           >
-            {memory?.content.trim() || "No saved memory."}
+            {memory?.content.trim() || "Nenhuma memória salva."}
           </Text>
         </Pressable>
         <View className="flex-row flex-wrap gap-sp-2">
@@ -137,7 +137,7 @@ export default function SettingsMemoryScreen() {
             size="sm"
             variant="outline"
           >
-            Edit
+            Editar
           </Button>
           {memory ? (
             <Button
@@ -152,7 +152,7 @@ export default function SettingsMemoryScreen() {
               size="sm"
               variant="ghost"
             >
-              Clear file
+              Limpar arquivo
             </Button>
           ) : null}
         </View>
@@ -175,7 +175,7 @@ export default function SettingsMemoryScreen() {
                 className="min-h-72"
                 disabled={busyKey !== null}
                 onChangeText={setContent}
-                placeholder="# Memory\n\n- The user prefers concise answers."
+                placeholder="# Memória\n\n- Prefere respostas objetivas."
                 value={content}
               />
               {error ? (

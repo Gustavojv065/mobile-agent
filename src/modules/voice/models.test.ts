@@ -130,9 +130,9 @@ describe("Whisper model downloads and selection", () => {
     expect(mocks.files.has(mocks.uri)).toBe(false);
     expect(mocks.cancel).toHaveBeenCalledTimes(1);
   });
-  it("defaults the spoken language to English and stores it per engine", async () => {
-    expect(await loadVoiceLanguage("system")).toBe("en");
-    expect(await loadVoiceLanguage("tiny")).toBe("en");
+  it("defaults the spoken language to Portuguese and stores it per engine", async () => {
+    expect(await loadVoiceLanguage("system")).toBe("pt");
+    expect(await loadVoiceLanguage("tiny")).toBe("pt");
     await saveVoiceLanguage("system", "es");
     await saveVoiceLanguage("tiny", "fr");
     expect(await loadVoiceLanguage("system")).toBe("es");
@@ -148,14 +148,14 @@ describe("Whisper model downloads and selection", () => {
   });
   it("ignores an unsupported language for a model", async () => {
     await saveVoiceLanguage("system", "zz" as never);
-    expect(await loadVoiceLanguage("system")).toBe("en");
+    expect(await loadVoiceLanguage("system")).toBe("pt");
   });
   it("falls back to the default language when the file is malformed", async () => {
     mocks.files.set("file:///document/mobile-agent/voice/settings.json", {
       size: 5,
       text: "nope!",
     });
-    expect(await loadVoiceLanguage("system")).toBe("en");
+    expect(await loadVoiceLanguage("system")).toBe("pt");
   });
   it("supports the Small model as a downloadable engine", async () => {
     const small = WHISPER_MODELS.find((model) => model.id === "small")!;

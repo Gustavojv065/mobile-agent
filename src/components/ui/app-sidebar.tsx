@@ -188,7 +188,7 @@ export function AppSidebar() {
         setRenameError(
           renameFailure instanceof Error
             ? renameFailure.message
-            : "Could not rename this chat.",
+            : "Não foi possível renomear esta conversa.",
         );
       })
       .finally(() => {
@@ -209,7 +209,7 @@ export function AppSidebar() {
           <View className="flex-row items-center gap-sp-1">
             <SidebarClose asChild>
               <Button
-                accessibilityLabel="Import chat"
+                accessibilityLabel="Importar conversa"
                 className="h-10 w-10 shrink-0"
                 onPress={() => {
                   setImportDrawerOpen(true);
@@ -222,7 +222,7 @@ export function AppSidebar() {
             </SidebarClose>
             <SidebarClose asChild>
               <Button
-                accessibilityLabel="New chat"
+                accessibilityLabel="Nova conversa"
                 className="h-10 w-10 shrink-0"
                 onPress={() => {
                   createConversation()
@@ -272,7 +272,7 @@ export function AppSidebar() {
                           : "text-foreground dark:text-foreground-dark",
                       )}
                     >
-                      Library
+                      Biblioteca
                     </Text>
                   </SidebarMenuButton>
                 </SidebarClose>
@@ -303,7 +303,7 @@ export function AppSidebar() {
                           : "text-foreground dark:text-foreground-dark",
                       )}
                     >
-                      Agents
+                      Agentes
                     </Text>
                   </SidebarMenuButton>
                 </SidebarClose>
@@ -316,7 +316,7 @@ export function AppSidebar() {
                 style={{ fontFamily: "Geist_600SemiBold" }}
                 className="!px-0 text-sm font-semibold normal-case tracking-normal text-foreground dark:text-foreground-dark"
               >
-                Pinned
+                Fixadas
               </SidebarGroupLabel>
               <SidebarMenu>
                 {pinnedConversations.map(renderConversation)}
@@ -327,7 +327,7 @@ export function AppSidebar() {
             <SidebarGroup>
               <Pressable
                 accessibilityRole="button"
-                accessibilityLabel="OpenCode sessions"
+                accessibilityLabel="Sessões do OpenCode"
                 accessibilityState={{ expanded: openCodeSessionsOpen }}
                 className="min-h-10 flex-row items-center gap-sp-2"
                 onPress={() => setOpenCodeSessionsOpen((value) => !value)}
@@ -336,7 +336,7 @@ export function AppSidebar() {
                   style={{ fontFamily: "Geist_600SemiBold" }}
                   className="font-sans text-sm font-semibold text-foreground dark:text-foreground-dark"
                 >
-                  OpenCode sessions
+                  Sessões do OpenCode
                 </Text>
                 <SessionSectionChevron
                   open={openCodeSessionsOpen}
@@ -367,7 +367,7 @@ export function AppSidebar() {
                                 : "text-foreground dark:text-foreground-dark",
                             )}
                           >
-                            {session.title || "OpenCode chat"}
+                            {session.title || "Conversa OpenCode"}
                           </Text>
                         </SidebarMenuButton>
                       </SidebarClose>
@@ -375,7 +375,7 @@ export function AppSidebar() {
                   ))}
                   {harness.sessions.length === 0 ? (
                     <Text className="font-sans text-sm text-muted-foreground dark:text-muted-foreground-dark">
-                      No sessions yet
+                      Nenhuma sessão ainda
                     </Text>
                   ) : null}
                 </SidebarMenu>
@@ -387,7 +387,7 @@ export function AppSidebar() {
               style={{ fontFamily: "Geist_600SemiBold" }}
               className="!px-0 text-sm font-semibold normal-case tracking-normal text-foreground dark:text-foreground-dark"
             >
-              Chats
+              Conversas
             </SidebarGroupLabel>
             <SidebarMenu>
               {otherConversations.map(renderConversation)}
@@ -400,12 +400,12 @@ export function AppSidebar() {
                         size="small"
                       />
                       <Text className="font-sans text-sm text-muted-foreground dark:text-muted-foreground-dark">
-                        Loading chats…
+                        Carregando conversas…
                       </Text>
                     </View>
                   ) : (
                     <Text className="px-sp-2 font-sans text-sm text-muted-foreground dark:text-muted-foreground-dark">
-                      No chats yet. Start a new conversation.
+                      Nenhuma conversa ainda. Crie uma nova.
                     </Text>
                   )}
                 </SidebarMenuItem>
@@ -432,7 +432,7 @@ export function AppSidebar() {
                   }
                 }}
               >
-                Settings
+                Configurações
               </SidebarMenuButton>
             </SidebarClose>
           </View>
@@ -450,14 +450,14 @@ export function AppSidebar() {
       >
         <ModalContent>
           <ModalHeader>
-            <ModalTitle>Rename chat</ModalTitle>
+            <ModalTitle>Renomear conversa</ModalTitle>
             <ModalDescription>
-              Choose a title that makes this chat easy to find.
+              Escolha um título fácil de encontrar depois.
             </ModalDescription>
           </ModalHeader>
           <ModalBody>
             <Input
-              accessibilityLabel="Chat title"
+              accessibilityLabel="Título da conversa"
               autoFocus
               maxLength={80}
               onChangeText={setRenameTitle}
@@ -482,7 +482,7 @@ export function AppSidebar() {
               size="sm"
               variant="ghost"
             >
-              Cancel
+              Cancelar
             </Button>
             <Button
               disabled={!renameTitle.trim()}
@@ -490,7 +490,7 @@ export function AppSidebar() {
               onPress={submitRename}
               size="sm"
             >
-              Rename
+              Renomear
             </Button>
           </ModalFooter>
         </ModalContent>
@@ -608,7 +608,7 @@ function ChatOptions({
     <DropdownMenu>
       <DropdownMenuTrigger>
         <Pressable
-          accessibilityLabel="Chat options"
+          accessibilityLabel="Opções da conversa"
           accessibilityRole="button"
           hitSlop={8}
           onPress={(event) => event.stopPropagation()}
@@ -622,7 +622,7 @@ function ChatOptions({
           <View className="flex-row items-center gap-sp-2">
             <Pencil color={theme.text} size={16} />
             <Text className="font-sans text-base text-foreground dark:text-foreground-dark">
-              Rename
+              Renomear
             </Text>
           </View>
         </DropdownMenuItem>
@@ -630,7 +630,7 @@ function ChatOptions({
           <View className="flex-row items-center gap-sp-2">
             <Download color={theme.text} size={16} />
             <Text className="font-sans text-base text-foreground dark:text-foreground-dark">
-              Export chat
+              Exportar conversa
             </Text>
           </View>
         </DropdownMenuItem>
@@ -646,10 +646,10 @@ function ChatOptions({
             )}
             <Text className="font-sans text-base text-foreground dark:text-foreground-dark">
               {pinned
-                ? "Unpin"
+                ? "Desafixar"
                 : pinnedCount >= 3
-                  ? "Pin limit reached"
-                  : "Pin"}
+                  ? "Limite de fixadas atingido"
+                  : "Fixar"}
             </Text>
           </View>
         </DropdownMenuItem>
@@ -657,7 +657,7 @@ function ChatOptions({
           <View className="flex-row items-center gap-sp-2">
             <Trash2 color={theme.destructive} size={16} />
             <Text className="font-sans text-base text-destructive dark:text-destructive-dark">
-              Delete
+              Excluir
             </Text>
           </View>
         </DropdownMenuItem>

@@ -1,0 +1,133 @@
+name: Android APK Preview PT-BR
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "modules/**"
+      - "plugins/**"
+      - "app.json"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - ".github/workflows/android-preview.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-preview-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-preview:
+    name: Build standalone Android ARM64 APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout proposed code
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.29.2
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: "platform-tools"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify TypeScript
+        run: pnpm exec tsc --noEmit
+
+      - name: Create isolated Android test identity
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs = require("node:fs");
+          const config = JSON.parse(fs.readFileSync("app.json", "utf8"));
+          config.expo.name = "Mobile Agent PT-BR (Teste)";
+          config.expo.android.package = "com.gustavojv065.mobileagent.preview";
+          config.expo.scheme = "mobile-agent-ptbr-preview";
+          // Do not bind the fork's test build to the upstream owner's EAS
+          // project or over-the-air update channel.
+          delete config.expo.updates;
+          delete config.expo.runtimeVersion;
+          delete config.expo.owner;
+          if (config.expo.extra) delete config.expo.extra.eas;
+          fs.writeFileSync("app.json", JSON.stringify(config, null, 2));
+          NODE
+
+      - name: Generate native Android project
+        run: pnpm exec expo prebuild --platform android --clean --no-install
+
+      - name: Limit Gradle memory on GitHub runners
+        run: |
+          node <<'NODE'
+          const fs = require("node:fs");
+          const file = "android/gradle.properties";
+          const original = fs.readFileSync(file, "utf8");
+          const overrides = {
+            "org.gradle.jvmargs": "-Xmx3g -XX:MaxMetaspaceSize=1g",
+            "org.gradle.workers.max": "2",
+            "kotlin.daemon.jvmargs": "-Xmx1g -XX:MaxMetaspaceSize=512m",
+          };
+          let lines = original.split("\n").filter((line) =>
+            !Object.keys(overrides).some((key) => line.startsWith(key + "="))
+          );
+          lines.push(...Object.entries(overrides).map(([key, value]) => key + "=" + value));
+          fs.writeFileSync(file, lines.join("\n"));
+          NODE
+
+      # assembleDebug installs Expo's development launcher and needs Metro.
+      # Release bundles the real chat application JS locally and starts offline.
+      - name: Build standalone release APK (ARM64)
+        working-directory: android
+        env:
+          NODE_OPTIONS: --max-old-space-size=3072
+        run: ./gradlew :app:assembleRelease --no-daemon --max-workers=2 -PreactNativeArchitectures=arm64-v8a
+
+      - name: Verify standalone APK contains bundled application
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          apks=(android/app/build/outputs/apk/release/*.apk)
+          if [ "${#apks[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one release APK, found ${#apks[@]}"
+            exit 1
+          fi
+          echo "Checking bundled assets in ${apks[0]}"
+          unzip -Z1 "${apks[0]}" > apk-contents.txt
+          if ! grep -Fxq 'assets/index.android.bundle' apk-contents.txt; then
+            echo "::error::Release APK is missing the bundled React Native/Expo application"
+            exit 1
+          fi
+          echo "Bundled application found; no development server required."
+          mv "${apks[0]}" mobile-agent-ptbr-arm64-standalone.apk
+
+      - name: Publish standalone test APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: mobile-agent-ptbr-arm64-standalone
+          path: mobile-agent-ptbr-arm64-standalone.apk
+          if-no-files-found: error
+          retention-days: 7

@@ -159,17 +159,17 @@ export default function SettingsProvidersScreen() {
           models,
           provider,
           value: isCurrent
-            ? "Current"
+            ? "Atual"
             : provider.family === "ollama" && discovery?.status === "failed"
-              ? "Connection failed"
+              ? "Falha na conexão"
               : provider.family === "ollama" &&
                   discovery?.status === "connected"
-                ? `${pulledModelCount} pulled`
+                ? `${pulledModelCount} baixados`
                 : isActive
-                  ? `${models.length} available`
+                  ? `${models.length} disponíveis`
                   : provider.authType === "oauth"
-                    ? "Connect"
-                    : "Set up",
+                    ? "Conectar"
+                    : "Configurar",
         } satisfies ProviderListItem;
       });
   }, [
@@ -347,11 +347,11 @@ export default function SettingsProvidersScreen() {
   const modelSections = useMemo(
     () => [
       {
-        label: "Text models",
+        label: "Modelos de texto",
         models: displayModels.filter((model) => model.outputType !== "image"),
       },
       {
-        label: "Image models",
+        label: "Modelos de imagem",
         models: displayModels.filter((model) => model.outputType === "image"),
       },
     ],
@@ -681,7 +681,7 @@ export default function SettingsProvidersScreen() {
           variant="ghost"
         />
         <Text className="font-sans text-xl font-semibold text-foreground dark:text-foreground-dark">
-          Providers
+          Provedores de IA
         </Text>
         <Button
           className="ml-auto"
@@ -690,7 +690,7 @@ export default function SettingsProvidersScreen() {
           size="sm"
           variant="outline"
         >
-          Add custom
+          Adicionar manualmente
         </Button>
       </View>
 
@@ -702,7 +702,7 @@ export default function SettingsProvidersScreen() {
         </Card>
       ) : !ready ? (
         <Card
-          accessibilityLabel="Loading providers"
+          accessibilityLabel="Carregando provedores"
           className="gap-sp-3 px-sp-4 py-sp-4"
         >
           {[0, 1, 2, 3].map((item) => (
@@ -718,7 +718,7 @@ export default function SettingsProvidersScreen() {
       ) : providerItems.length === 0 ? (
         <Card className="px-sp-4 py-sp-4">
           <Text className="font-sans text-sm text-muted-foreground dark:text-muted-foreground-dark">
-            No providers configured. Use Add custom above to add one.
+            Nenhum provedor configurado. Use Adicionar manualmente.
           </Text>
         </Card>
       ) : (
@@ -751,17 +751,17 @@ export default function SettingsProvidersScreen() {
       >
         <DrawerContent showCloseButton showHandle>
           <DrawerHeader>
-            <DrawerTitle>Add custom provider</DrawerTitle>
+            <DrawerTitle>Adicionar provedor</DrawerTitle>
           </DrawerHeader>
           <DrawerBody contentContainerClassName="gap-sp-3 pb-sp-4">
             <Text className="font-sans text-sm text-muted-foreground dark:text-muted-foreground-dark">
-              Connect an OpenAI-compatible endpoint. You can add multiple model
-              IDs after creating it.
+              Conecte um serviço compatível com OpenAI. Você poderá adicionar
+              vários modelos depois.
             </Text>
             <Input
               autoCapitalize="words"
               onChangeText={setCustomProviderName}
-              placeholder="Provider name"
+              placeholder="Nome do provedor"
               value={customProviderName}
             />
             <Input
@@ -769,14 +769,14 @@ export default function SettingsProvidersScreen() {
               autoCorrect={false}
               keyboardType="url"
               onChangeText={setCustomProviderBaseUrl}
-              placeholder="Base URL"
+              placeholder="URL base"
               value={customProviderBaseUrl}
             />
             <Input
               autoCapitalize="none"
               autoCorrect={false}
               onChangeText={setCustomProviderApiKey}
-              placeholder="API key (optional)"
+              placeholder="Chave de API (opcional)"
               secureTextEntry
               value={customProviderApiKey}
             />
@@ -789,7 +789,7 @@ export default function SettingsProvidersScreen() {
                 onPress={() => setAddProviderOpen(false)}
                 variant="outline"
               >
-                Cancel
+                Cancelar
               </Button>
               <Button
                 className="flex-1"
@@ -801,7 +801,7 @@ export default function SettingsProvidersScreen() {
                   void runAction("add-provider", addCustomProvider).catch(
                     (error) => {
                       Alert.alert(
-                        "Provider could not be added",
+                        "Não foi possível adicionar o provedor",
                         error instanceof Error
                           ? error.message
                           : "Please try again.",
@@ -810,7 +810,7 @@ export default function SettingsProvidersScreen() {
                   );
                 }}
               >
-                Add provider
+                Adicionar provedor
               </Button>
             </View>
           </DrawerFooter>
@@ -847,24 +847,24 @@ export default function SettingsProvidersScreen() {
                     value={
                       selectedProvider?.family === "ollama"
                         ? selectedProviderDiscovery?.status === "connected"
-                          ? "Connected"
+                          ? "Conectado"
                           : selectedProviderDiscovery?.status === "failed"
-                            ? "Connection failed"
+                            ? "Falha na conexão"
                             : selectedProviderActive
-                              ? "Checking"
-                              : "Not set up"
+                              ? "Verificando"
+                              : "Não configurado"
                         : selectedProviderActive
-                          ? "Ready"
-                          : "Not set up"
+                          ? "Pronto"
+                          : "Não configurado"
                     }
                   />
                   <Separator />
-                  <StatusRow label="Family" value={selectedProvider.family} />
+                  <StatusRow label="Tipo" value={selectedProvider.family} />
                   {currentModel?.providerId === selectedProvider.id ? (
                     <>
                       <Separator />
                       <StatusRow
-                        label="Current model"
+                        label="Modelo atual"
                         value={currentModel.label}
                       />
                     </>
@@ -875,7 +875,7 @@ export default function SettingsProvidersScreen() {
                   selectedProviderActive ? (
                     <View className="gap-sp-2">
                       <Text className="font-sans text-sm text-muted-foreground dark:text-muted-foreground-dark">
-                        Active account
+                        Conta ativa
                       </Text>
                       <ProviderAccountSummaryRow
                         label={selectedProviderActiveAccount?.label ?? "None"}
@@ -895,7 +895,7 @@ export default function SettingsProvidersScreen() {
                         autoCorrect={false}
                         onChangeText={setNewAccountApiKey}
                         onSubmitEditing={saveInlineApiKey}
-                        placeholder="Paste your API key"
+                        placeholder="Cole sua chave de API"
                         returnKeyType="done"
                         secureTextEntry
                         value={newAccountApiKey}

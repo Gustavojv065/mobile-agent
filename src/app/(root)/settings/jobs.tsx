@@ -60,29 +60,29 @@ import {
 } from "scheduler-alarm";
 
 const FREQUENCIES: { label: string; value: ScheduleFrequency }[] = [
-  { label: "Hourly", value: "hourly" },
-  { label: "Daily", value: "daily" },
-  { label: "Weekly", value: "weekly" },
-  { label: "Monthly", value: "monthly" },
-  { label: "Custom", value: "custom" },
+  { label: "A cada hora", value: "hourly" },
+  { label: "Diariamente", value: "daily" },
+  { label: "Semanalmente", value: "weekly" },
+  { label: "Mensalmente", value: "monthly" },
+  { label: "Personalizado", value: "custom" },
 ];
 
 const FREQUENCY_DESCRIPTIONS: Record<ScheduleFrequency, string> = {
-  hourly: "Runs at the top of every hour",
-  daily: "Runs once a day at a set time",
-  weekly: "Runs on the days you pick",
-  monthly: "Runs on a set day each month",
-  custom: "Build your own interval or cron",
+  hourly: "Executa no início de cada hora",
+  daily: "Executa uma vez ao dia no horário definido",
+  weekly: "Executa nos dias escolhidos",
+  monthly: "Executa em um dia específico de cada mês",
+  custom: "Defina seu intervalo ou expressão cron",
 };
 
 const WEEKDAYS = [
-  { cron: 1, label: "M", name: "monday", title: "Monday" },
-  { cron: 2, label: "T", name: "tuesday", title: "Tuesday" },
-  { cron: 3, label: "W", name: "wednesday", title: "Wednesday" },
-  { cron: 4, label: "T", name: "thursday", title: "Thursday" },
-  { cron: 5, label: "F", name: "friday", title: "Friday" },
-  { cron: 6, label: "S", name: "saturday", title: "Saturday" },
-  { cron: 0, label: "S", name: "sunday", title: "Sunday" },
+  { cron: 1, label: "M", name: "monday", title: "Segunda-feira" },
+  { cron: 2, label: "T", name: "tuesday", title: "Terça-feira" },
+  { cron: 3, label: "W", name: "wednesday", title: "Quarta-feira" },
+  { cron: 4, label: "T", name: "thursday", title: "Quinta-feira" },
+  { cron: 5, label: "F", name: "friday", title: "Sexta-feira" },
+  { cron: 6, label: "S", name: "saturday", title: "Sábado" },
+  { cron: 0, label: "S", name: "sunday", title: "Domingo" },
 ] as const;
 
 type CustomIntervalUnit = "minutes" | "hours";
@@ -262,7 +262,7 @@ export default function SettingsJobsScreen() {
 
   const save = async () => {
     if (!targetRef) {
-      setFormError("No active model is available. Enable a provider first.");
+      setFormError("Nenhum modelo ativo disponível. Ative um provedor primeiro.");
       return;
     }
 
@@ -349,7 +349,7 @@ export default function SettingsJobsScreen() {
         />
         <View className="min-w-0 flex-1">
           <Text className="font-sans text-xl font-semibold text-foreground dark:text-foreground-dark">
-            Jobs
+            Tarefas agendadas
           </Text>
         </View>
       </View>
@@ -369,10 +369,10 @@ export default function SettingsJobsScreen() {
         >
           <View className="min-w-0 flex-1">
             <Text className="font-sans text-base text-foreground dark:text-foreground-dark">
-              Jobs
+              Ativar tarefas
             </Text>
             <Text className="font-sans text-xs text-muted-foreground dark:text-muted-foreground-dark">
-              Run the agent automatically on a schedule.
+              Executa o agente automaticamente nos horários programados.
             </Text>
           </View>
           <View pointerEvents="none">
@@ -387,11 +387,11 @@ export default function SettingsJobsScreen() {
         <Card className="gap-sp-3 px-sp-4 py-sp-4">
           <View className="gap-1">
             <Text className="font-sans text-base text-foreground dark:text-foreground-dark">
-              Exact alarm permission
+              Permissão de alarme exato
             </Text>
             <Text className="font-sans text-xs text-muted-foreground dark:text-muted-foreground-dark">
-              Android 12+ requires this for jobs to fire on time. Without it the
-              agent falls back to approximate timing.
+              No Android 12 ou superior, esta permissão permite executar tarefas
+              no horário correto. Sem ela, os horários serão aproximados.
             </Text>
           </View>
           <Button
@@ -400,7 +400,7 @@ export default function SettingsJobsScreen() {
             }}
             variant="outline"
           >
-            Allow
+            Permitir
           </Button>
         </Card>
       ) : null}
@@ -408,8 +408,8 @@ export default function SettingsJobsScreen() {
       <Card className="overflow-hidden">
         {sorted.length === 0 ? (
           <Text className="px-sp-4 py-sp-4 font-sans text-sm text-muted-foreground dark:text-muted-foreground-dark">
-            No jobs yet. Ask the agent to “run this every day at 9am”, or create
-            one manually.
+            Nenhuma tarefa agendada. Peça ao agente para executar uma tarefa
+            diariamente ou crie uma programação manualmente.
           </Text>
         ) : (
           sorted.map((schedule, index) => (
@@ -445,8 +445,8 @@ export default function SettingsJobsScreen() {
                       </Text>
                       <Text className="font-sans text-xs text-muted-foreground dark:text-muted-foreground-dark">
                         {schedule.nextRunAt
-                          ? `Next: ${new Date(schedule.nextRunAt).toLocaleString()}`
-                          : "No upcoming run"}
+                          ? `Próxima: ${new Date(schedule.nextRunAt).toLocaleString("pt-BR")}`
+                          : "Nenhuma execução agendada"}
                       </Text>
                     </View>
                     <View pointerEvents="none">
@@ -466,7 +466,7 @@ export default function SettingsJobsScreen() {
                     size="sm"
                     variant="outline"
                   >
-                    Edit
+                    Editar
                   </Button>
                   <Button
                     disabled={!schedulingEnabled}
@@ -480,7 +480,7 @@ export default function SettingsJobsScreen() {
                     size="sm"
                     variant="ghost"
                   >
-                    Delete
+                    Excluir
                   </Button>
                 </View>
               </View>
@@ -494,7 +494,7 @@ export default function SettingsJobsScreen() {
         onPress={openCreate}
         variant="outline"
       >
-        New job
+        Nova tarefa
       </Button>
 
       <Drawer
@@ -508,7 +508,7 @@ export default function SettingsJobsScreen() {
           <DrawerPager onPageChange={setEditorPage} page={editorPage}>
             <DrawerPagerPage>
               <DrawerHeader>
-                <DrawerTitle>{editingId ? "Edit job" : "New job"}</DrawerTitle>
+                <DrawerTitle>{editingId ? "Editar tarefa" : "Nova tarefa"}</DrawerTitle>
               </DrawerHeader>
               <DrawerBody contentContainerClassName="gap-sp-3">
                 <View className="gap-sp-1">
@@ -518,7 +518,7 @@ export default function SettingsJobsScreen() {
                   <Input
                     disabled={busyKey !== null}
                     onChangeText={setTitle}
-                    placeholder="Daily standup"
+                    placeholder="Resumo diário"
                     value={title}
                   />
                 </View>
@@ -536,7 +536,7 @@ export default function SettingsJobsScreen() {
                           event.nativeEvent.contentSize.height,
                         );
                       }}
-                      placeholder="Summarize yesterday's changes and list today's tasks."
+                      placeholder="Resuma as mudanças de ontem e liste as tarefas de hoje."
                       scrollEnabled={promptScrollEnabled}
                       style={{ height: promptHeight }}
                       value={prompt}
@@ -568,12 +568,12 @@ export default function SettingsJobsScreen() {
                         >
                           {folderSession
                             ? folderSession.displayName
-                            : "Select folder (optional)"}
+                            : "Selecionar pasta (opcional)"}
                         </Text>
                       </View>
                       {folderSession ? (
                         <Pressable
-                          accessibilityLabel="Clear target folder"
+                          accessibilityLabel="Limpar pasta de destino"
                           accessibilityRole="button"
                           hitSlop={12}
                           onPress={(event) => {
@@ -594,24 +594,24 @@ export default function SettingsJobsScreen() {
                 ) : null}
                 <View className="gap-sp-1">
                   <Text className="font-sans text-sm font-medium text-foreground dark:text-foreground-dark">
-                    Frequency
+                    Frequência
                   </Text>
                   <Pressable
-                    accessibilityLabel={`Frequency ${frequency}`}
+                    accessibilityLabel={`Frequência ${frequency}`}
                     accessibilityRole="button"
                     className="min-h-12 flex-row items-center justify-between rounded-ui border border-border bg-input px-sp-3 dark:border-border-dark dark:bg-input-dark"
                     onPress={() => setEditorPage(1)}
                   >
                     <Text className="font-sans text-base text-foreground dark:text-foreground-dark">
                       {FREQUENCIES.find((option) => option.value === frequency)
-                        ?.label ?? "Custom"}
+                        ?.label ?? "Personalizado"}
                     </Text>
                     <ChevronDown color={theme.textSecondary} size={20} />
                   </Pressable>
                 </View>
                 {frequency === "hourly" ? (
                   <Text className="font-sans text-xs text-muted-foreground dark:text-muted-foreground-dark">
-                    Runs at the top of every hour.
+                    Executa no início de cada hora.
                   </Text>
                 ) : null}
                 {frequency === "daily" ||
@@ -619,7 +619,7 @@ export default function SettingsJobsScreen() {
                 frequency === "monthly" ? (
                   <View className="gap-sp-1">
                     <Text className="font-sans text-sm font-medium text-foreground dark:text-foreground-dark">
-                      Time
+                      Horário
                     </Text>
                     {Platform.OS === "ios" ? (
                       <View className="min-h-12 justify-center rounded-ui border border-border bg-input px-sp-3 dark:border-border-dark dark:bg-input-dark">
@@ -635,7 +635,7 @@ export default function SettingsJobsScreen() {
                       </View>
                     ) : (
                       <Pressable
-                        accessibilityLabel={`Time ${time}`}
+                        accessibilityLabel={`Horário ${time}`}
                         accessibilityRole="button"
                         className="min-h-12 flex-row items-center justify-between rounded-ui border border-border bg-input px-sp-3 dark:border-border-dark dark:bg-input-dark"
                         onPress={() => setShowTimePicker(true)}
@@ -665,7 +665,7 @@ export default function SettingsJobsScreen() {
                 {frequency === "weekly" ? (
                   <View className="gap-sp-1">
                     <Text className="font-sans text-sm font-medium text-foreground dark:text-foreground-dark">
-                      Days
+                      Dias
                     </Text>
                     <View className="flex-row gap-sp-1">
                       {WEEKDAYS.map((day, index) => {
@@ -711,10 +711,10 @@ export default function SettingsJobsScreen() {
                 <View className="flex-row items-center justify-between">
                   <View className="min-w-0 flex-1">
                     <Text className="font-sans text-base text-foreground dark:text-foreground-dark">
-                      Auto-approve
+                      Aprovar automaticamente
                     </Text>
                     <Text className="font-sans text-xs text-muted-foreground dark:text-muted-foreground-dark">
-                      Let the agent use tools without asking.
+                      Permite que o agente use ferramentas sem solicitar aprovação.
                     </Text>
                   </View>
                   <Checkbox
@@ -735,7 +735,7 @@ export default function SettingsJobsScreen() {
                     runAction("save", save).catch(() => {});
                   }}
                 >
-                  {editingId ? "Save changes" : "Create job"}
+                  {editingId ? "Salvar alterações" : "Criar tarefa"}
                 </Button>
               </DrawerFooter>
             </DrawerPagerPage>
@@ -743,13 +743,13 @@ export default function SettingsJobsScreen() {
             <DrawerPagerPage>
               <DrawerHeader className="flex-row items-center gap-sp-2">
                 <Pressable
-                  accessibilityLabel="Back to job"
+                  accessibilityLabel="Voltar à tarefa"
                   className="h-9 w-9 items-center justify-center rounded-full"
                   onPress={() => setEditorPage(0)}
                 >
                   <ChevronLeft color={theme.text} size={22} />
                 </Pressable>
-                <DrawerTitle>Frequency</DrawerTitle>
+                <DrawerTitle>Frequência</DrawerTitle>
               </DrawerHeader>
               <DrawerBody>
                 {FREQUENCIES.map((option) => {
@@ -774,18 +774,18 @@ export default function SettingsJobsScreen() {
             <DrawerPagerPage>
               <DrawerHeader className="flex-row items-center gap-sp-2">
                 <Pressable
-                  accessibilityLabel="Back to frequency"
+                  accessibilityLabel="Voltar à frequência"
                   className="h-9 w-9 items-center justify-center rounded-full"
                   onPress={() => setEditorPage(1)}
                 >
                   <ChevronLeft color={theme.text} size={22} />
                 </Pressable>
-                <DrawerTitle>Custom schedule</DrawerTitle>
+                <DrawerTitle>Programação personalizada</DrawerTitle>
               </DrawerHeader>
               <DrawerBody contentContainerClassName="gap-sp-3">
                 <View className="gap-sp-1">
                   <Text className="font-sans text-sm font-medium text-foreground dark:text-foreground-dark">
-                    Repeat every
+                    Repetir a cada
                   </Text>
                   <View className="flex-row gap-sp-2">
                     <Input
@@ -821,17 +821,17 @@ export default function SettingsJobsScreen() {
                       <SelectTrigger className="flex-1">
                         <SelectValue>
                           {customIntervalUnit === "minutes"
-                            ? "Minutes"
-                            : "Hours"}
+                            ? "Minutos"
+                            : "Horas"}
                         </SelectValue>
                       </SelectTrigger>
                       <SelectContent>
                         <SelectGroup>
-                          <SelectItem label="Minutes" value="minutes">
-                            Minutes
+                          <SelectItem label="Minutos" value="minutes">
+                            Minutos
                           </SelectItem>
-                          <SelectItem label="Hours" value="hours">
-                            Hours
+                          <SelectItem label="Horas" value="hours">
+                            Horas
                           </SelectItem>
                         </SelectGroup>
                       </SelectContent>
@@ -880,13 +880,13 @@ export default function SettingsJobsScreen() {
                 <View className="flex-row items-center gap-sp-3">
                   <View className="h-px flex-1 bg-border dark:bg-border-dark" />
                   <Text className="font-sans text-xs uppercase tracking-wide text-muted-foreground dark:text-muted-foreground-dark">
-                    Or
+                    Ou
                   </Text>
                   <View className="h-px flex-1 bg-border dark:bg-border-dark" />
                 </View>
                 <View className="gap-sp-1">
                   <Text className="font-sans text-sm font-medium text-foreground dark:text-foreground-dark">
-                    Cron expression
+                    Expressão cron
                   </Text>
                   <Input
                     autoCapitalize="none"

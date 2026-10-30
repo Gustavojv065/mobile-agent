@@ -126,13 +126,13 @@ export default function SavedPromptsScreen() {
 
   const confirmDelete = (savedPrompt: SavedPrompt) => {
     Alert.alert(
-      "Delete saved prompt?",
+      "Excluir prompt salvo?",
       `"${savedPrompt.title}" will be removed permanently.`,
       [
-        { style: "cancel", text: "Cancel" },
+        { style: "cancel", text: "Cancelar" },
         {
           style: "destructive",
-          text: "Delete",
+          text: "Excluir",
           onPress: () => {
             setBusyKey(`delete:${savedPrompt.id}`);
             deleteSavedPrompt(savedPrompt.id)
@@ -140,7 +140,7 @@ export default function SavedPromptsScreen() {
                 setError(
                   deleteError instanceof Error
                     ? deleteError.message
-                    : "Could not delete prompt.",
+                    : "Não foi possível excluir o prompt.",
                 );
               })
               .finally(() => setBusyKey(null));
@@ -165,10 +165,10 @@ export default function SavedPromptsScreen() {
         />
         <View className="min-w-0 flex-1">
           <Text className="font-sans text-xl font-semibold text-foreground dark:text-foreground-dark">
-            Saved prompts
+            Prompts salvos
           </Text>
           <Text className="font-sans text-xs text-muted-foreground dark:text-muted-foreground-dark">
-            {savedPrompts.length} saved
+            {savedPrompts.length} salvos
           </Text>
         </View>
         <Button
@@ -176,18 +176,18 @@ export default function SavedPromptsScreen() {
           onPress={() => openCreate()}
           size="sm"
         >
-          Add
+          Adicionar
         </Button>
       </View>
 
       {savedPrompts.length === 0 ? (
         <Card className="gap-sp-2 px-sp-4 py-sp-4">
           <Text className="font-sans text-sm font-medium text-foreground dark:text-foreground-dark">
-            No saved prompts yet
+            Ainda não há prompts salvos
           </Text>
           <Text className="font-sans text-sm text-muted-foreground dark:text-muted-foreground-dark">
-            Add one here or select text in another Android app and choose Save
-            prompt.
+            Adicione um aqui ou selecione um texto em outro aplicativo
+            Android e escolha Salvar prompt.
           </Text>
         </Card>
       ) : (
@@ -251,7 +251,7 @@ export default function SavedPromptsScreen() {
         <DrawerContent showCloseButton>
           <DrawerHeader>
             <DrawerTitle>
-              {editingPrompt ? "Edit saved prompt" : "Save prompt"}
+              {editingPrompt ? "Editar prompt salvo" : "Salvar prompt"}
             </DrawerTitle>
           </DrawerHeader>
           <DrawerBody>
@@ -259,23 +259,23 @@ export default function SavedPromptsScreen() {
               className="gap-sp-3"
               keyboardShouldPersistTaps="handled"
             >
-              <Field label="Title">
+              <Field label="Título">
                 <Input
                   autoFocus
                   onChangeText={(title) =>
                     setDraft((current) => ({ ...current, title }))
                   }
-                  placeholder="Professional email"
+                  placeholder="E-mail profissional"
                   value={draft.title}
                 />
               </Field>
-              <Field label="Prompt text">
+              <Field label="Texto do prompt">
                 <Textarea
                   className="min-h-44 max-h-96"
                   onChangeText={(content) =>
                     setDraft((current) => ({ ...current, content }))
                   }
-                  placeholder="Write the prompt you want to reuse."
+                  placeholder="Escreva o prompt que deseja reutilizar."
                   value={draft.content}
                 />
               </Field>

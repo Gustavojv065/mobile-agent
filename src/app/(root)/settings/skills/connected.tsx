@@ -73,7 +73,7 @@ export default function ConnectedSkillsScreen() {
             Skills
           </Text>
           <Text className="font-sans text-xs text-muted-foreground dark:text-muted-foreground-dark">
-            {enabledSkills} active
+            {enabledSkills} {enabledSkills === 1 ? "ativa" : "ativas"}
           </Text>
         </View>
         <Button
@@ -82,14 +82,14 @@ export default function ConnectedSkillsScreen() {
           size="sm"
           variant="outline"
         >
-          Import
+          Importar
         </Button>
       </View>
 
       {!ready ? (
         <Card className="px-sp-4 py-sp-4">
           <Text className="font-sans text-sm text-muted-foreground dark:text-muted-foreground-dark">
-            Loading skills…
+            Carregando skills…
           </Text>
         </Card>
       ) : (
@@ -128,7 +128,7 @@ export default function ConnectedSkillsScreen() {
             onPress={() => router.push("/settings/skills/list" as never)}
             variant="outline"
           >
-            Add more
+            Adicionar mais
           </Button>
         </>
       )}
@@ -201,7 +201,7 @@ function SkillRow({
           size="sm"
           variant="outline"
         >
-          {skill.enabled ? "Disable" : "Enable"}
+          {skill.enabled ? "Desativar" : "Ativar"}
         </Button>
         <Button
           leftIcon={<Copy color={theme.text} size={14} />}
@@ -210,7 +210,7 @@ function SkillRow({
           size="sm"
           variant="ghost"
         >
-          Copy
+          Copiar
         </Button>
         <Button
           leftIcon={<Trash2 color={theme.destructive} size={14} />}
@@ -219,7 +219,7 @@ function SkillRow({
           size="sm"
           variant="ghost"
         >
-          Delete
+          Excluir
         </Button>
       </View>
     </View>

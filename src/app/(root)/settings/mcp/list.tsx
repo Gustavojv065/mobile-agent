@@ -1,10 +1,12 @@
-import { useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import { Plus } from "lucide-react-native";
 import { useEffect, useMemo, useState } from "react";
 import { Text, View } from "react-native";
 
 import { McpScreenHeader } from "@/components/settings/mcp/screen-header";
 import { McpServerForm } from "@/components/settings/mcp/mcp-server-form";
+import { GitHubQuickConnect } from "@/components/settings/mcp/github-quick-connect";
+import { McpTokenQuickConnect } from "@/components/settings/mcp/token-quick-connect";
 import { Container } from "@/components/shared/container";
 import { SearchBox } from "@/components/shared/search-box";
 import { Badge } from "@/components/ui/badge";
@@ -19,6 +21,28 @@ import {
   type McpServerPreset,
 } from "@/modules/mcp/catalog";
 import { isMcpOAuthCanceledError } from "@/modules/mcp/oauth";
+import { getGuidedTokenServer, type GuidedTokenServer } from "@/modules/mcp/guided-token-presets";
+
+const CONNECTION_PRIORITY: Record<string, number> = {
+  github: 0,
+  supabase: 1,
+  notion: 2,
+  "hugging-face": 3,
+  linear: 4,
+  render: 5,
+};
+
+const CONNECTION_DESCRIPTIONS: Record<string, string> = {
+  github: "Gerencie repositórios, issues e Pull Requests pelo aplicativo.",
+  supabase: "Acesse projetos e bancos de dados com sua autorização.",
+  notion: "Consulte e organize páginas do seu espaço de trabalho.",
+  linear: "Acompanhe projetos, tarefas e issues.",
+  render: "Gerencie serviços e acompanhe seus deploys.",
+  "hugging-face": "Pesquise modelos, datasets e ferramentas de IA.",
+  "microsoft-learn": "Pesquise a documentação oficial da Microsoft.",
+  context7: "Consulte a documentação atualizada de bibliotecas.",
+  exa: "Pesquise conteúdos na web.",
+};
 
 function normalizeMcpUrl(value: string) {
   try {
@@ -32,6 +56,7 @@ function normalizeMcpUrl(value: string) {
 
 export default function McpCatalogScreen() {
   const router = useRouter();
+  const { connect, search } = useLocalSearchParams<{ connect?: string; search?: string }>();
   const theme = useTheme();
   const { createMcpServerOAuth, mcpServers } = useConfig();
   const [busyKey, setBusyKey] = useState<string | null>(null);
@@ -41,18 +66,28 @@ export default function McpCatalogScreen() {
   const [error, setError] = useState<string | null>(null);
   const [setupPresetId, setSetupPresetId] = useState<string | null>(null);
   const [setupDrawerOpen, setSetupDrawerOpen] = useState(false);
-  const [query, setQuery] = useState("");
+  const [githubQuickOpen, setGithubQuickOpen] = useState(connect === "github");
+  const [tokenQuickConfig, setTokenQuickConfig] = useState<GuidedTokenServer | null>(null);
+  const [query, setQuery] = useState(typeof search === "string" ? search : "");
 
   const filteredPresets = useMemo(() => {
     const needle = query.trim().toLowerCase();
 
+    const orderedPresets = [...catalogPresets].sort(
+      (a, b) =>
+        (CONNECTION_PRIORITY[a.id] ?? 100) - (CONNECTION_PRIORITY[b.id] ?? 100),
+    );
+
     if (!needle) {
-      return catalogPresets;
+      return orderedPresets;
     }
 
-    return catalogPresets.filter(
+    return orderedPresets.filter(
       (preset) =>
         preset.label.toLowerCase().includes(needle) ||
+        (CONNECTION_DESCRIPTIONS[preset.id] ?? preset.description)
+          .toLowerCase()
+          .includes(needle) ||
         preset.description.toLowerCase().includes(needle),
     );
   }, [catalogPresets, query]);
@@ -69,7 +104,7 @@ export default function McpCatalogScreen() {
       setCatalogError(
         catalogLoadError instanceof Error
           ? catalogLoadError.message
-          : "Could not load MCP connections.",
+          : "Não foi possível carregar os serviços.",
       );
     } finally {
       if (!signal?.aborted) setCatalogLoading(false);
@@ -83,6 +118,18 @@ export default function McpCatalogScreen() {
   }, []);
 
   const connectPreset = async (preset: McpServerPreset) => {
+    // GitHub uses a guided token screen instead of exposing raw HTTP headers.
+    if (preset.id === "github" && preset.authMode === "headers") {
+      setGithubQuickOpen(true);
+      return;
+    }
+
+    const guidedToken = getGuidedTokenServer(preset);
+    if (guidedToken) {
+      setTokenQuickConfig(guidedToken);
+      return;
+    }
+
     if (preset.authMode !== "oauth") {
       setSetupPresetId(preset.id);
       setSetupDrawerOpen(true);
@@ -112,7 +159,7 @@ export default function McpCatalogScreen() {
       setError(
         connectError instanceof Error
           ? connectError.message
-          : "Could not connect the MCP server.",
+          : "Não foi possível conectar o servidor MCP.",
       );
     } finally {
       setBusyKey(null);
@@ -139,26 +186,37 @@ export default function McpCatalogScreen() {
             size="sm"
             variant="outline"
           >
-            Add custom
+            Avançado
           </Button>
         }
-        title="MCP servers"
+        title="Conexões MCP"
       />
+
+      <Card className="gap-sp-2 px-sp-4 py-sp-4">
+        <Text className="font-sans text-base font-semibold text-foreground dark:text-foreground-dark">
+          Conecte suas ferramentas
+        </Text>
+        <Text className="font-sans text-sm text-muted-foreground dark:text-muted-foreground-dark">
+          Escolha o serviço. Você verá instruções em português e poderá
+          conferir o status da conexão depois de configurar.
+        </Text>
+      </Card>
 
       {catalogPresets.length > 0 ? (
         <>
           <SearchBox
             onChangeText={setQuery}
-            placeholder="Search MCP servers"
+            placeholder="Buscar serviços"
             value={query}
           />
           {filteredPresets.length > 0 ? (
             <Card className="overflow-hidden">
               {filteredPresets.map((preset, index) => {
-                const connected = mcpServers.some(
+                const existingServer = mcpServers.find(
                   (server) =>
                     normalizeMcpUrl(server.url) === normalizeMcpUrl(preset.url),
                 );
+                const connected = Boolean(existingServer);
 
                 return (
                   <View key={preset.id}>
@@ -166,7 +224,14 @@ export default function McpCatalogScreen() {
                     <PresetRow
                       busy={busyKey === preset.id}
                       connected={connected}
-                      onPress={() => connectPreset(preset).catch(console.error)}
+                      status={existingServer?.lastStatus ?? "untested"}
+                      onPress={() => {
+                        if (connected && preset.id !== "github" && !getGuidedTokenServer(preset)) {
+                          router.dismissTo("/settings/mcp/connected");
+                        } else {
+                          void connectPreset(preset).catch(console.error);
+                        }
+                      }}
                       preset={preset}
                     />
                   </View>
@@ -176,7 +241,7 @@ export default function McpCatalogScreen() {
           ) : (
             <Card className="px-sp-4 py-sp-4">
               <Text className="font-sans text-sm text-muted-foreground dark:text-muted-foreground-dark">
-                {`No MCP servers match "${query}".`}
+                {`Nenhum serviço corresponde a "${query}".`}
               </Text>
             </Card>
           )}
@@ -184,14 +249,14 @@ export default function McpCatalogScreen() {
       ) : catalogLoading ? (
         <Card className="px-sp-4 py-sp-4">
           <Text className="font-sans text-sm text-muted-foreground dark:text-muted-foreground-dark">
-            Loading preconfigured MCP servers…
+            Carregando serviços disponíveis…
           </Text>
         </Card>
       ) : (
         <Card className="px-sp-4 py-sp-4">
           <Text className="font-sans text-sm text-muted-foreground dark:text-muted-foreground-dark">
-            No preconfigured MCP servers found. Use Add custom above to connect
-            your own.
+            Nenhum serviço pré-configurado disponível. Use Avançado para adicionar
+            um servidor manualmente.
           </Text>
         </Card>
       )}
@@ -207,6 +272,43 @@ export default function McpCatalogScreen() {
         </Text>
       ) : null}
 
+      <Drawer onOpenChange={setGithubQuickOpen} open={githubQuickOpen}>
+        <DrawerContent showCloseButton showHandle>
+          <GitHubQuickConnect
+            onConnected={() => {
+              setGithubQuickOpen(false);
+              router.dismissTo("/settings/mcp/connected");
+            }}
+            onManage={() => {
+              setGithubQuickOpen(false);
+              router.dismissTo("/settings/mcp/connected");
+            }}
+          />
+        </DrawerContent>
+      </Drawer>
+
+      <Drawer
+        onOpenChange={(open) => { if (!open) setTokenQuickConfig(null); }}
+        open={tokenQuickConfig !== null}
+      >
+        <DrawerContent showCloseButton showHandle>
+          {tokenQuickConfig ? (
+            <McpTokenQuickConnect
+              key={tokenQuickConfig.id}
+              config={tokenQuickConfig}
+              onConnected={() => {
+                setTokenQuickConfig(null);
+                router.dismissTo("/settings/mcp/connected");
+              }}
+              onManage={() => {
+                setTokenQuickConfig(null);
+                router.dismissTo("/settings/mcp/connected");
+              }}
+            />
+          ) : null}
+        </DrawerContent>
+      </Drawer>
+
       <Drawer onOpenChange={setSetupDrawerOpen} open={setupDrawerOpen}>
         <DrawerContent contentClassName="overflow-hidden" showCloseButton showHandle>
           <McpServerForm
@@ -216,7 +318,7 @@ export default function McpCatalogScreen() {
               router.dismissTo("/settings/mcp/connected");
             }}
             presetId={setupPresetId ?? undefined}
-            title="Set up MCP server"
+            title="Configurar servidor MCP"
           />
         </DrawerContent>
       </Drawer>
@@ -229,12 +331,17 @@ function PresetRow({
   connected,
   onPress,
   preset,
+  status,
 }: {
   busy: boolean;
   connected: boolean;
   onPress: () => void;
   preset: McpServerPreset;
+  status: "untested" | "connected" | "failed";
 }) {
+  const canReconfigure =
+    preset.id === "github" || getGuidedTokenServer(preset) !== null;
+
   return (
     <View className="flex-row items-center gap-sp-3 px-sp-4 py-sp-4">
       <View className="min-w-0 flex-1 gap-1">
@@ -249,17 +356,31 @@ function PresetRow({
           ) : null}
         </View>
         <Text className="font-sans text-sm text-muted-foreground dark:text-muted-foreground-dark">
-          {preset.description}
+          {CONNECTION_DESCRIPTIONS[preset.id] ?? preset.description}
         </Text>
+        {connected ? (
+          <Text className="font-sans text-xs text-muted-foreground dark:text-muted-foreground-dark">
+            {status === "connected"
+              ? "Conexão testada com sucesso"
+              : status === "failed"
+                ? "Falha no teste — confira a conexão"
+                : "Adicionado, ainda sem teste"}
+          </Text>
+        ) : null}
       </View>
       <Button
-        disabled={connected}
         loading={busy}
         onPress={onPress}
         size="sm"
-        variant={connected ? "secondary" : "outline"}
+        variant={connected && !canReconfigure ? "secondary" : "outline"}
       >
-        {connected ? "Added" : "Set up"}
+        {connected
+          ? canReconfigure
+            ? "Atualizar acesso"
+            : "Gerenciar"
+          : preset.authMode === "oauth"
+            ? "Autorizar"
+            : "Conectar"}
       </Button>
     </View>
   );

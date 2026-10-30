@@ -73,7 +73,7 @@ export default function SettingsPluginDetailScreen() {
           </Text>
         </View>
         <Text className="font-sans text-sm text-muted-foreground dark:text-muted-foreground-dark">
-          Plugin not found.
+          Plugin não encontrado.
         </Text>
       </Container>
     );
@@ -111,7 +111,7 @@ export default function SettingsPluginDetailScreen() {
       setError(
         actionError instanceof Error
           ? actionError.message
-          : "Plugin action failed.",
+          : "Não foi possível executar a ação do plugin.",
       );
     } finally {
       setBusyKey(null);
@@ -164,14 +164,14 @@ export default function SettingsPluginDetailScreen() {
           </Text>
           <Text className="font-sans text-xs text-muted-foreground dark:text-muted-foreground-dark">
             v{plugin.version}
-            {plugin.sourceUrl ? " · auto-updates on" : ""}
+            {plugin.sourceUrl ? " · atualizações automáticas ativadas" : ""}
           </Text>
         </View>
       </View>
 
       <Card className="gap-sp-3 px-sp-4 py-sp-4">
         <Text className="font-sans text-sm text-foreground dark:text-foreground-dark">
-          {plugin.description || "No description."}
+          {plugin.description || "Sem descrição."}
         </Text>
         {plugin.lastError ? (
           <Text className="font-sans text-xs text-destructive dark:text-destructive-dark">
@@ -189,7 +189,7 @@ export default function SettingsPluginDetailScreen() {
             size="sm"
             variant="outline"
           >
-            {plugin.enabled ? "Disable" : "Enable"}
+            {plugin.enabled ? "Desativar" : "Ativar"}
           </Button>
           <Button
             leftIcon={<Trash2 color={theme.destructive} size={14} />}
@@ -202,19 +202,19 @@ export default function SettingsPluginDetailScreen() {
             size="sm"
             variant="ghost"
           >
-            Delete
+            Excluir
           </Button>
         </View>
       </Card>
 
       <View className="gap-sp-2">
         <Text className="font-sans text-base font-semibold text-foreground dark:text-foreground-dark">
-          Tools & actions
+          Ferramentas e ações
         </Text>
         {capabilities.length === 0 ? (
           <Card className="px-sp-4 py-sp-4">
             <Text className="font-sans text-sm text-muted-foreground dark:text-muted-foreground-dark">
-              This plugin defines no tools or actions.
+              Este plugin não possui ferramentas ou ações.
             </Text>
           </Card>
         ) : (
@@ -236,13 +236,17 @@ export default function SettingsPluginDetailScreen() {
         <View className="flex-row items-center gap-sp-2">
           <KeyRound color={theme.text} size={16} />
           <Text className="font-sans text-base font-semibold text-foreground dark:text-foreground-dark">
-            Secrets
+            Tokens e chaves do plugin
           </Text>
         </View>
+        <Text className="font-sans text-xs text-muted-foreground dark:text-muted-foreground-dark">
+          Configure apenas as chaves que este plugin solicitar. Para conectar o GitHub,
+          utilize Conexões MCP em vez desta área.
+        </Text>
         <Card className="overflow-hidden">
           {configuredKeys.length === 0 ? (
             <Text className="px-sp-4 py-sp-3 font-sans text-sm text-muted-foreground dark:text-muted-foreground-dark">
-              No secret keys configured yet.
+              Nenhuma chave configurada.
             </Text>
           ) : (
             configuredKeys.map((key, index) => (
@@ -254,7 +258,7 @@ export default function SettingsPluginDetailScreen() {
                       </Text>
                         <View className="flex-row gap-sp-2">
                           <Button
-                            accessibilityLabel={`Edit ${key}`}
+                            accessibilityLabel={`Editar ${key}`}
                             disabled={busyKey !== null}
                             onPress={() => { setError(null); setEditingKey(key); }}
                             size="icon-xs"
@@ -263,7 +267,7 @@ export default function SettingsPluginDetailScreen() {
                             <Pencil color={theme.text} size={16} />
                           </Button>
                           <Button
-                            accessibilityLabel={`Delete ${key}`}
+                            accessibilityLabel={`Excluir ${key}`}
                             disabled={busyKey !== null}
                             loading={busyKey === `clear:${key}`}
                             onPress={() => handleDeleteSecret(key)}
@@ -283,17 +287,17 @@ export default function SettingsPluginDetailScreen() {
               onPress={() => { setError(null); setAddingSecret(true); }}
               variant="outline"
             >
-              Add
+              Adicionar chave
             </Button>
       </View>
 
       {addingSecret || editingKey !== null ? (
         <SecretEntryDialog
           key={editingKey ?? "new"}
-          title={addingSecret ? "Add secret" : "Edit secret"}
+          title={addingSecret ? "Adicionar chave" : "Editar chave"}
           description=""
           showContext={false}
-          cancelLabel="Cancel"
+          cancelLabel="Cancelar"
           editableKey={addingSecret}
           secretRequest={{
             pluginName: plugin.name,

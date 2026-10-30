@@ -55,7 +55,7 @@ export default function PluginCatalogScreen() {
         setCatalogError(
           catalogLoadError instanceof Error
             ? catalogLoadError.message
-            : "Could not load plugins.",
+            : "Não foi possível carregar o catálogo de plugins.",
         );
       })
       .finally(() => {
@@ -77,7 +77,7 @@ export default function PluginCatalogScreen() {
       setError(
         installError instanceof Error
           ? installError.message
-          : "Could not install the plugin.",
+          : "Não foi possível instalar o plugin.",
       );
     } finally {
       setBusyKey(null);
@@ -109,15 +109,31 @@ export default function PluginCatalogScreen() {
           size="sm"
           variant="outline"
         >
-          Add custom
+          Importar plugin
         </Button>
       </View>
+
+      <Card className="gap-sp-2 px-sp-4 py-sp-4">
+        <Text className="font-sans text-base font-semibold text-foreground dark:text-foreground-dark">
+          Quer conectar GitHub, Supabase ou outro serviço?
+        </Text>
+        <Text className="font-sans text-sm text-muted-foreground dark:text-muted-foreground-dark">
+          Essas integrações ficam em Conexões MCP e são configuradas
+          com token ou autorização, conforme o serviço.
+        </Text>
+        <Button
+          onPress={() => router.push("/settings/mcp/list" as never)}
+          variant="outline"
+        >
+          Explorar conexões MCP
+        </Button>
+      </Card>
 
       {entries.length > 0 ? (
         <>
           <SearchBox
             onChangeText={setQuery}
-            placeholder="Search plugins"
+            placeholder="Buscar plugins"
             value={query}
           />
           {filteredEntries.length > 0 ? (
@@ -152,7 +168,7 @@ export default function PluginCatalogScreen() {
                         size="sm"
                         variant={installed ? "secondary" : "outline"}
                       >
-                        {installed ? "Installed" : "Install"}
+                        {installed ? "Instalado" : "Instalar"}
                       </Button>
                     </View>
                   </View>
@@ -162,7 +178,7 @@ export default function PluginCatalogScreen() {
           ) : (
             <Card className="px-sp-4 py-sp-4">
               <Text className="font-sans text-sm text-muted-foreground dark:text-muted-foreground-dark">
-                {`No plugins match "${query}".`}
+                {`Nenhum plugin corresponde a "${query}".`}
               </Text>
             </Card>
           )}
@@ -170,13 +186,15 @@ export default function PluginCatalogScreen() {
       ) : catalogLoading ? (
         <Card className="px-sp-4 py-sp-4">
           <Text className="font-sans text-sm text-muted-foreground dark:text-muted-foreground-dark">
-            Loading plugins…
+            Carregando plugins…
           </Text>
         </Card>
       ) : (
         <Card className="px-sp-4 py-sp-4">
           <Text className="font-sans text-sm text-muted-foreground dark:text-muted-foreground-dark">
-            No plugins found. Use Add custom above to import your own.
+            O catálogo de plugins está vazio no momento. Você ainda pode
+            importar um plugin JavaScript confiável usando a opção acima,
+            ou conectar serviços pela área MCP.
           </Text>
         </Card>
       )}

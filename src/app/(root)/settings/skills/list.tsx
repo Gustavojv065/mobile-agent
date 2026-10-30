@@ -120,7 +120,7 @@ export default function SkillCatalogScreen() {
           size="sm"
           variant="outline"
         >
-          Add custom
+          Adicionar manualmente
         </Button>
       </View>
 
@@ -128,7 +128,7 @@ export default function SkillCatalogScreen() {
         <>
           <SearchBox
             onChangeText={setQuery}
-            placeholder="Search skills"
+            placeholder="Buscar skills"
             value={query}
           />
           {filteredEntries.length > 0 ? (
@@ -171,7 +171,7 @@ export default function SkillCatalogScreen() {
                         size="sm"
                         variant={installed ? "secondary" : "outline"}
                       >
-                        {installed ? "Added" : "Install"}
+                        {installed ? "Adicionada" : "Instalar"}
                       </Button>
                     </View>
                   </View>
@@ -181,7 +181,7 @@ export default function SkillCatalogScreen() {
           ) : (
             <Card className="px-sp-4 py-sp-4">
               <Text className="font-sans text-sm text-muted-foreground dark:text-muted-foreground-dark">
-                {`No skills match "${query}".`}
+                {`Nenhuma skill encontrada para "${query}".`}
               </Text>
             </Card>
           )}
@@ -189,13 +189,13 @@ export default function SkillCatalogScreen() {
       ) : catalogLoading ? (
         <Card className="px-sp-4 py-sp-4">
           <Text className="font-sans text-sm text-muted-foreground dark:text-muted-foreground-dark">
-            Loading skills…
+            Carregando skills…
           </Text>
         </Card>
       ) : (
         <Card className="px-sp-4 py-sp-4">
           <Text className="font-sans text-sm text-muted-foreground dark:text-muted-foreground-dark">
-            No skills found. Use Add custom above to import your own.
+            Nenhuma skill encontrada. Use Adicionar manualmente para importar.
           </Text>
         </Card>
       )}
