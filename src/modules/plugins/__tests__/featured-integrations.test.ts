@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   FEATURED_INTEGRATIONS,
   findMobileMcpConnection,
+  getOneTapOAuthPreset,
 } from "../featured-integrations";
 
 describe("Mobile Agent integration directory", () => {
@@ -20,6 +21,25 @@ describe("Mobile Agent integration directory", () => {
     for (const item of FEATURED_INTEGRATIONS.filter((entry) => entry.action === "docs")) {
       expect(item.docsUrl?.startsWith("https://")).toBe(true);
     }
+  });
+
+  it("offers browser OAuth only for pinned, officially supported services", () => {
+    const notion = FEATURED_INTEGRATIONS.find((entry) => entry.id === "notion")!;
+    const supabase = FEATURED_INTEGRATIONS.find((entry) => entry.id === "supabase")!;
+    const github = FEATURED_INTEGRATIONS.find((entry) => entry.id === "github")!;
+    expect(getOneTapOAuthPreset(notion)).toEqual({
+      label: "Notion",
+      transport: "http",
+      url: "https://mcp.notion.com/mcp",
+    });
+    expect(getOneTapOAuthPreset(supabase)).toEqual({
+      label: "Supabase",
+      transport: "http",
+      url: "https://mcp.supabase.com/mcp",
+    });
+    expect(getOneTapOAuthPreset(github)).toBeNull();
+    expect(getOneTapOAuthPreset({ ...notion, mcpUrl: "https://bad.example/mcp" })).toBeNull();
+    expect(getOneTapOAuthPreset({ ...notion, action: "chatgpt" })).toBeNull();
   });
 
   it("never marks a ChatGPT-only plugin as locally installed", () => {
